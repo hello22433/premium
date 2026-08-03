@@ -1,6 +1,7 @@
 import { ConflictException, InternalServerErrorException } from '@nestjs/common';
 import { OrderService } from './order.service';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
+import { IOrderType } from '../interface/order.type';
 
 /**
  * cancelDeliveriesIfStillWaiting 의 조건부 UPDATE(CAS) 계약을 고정한다.
@@ -73,10 +74,13 @@ describe('OrderService.cancelDeliveriesIfStillWaiting — 조건부 UPDATE 계�
     await sut.cancelDeliveriesIfStillWaiting(ORDER_ID, [9003], '고객 요청', AT);
 
     expect(calls).toContain(
-      'EXISTS (SELECT 1 FROM order_product_mapping opm ' +
-        'WHERE opm.id = order_delivery.order_product_mapping_id AND opm.order_id = :orderId)',
+      'EXISTS (SELECT 1 FROM order_product_mapping opm JOIN `order` o ON o.id = opm.order_id ' +
+        'WHERE opm.id = order_delivery.order_product_mapping_id AND opm.order_id = :orderId ' +
+        'AND o.type != :externalType)',
     );
     expect(params.orderId).toBe(ORDER_ID);
+    // EXTERNAL 주문 배제도 같은 EXISTS 안에서 재검증한다(조회 단계와 동일 조건집합).
+    expect(params.externalType).toBe(IOrderType.EXTERNAL);
   });
 
   it('갱신 순간에 WAIT / claimed_at / actual_send_at 을 다시 검사한다', async () => {
@@ -88,6 +92,19 @@ describe('OrderService.cancelDeliveriesIfStillWaiting — 조건부 UPDATE 계�
     expect(params.wait).toBe(IOrderDeliveryStatus.WAIT);
     expect(calls).toContain('claimedAt IS NULL');
     expect(calls).toContain('actualSendAt IS NULL');
+  });
+
+  // ★ 관리자 리뷰 HIGH: 조회 단계(findCancelableDeliveryIds)가 보는 발급/진행 신호를 갱신 단계도
+  //   그대로 재검증해야 한다. 빠지면 조회~갱신 창에서 쿠폰이 발급돼도 status=WAIT/claimed_at NULL
+  //   경로로 취소·환불이 통과할 수 있다(현재는 타 모듈이 claimed_at 을 먼저 채워 간접 차단될 뿐).
+  it('갱신 순간에 발급/진행 신호(coupon_issued_at / bar_code / report_state)도 재검사한다', async () => {
+    const { sut, calls } = setup();
+
+    await sut.cancelDeliveriesIfStillWaiting(ORDER_ID, [9003], '고객 요청', AT);
+
+    expect(calls).toContain('couponIssuedAt IS NULL');
+    expect(calls).toContain('barCode IS NULL');
+    expect(calls).toContain('reportState IS NULL');
   });
 
   it('soft-delete 된 행을 제외한다 (UpdateQueryBuilder 는 자동 적용하지 않는다)', async () => {

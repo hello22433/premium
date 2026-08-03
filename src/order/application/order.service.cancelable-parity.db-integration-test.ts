@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
 import * as mysql from 'mysql2/promise';
+import { ConflictException } from '@nestjs/common';
 import { DataSource, Repository } from 'typeorm';
 import { SnakeNamingStrategy } from 'typeorm-naming-strategies';
 import {
@@ -263,5 +264,39 @@ describe('OrderService cancelable — 술어 ↔ SQL parity (실 DB)', () => {
     const predicate = evaluateDeliveryCancelable(loaded[0] as any, IOrderType.EXTERNAL, now);
     expect(predicate.cancelable).toBe(false);
     expect(predicate.cancelable).toBe(sqlIds.has(ids[0]));
+  });
+
+  /**
+   * 관리자 리뷰 HIGH — 조회~갱신 창에서 쿠폰이 발급되면 CAS 가 막아야 한다.
+   *
+   * 조회(findCancelableDeliveryIds) 시점엔 전 조건을 만족하던 행이, UPDATE 직전에 발급 신호만
+   * 생기는 상황을 재현한다(status 는 WAIT, claimed_at/actual_send_at 은 NULL 그대로 — 즉 종전
+   * CAS 조건 4개로는 걸러지지 않는 조합). 발급 신호를 CAS 가 직접 보지 않으면 이미 발급된 쿠폰이
+   * 취소되고 환불까지 나간다. affected 불일치 → ConflictException → 그 행은 WAIT 로 남아야 한다.
+   */
+  it.each([
+    ['coupon_issued_at', { couponIssuedAt: new Date() }],
+    ['bar_code', { barCode: 'ISSUED-PIN' }],
+    ['report_state', { reportState: 'PENDING' }],
+  ])('조회 후 %s 가 생기면 CAS 가 취소를 거부한다 (발급 신호 재검증)', async (_label, mutation) => {
+    const { orderId, ids } = await seedOrder(IOrderType.GENERAL, [{}]);
+
+    // 조회 단계 통과 확인 (창이 열리기 전)
+    const before = new Set<number>(await service.findCancelableDeliveryIds(orderId, now));
+    expect(before.has(ids[0])).toBe(true);
+
+    // ── 창 안에서 발급 신호만 생긴다 (status/claimed_at/actual_send_at 은 그대로) ──
+    await deliveryRepository.update(ids[0], mutation as any);
+
+    const svc: any = Object.create(OrderService.prototype);
+    svc.orderDeliveryRepository = deliveryRepository;
+    svc.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+
+    await expect(svc.cancelDeliveriesIfStillWaiting(orderId, ids, '사유', new Date())).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+
+    const after = await deliveryRepository.findByIds(ids);
+    expect(after[0].status).toBe('WAIT'); // 취소되지 않았다
   });
 });

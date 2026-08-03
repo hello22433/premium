@@ -5820,7 +5820,14 @@ export class OrderService {
    *   이 함수가 "돈을 되돌려도 되는가" 판정의 마지막 관문이고, 조건 추가 비용은 사실상 0이다.
    *   (배치의 claimWaitDeliveries 도 같은 EXISTS 패턴으로 주문 타입을 제한한다.)
    *
-   * sendRequestAt(10분 규칙)은 여기서 다시 검사하지 않는다. 시간은 되돌아가지 않으므로
+   * ★ 조회 단계(findCancelableDeliveryIds)의 조건집합을 **그대로 재검증**한다 — status/claimed_at/
+   *   actual_send_at 에 더해 coupon_issued_at·bar_code·report_state·EXTERNAL 까지(관리자 리뷰 HIGH).
+   *   조회~갱신 사이에 쿠폰이 발급되면 status 는 WAIT, claimed_at 은 NULL 인 채로 발급 신호만 생길
+   *   수 있고, 그 조합은 종전 4개 조건으로는 걸러지지 않아 **발급된 쿠폰을 취소하고 환불**하게 된다.
+   *   지금은 발송 경로들이 claimed_at/actual_send_at 을 먼저 채워 간접 차단되지만 그것은 타 모듈의
+   *   암묵 불변식이다. 이 문장이 "돈을 되돌려도 되는가" 의 마지막 관문이므로 남에게 기대지 않는다.
+   *
+   * sendRequestAt(10분 규칙)만 여기서 다시 검사하지 않는다. 시간은 되돌아가지 않으므로
    * 조회 시점에 통과했다면 갱신 시점에도 통과한다 — 오히려 여유가 줄어들 뿐이고,
    * 그 구간의 실질 방어는 claimed_at 이 담당한다.
    */
@@ -5850,14 +5857,29 @@ export class OrderService {
         canceledAt,
       })
       .where('id IN (:...deliveryIds)', { deliveryIds: targetIds })
+      // ★ EXTERNAL 배제까지 EXISTS 안에서 처리한다. 조회 단계(findCancelableDeliveryIds)의
+      //   o.type != EXTERNAL 과 같은 조건 — order.type 은 불변이고 주문 행도 이미 잠겨 있어
+      //   현실적으로 창이 없지만, "다른 단계가 걸러 줬을 것" 이라는 가정을 이 문장에 남기지 않는다.
       .andWhere(
-        'EXISTS (SELECT 1 FROM order_product_mapping opm ' +
-          'WHERE opm.id = order_delivery.order_product_mapping_id AND opm.order_id = :orderId)',
-        { orderId },
+        'EXISTS (SELECT 1 FROM order_product_mapping opm JOIN `order` o ON o.id = opm.order_id ' +
+          'WHERE opm.id = order_delivery.order_product_mapping_id AND opm.order_id = :orderId ' +
+          'AND o.type != :externalType)',
+        { orderId, externalType: IOrderType.EXTERNAL },
       )
       .andWhere('status = :wait', { wait: IOrderDeliveryStatus.WAIT })
       .andWhere('claimedAt IS NULL')
       .andWhere('actualSendAt IS NULL')
+      // ★ 발급/진행 신호를 CAS 에서도 재검증한다 (관리자 리뷰 HIGH).
+      //   조회 단계는 이 셋을 보는데 갱신 단계가 빼면, 조회~갱신 창에서 쿠폰이 발급돼도
+      //   status 가 WAIT 이고 claimed_at 이 비어 있는 경로로 취소·환불이 통과할 수 있다.
+      //   현재는 발송 경로들이 claimed_at/actual_send_at 을 먼저 채워 간접 차단되지만, 그건
+      //   타 모듈의 암묵 불변식이다. CAS 는 "돈을 되돌려도 되는가" 의 마지막 관문이므로
+      //   조회 단계와 같은 조건집합을 직접 들고 있어야 한다(추가 비용 사실상 0).
+      //   ※ sendRequestAt 컷오프만 제외 — 시간은 되돌아가지 않아 조회 시 통과했으면 갱신 시에도
+      //     통과하고(여유만 줄어듦), 그 구간의 실질 방어는 claimed_at 이 담당한다.
+      .andWhere('couponIssuedAt IS NULL')
+      .andWhere('barCode IS NULL')
+      .andWhere('reportState IS NULL')
       .andWhere('deletedAt IS NULL')
       .execute();
 
