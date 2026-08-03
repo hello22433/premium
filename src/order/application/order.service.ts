@@ -1797,6 +1797,19 @@ export class OrderService {
     user: ILoginUserInfo,
     ipAddress: string,
   ): Promise<void> {
+    // IDOR 방지: 호출자의 조회 범위(view_scope) 밖 주문은 카운트를 올릴 수 없다.
+    //
+    // 이 엔드포인트는 클래스 레벨 AuthUserAuthorizationGuard(=JWT 서명 검증) 하나만 거친다.
+    // 즉 "로그인했나"만 묻고 "이 주문이 네 것인가"는 묻지 않았다. 그 결과 아무 계정이나
+    // 임의 orderId 로 { id, source: 'DIRECT' } 를 보내면 카운트가 오르고 정산 목록이
+    // '발행 완료'로 뒤집혔다 — 같은 컨트롤러의 조회(getOrderCompleteReport)·이력 조회는
+    // 이미 이 검증을 하는데 **쓰기 경로만** 빠져 있던 비대칭이다.
+    //
+    // source 를 허용 목록으로 좁힌 것만으로는 닫히지 않는다. formatReportStatus 가
+    // DIRECT 와 EMAIL 을 같은 '발행 완료'로 분기하므로, EMAIL 을 막아도 DIRECT 로
+    // 사용자에게 보이는 결과가 100% 동일하다. 경계는 source 축이 아니라 주문 소유 축이다.
+    await this.assertOrderInViewScope(user, getBody.id);
+
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')
@@ -1942,6 +1955,9 @@ export class OrderService {
     user: ILoginUserInfo,
     ipAddress: string,
   ): Promise<void> {
+    // IDOR 방지 — deliveryCompleteReportPdf 와 같은 이유. 상세 주석은 그쪽 참조.
+    await this.assertOrderInViewScope(user, getBody.id);
+
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
       .innerJoinAndSelect('order.user', 'user')

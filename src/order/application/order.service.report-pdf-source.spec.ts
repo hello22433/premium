@@ -24,15 +24,25 @@ const setupService = () => {
     transactionStatementLastSource: null,
   };
 
+  // 두 메서드는 본체 조회 전에 assertOrderInViewScope 를 부른다(IDOR 방지).
+  // 그 메서드도 orderRepository.createQueryBuilder 를 쓰므로 innerJoin/withDeleted/getCount
+  // 까지 갖춘 스텁이 필요하다. 여기서는 "범위 안"(getCount=1)을 전제로 두고,
+  // 범위 밖 거부는 order.service.report-pdf-view-scope.spec.ts 가 따로 고정한다.
   service.orderRepository = {
     createQueryBuilder: jest.fn(() => ({
+      innerJoin: jest.fn().mockReturnThis(),
       innerJoinAndSelect: jest.fn().mockReturnThis(),
       leftJoinAndSelect: jest.fn().mockReturnThis(),
+      withDeleted: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getCount: jest.fn().mockResolvedValue(1),
       getOne: jest.fn().mockResolvedValue(order),
     })),
     save: jest.fn().mockResolvedValue(order),
   };
+  service.userRepository = { findOne: jest.fn().mockResolvedValue({ id: 3, companyId: 1, departmentId: null }) };
+  service.userViewScopeRepository = { findOne: jest.fn().mockResolvedValue({ scopeType: 'ALL' }) };
   service.activityLogService = { createLog: jest.fn().mockResolvedValue(1) };
 
   return { service, order };
