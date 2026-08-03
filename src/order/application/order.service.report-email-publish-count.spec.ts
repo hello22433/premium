@@ -31,6 +31,37 @@ const makeEmailBody = (orderId = 6142) =>
     pdfFileName: 'report.pdf',
   }) as any;
 
+/**
+ * 파기증명서 이메일 경로용 주문 fixture.
+ *
+ * 발행 게이트(resolveDestructionCertificateGate)를 통과해야 카운터 판정까지 도달한다.
+ * 통과 조건이 두 축이라 둘 다 채운다:
+ *  1) 발송건이 전부 파기됨 — deliveryTarget === '-'
+ *  2) **파기 일자를 답할 수 있음** — destroyedAt 이 있어야 한다. 없으면 게이트가
+ *     DESTROY_TIME_UNKNOWN 으로 400 을 던져 이 spec 의 관심사(카운터 미갱신)에 닿지 못한다.
+ *
+ * ⚠️ describe 마다 복사하지 말 것. 종전에 두 벌로 흩어져 있다가 게이트에 파기일 축이
+ *    추가됐을 때 두 벌 모두 낡아 3건이 동시에 깨졌다. fixture 는 여기 한 곳에만 둔다.
+ */
+const makeDestructionOrder = () => ({
+  id: 6142,
+  status: 'DELIVERY_COMPLETE',
+  orderProductMappings: [
+    {
+      id: 1,
+      orderDeliveries: [
+        {
+          deliveryTarget: '-',
+          deletedAt: null,
+          status: 'COMPLETE',
+          destroyedAt: new Date('2026-03-01T00:00:00Z'),
+          destroyedAtSource: 'BATCH',
+        },
+      ],
+    },
+  ],
+});
+
 type SetupOptions = {
   sendSuccess?: boolean;
   order?: unknown;
@@ -201,12 +232,6 @@ describe('sendTransactionStatementReportEmail — 거래명세서 이메일 발�
 });
 
 describe('sendDestructionCertificateReportEmail — 카운터 대상 아님', () => {
-  const makeDestructionOrder = () => ({
-    id: 6142,
-    status: 'DELIVERY_COMPLETE',
-    orderProductMappings: [{ id: 1, orderDeliveries: [{ deliveryTarget: '-', deletedAt: null, status: 'COMPLETE' }] }],
-  });
-
   it('파기증명서는 대응 카운트 컬럼이 없으므로 카운터를 갱신하지 않는다', async () => {
     const { service } = setupService({ order: makeDestructionOrder() });
 
@@ -332,16 +357,7 @@ describe('발행 카운트 컬럼을 해석하지 못하면 (설정 오류)', ()
   });
 
   it('카운터를 쓰지 않는 파기증명서 경로는 영향받지 않는다', async () => {
-    const { service } = setupService({
-      unknownColumn: true,
-      order: {
-        id: 6142,
-        status: 'DELIVERY_COMPLETE',
-        orderProductMappings: [
-          { id: 1, orderDeliveries: [{ deliveryTarget: '-', deletedAt: null, status: 'COMPLETE' }] },
-        ],
-      },
-    });
+    const { service } = setupService({ unknownColumn: true, order: makeDestructionOrder() });
 
     const result = await service.sendDestructionCertificateReportEmail(makeEmailBody(), BASE_USER, IP);
 
