@@ -5952,10 +5952,22 @@ export class OrderService {
     //  - 메일 발송은 이미 나간 비가역 행위라, 카운터 갱신이 실패하더라도 발송 기록은 남아야 한다.
     //  - 발송 실패 건은 여기 도달하지 않는다 → 실패를 '발행 완료'로 표시하지 않는다.
     //
-    // save() 가 아니라 원자 UPDATE 를 쓰는 이유: save() 는 로드 시점의 order 전 컬럼을 되쓰므로
-    // 동시 트랜잭션이 쓴 값을 stale 로 되돌릴 수 있다. 여기서는 해당 두 컬럼만 건드린다.
-    // (단건 PDF 경로 deliveryCompleteReportPdf / orderCompleteReportPdf 는 아직 full save() 다 —
-    //  같은 행의 두 번째 writer 가 되므로 lost update 여지가 있다. 별도 티켓.)
+    // save() 가 아니라 원자 UPDATE 를 쓰는 이유.
+    //
+    // ⚠️ "save() 는 전 컬럼을 되쓴다"가 아니다. TypeORM 0.3 의 save() 는 저장 직전 해당 행을
+    //    재조회하고(SubjectDatabaseEntityLoader) 엔티티와 비교해 **변경된 컬럼만** UPDATE 한다
+    //    (SubjectChangedColumnsComputer.computeDiffColumns). 전 컬럼 덮어쓰기는 일어나지 않는다.
+    //
+    // 실제 위험은 그 **재조회 때문에** 생기는 lost update 다. read-modify-write 인 단건 PDF 경로가
+    //   1) order.deliveryCompleteReportCount 를 0 → 1 로 올려두고
+    //   2) save() 가 재조회하기 직전에 이 경로가 `count = count + 1` 을 커밋하면
+    //   3) 재조회값(1)과 엔티티값(1)이 같아 "변경 없음"으로 판정된다
+    // → PDF 의 증가가 조용히 사라지고 lastSource 만 덮인다(발행 2회인데 count=1, 표시는
+    //   '다운로드 완료'). 창이 밀리초라 확률은 낮다.
+    //
+    // 이 경로가 `col + 1` 을 쓰면 자신의 증가는 어떤 순서에서도 유실되지 않는다.
+    // (단건 PDF 경로 deliveryCompleteReportPdf / orderCompleteReportPdf 는 아직 read-modify-write
+    //  + save() 다. 그쪽도 원자 UPDATE 로 통일하면 위 조합이 통째로 사라진다 — 별도 티켓.)
     //
     // count 와 source 를 한 문장으로 갱신한다. 두 문장으로 나누면 사이에서 실패했을 때
     // count=1 / source=NULL 이 남아 formatReportStatus 폴백이 '다운로드 완료'로 오표시한다

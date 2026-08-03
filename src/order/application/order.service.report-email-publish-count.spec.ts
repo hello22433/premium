@@ -14,8 +14,9 @@ import { IReportSource } from '../interface/report.source';
  *  2) 파기증명서 이메일 → 대응 카운트 컬럼이 없으므로 카운터를 건드리지 않는다
  *  3) 메일 발송 실패 → 카운터 미반영 (실패를 '발행 완료'로 표시하지 않는다)
  *  4) 메일 발송 실패여도 activity_log 는 남는다 (비가역 행위 기록 우선)
- *  5) 카운터 갱신은 save() 가 아니라 원자 UPDATE 한 문장 (order 전 컬럼 되쓰기 금지,
- *     count/source 부분 갱신으로 인한 '다운로드 완료' 오표시 방지)
+ *  5) 카운터 갱신은 save() 가 아니라 원자 UPDATE 한 문장
+ *     (증가를 DB 측 `col + 1` 로 두어 동시 writer 와의 lost update 를 피하고,
+ *      count/source 를 한 문장에 묶어 부분 갱신으로 인한 '다운로드 완료' 오표시를 막는다)
  */
 
 const BASE_USER = { id: 7, email: 'development@enmad.com' } as any;

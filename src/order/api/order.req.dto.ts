@@ -704,7 +704,9 @@ export class OrderUpdateUseEmailContentReqBodyDto {
 export class OrderGetReportHistoryReqQueryDto {
   @ApiProperty({
     description:
-      '리포트 타입 ex) DELIVERY_COMPLETE_REPORT: 발송완료리포트, TRANSACTION_STATEMENT: 거래명세서, DELIVERY_COMPLETE_REPORT_EMAIL: 발송완료리포트 이메일 발송, TRANSACTION_STATEMENT_EMAIL: 거래명세서 이메일 발송, DESTRUCTION_CERTIFICATE_EMAIL: 파기확약서 이메일 발송',
+      '리포트 타입 ex) DELIVERY_COMPLETE_REPORT: 발송완료리포트, TRANSACTION_STATEMENT: 거래명세서, ' +
+      'DESTRUCTION_CERTIFICATE: 파기확약서 PDF 발행, DELIVERY_COMPLETE_REPORT_EMAIL: 발송완료리포트 이메일 발송, ' +
+      'TRANSACTION_STATEMENT_EMAIL: 거래명세서 이메일 발송, DESTRUCTION_CERTIFICATE_EMAIL: 파기확약서 이메일 발송',
     enum: REPORT_HISTORY_TYPES,
   })
   // ===================================

@@ -341,9 +341,15 @@ export class ActivityLogService {
    *
    * *_EMAIL 을 직접 지정한 조회(인쇄 화면들)는 그대로 이메일 이력만 받는다.
    *
-   * ⚠️ 반드시 Map 이어야 한다. 객체 리터럴로 두면 미검증 쿼리스트링이 프로토타입 체인을 탄다 —
-   * ?reportType=constructor 는 `obj['constructor']` 가 Object 생성자(truthy)를 돌려줘 `??` 폴백이
-   * 발동하지 않고, 그 함수가 IN (:...actionTypes) 로 흘러가 드라이버에서 TypeError → 500 이 된다
+   * ⚠️ 반드시 Map 이어야 한다 — 이중 방어의 안쪽이다.
+   *
+   * HTTP 로 오는 값의 1차 차단은 DTO 의 @IsIn(REPORT_HISTORY_TYPES) 이고(400), 그것이 있는 한
+   * 여기까지 목록 밖 문자열이 오지 않는다. Map 은 그 검증이 빠지거나(신규 호출부가 이 서비스를
+   * 직접 부르는 경우) 목록이 어긋났을 때를 대비한다.
+   *
+   * 객체 리터럴로 두면 그 상황에서 프로토타입 체인을 탄다 — reportType='constructor' 는
+   * `obj['constructor']` 가 Object 생성자(truthy)를 돌려줘 `??` 폴백이 발동하지 않고, 그 함수가
+   * IN (:...actionTypes) 로 흘러가 드라이버에서 TypeError → 500 이 된다
    * (toString / __proto__ / valueOf 도 동일). Map 은 자체 키만 보므로 이 경로가 닫힌다.
    */
   private static readonly REPORT_HISTORY_ACTION_TYPES = new Map<IReportHistoryType, string[]>([
