@@ -40,6 +40,8 @@ import { DeliveryWorkflowEntity } from '../entity/delivery.workflow.entity';
 import { MessageAttemptEntity } from '../entity/message.attempt.entity';
 import { DeliveryWorkflowSlotService } from './application/delivery-workflow-slot.service';
 import { MessageAttemptService } from './application/message-attempt.service';
+import { PinIssueCommandEntity } from '../entity/pin.issue.command.entity';
+import { PinIssueCommandService } from './application/pin-issue-command.service';
 import { MessageResultReconcileService } from './application/message-result-reconcile.service';
 import { MessageResendExecutorService } from './application/message-resend-executor.service';
 import { DeliveryCutoverModule } from './delivery.cutover.module';
@@ -72,6 +74,7 @@ import { DeliveryCancelIntentService } from './application/delivery-cancel-inten
       SsgResendDeductPendingEntity,
       DeliveryWorkflowEntity,
       MessageAttemptEntity,
+      PinIssueCommandEntity,
       RefundAttemptEntity,
       DualApprovalEntity,
       StaleExternalResponseEntity,
@@ -104,6 +107,7 @@ import { DeliveryCancelIntentService } from './application/delivery-cancel-inten
     SsgResendDeductRecoveryService,
     DeliveryWorkflowSlotService,
     MessageAttemptService,
+    PinIssueCommandService,
     MessageResultReconcileService,
     MessageResendExecutorService,
     RefundAttemptExecutorService,

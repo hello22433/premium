@@ -21,6 +21,7 @@ import {
   SsgIssueAttemptAlreadyActiveError,
   SsgIssueRejectedError,
   SsgProcessingError,
+  SsgTryError,
 } from '../infra/ssg.issue';
 import { SsgInsertStateService, SsgAttemptPayload } from '../../delivery/application/ssg-insert-state.service';
 import { MarkAttemptedResult, SsgInsertState } from '../../delivery/interface/ssg.insert.state';
@@ -663,6 +664,12 @@ export class PartnerCompanyExternService {
           if (candidates.length > 0) {
             const registeredList: SsgIssueLogEntity[] = [];
             let uncertain = false; // PROCESSING / 조회오류 / eventSeq 없이 제출이력(getTry=Y)만 있는 후보
+            // 미확정 사유가 "조회 자체의 실패" 였는지 기억한다. 같은 보류라도 SSG 가 "처리중" 이라고
+            // **정상 응답한 것**과 조회가 **실패해 답을 못 받은 것**은 성격이 다르다 — 후자만 재조회
+            // 가치가 있어 배치 2-pass 의 보류 대상이다(`deferred.delivery.error.ts`).
+            // 루프 안에서 즉시 던지지 않는 이유: 다른 후보가 REGISTERED 면 재사용이 우선이라
+            // (아래 registeredList 분기) 중간에 던지면 재사용 가능한 PIN 을 놓친다.
+            let lookupFailure: SsgTryError | null = null;
 
             for (const candidate of candidates) {
               try {
@@ -690,6 +697,9 @@ export class PartnerCompanyExternService {
               } catch (e) {
                 // getTry/check 네트워크·파싱 오류 → 등록 여부 불명 → 보류 후보
                 uncertain = true;
+                if (e instanceof SsgTryError && lookupFailure === null) {
+                  lookupFailure = e;
+                }
                 this.logger.error(
                   `[SSG] barCode 없음 후보 조회 오류 - orderDeliveryId=${orderDelivery.id}, vno=${candidate.personalCode}: ${e instanceof Error ? e.message : e}`,
                 );
@@ -720,6 +730,12 @@ export class PartnerCompanyExternService {
               this.logger.warn(
                 `[SSG] barCode 없음 - 후보 등록 여부 미확정(처리중/조회불가) - 발송 보류. orderDeliveryId=${orderDelivery.id}`,
               );
+              // 미확정 원인이 조회 실패라면 그 타입 그대로 던진다 — 배치 pass 1 이 보류로 인식해
+              // 본 처리 종료 후 재시도한다(계약 §2 조항 2). SSG 가 "처리중" 이라고 정상 응답한
+              // 경우는 몇 초 뒤 재조회해도 답이 같으므로 종전대로 SsgProcessingError 다.
+              if (lookupFailure) {
+                throw lookupFailure;
+              }
               throw new SsgProcessingError(orderDelivery.id);
             }
             // else: 모든 후보 미제출/미등록 확정 → 새 PIN 정상 경로(아래 Mutex)

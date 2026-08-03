@@ -46,6 +46,7 @@ import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
 import { ResendDeductService } from '../../wallet/application/resend-deduct.service';
 import { MessageAttemptService } from './message-attempt.service';
+import { PinIssueCommandService } from './pin-issue-command.service';
 import { MessageResultReconcileService } from './message-result-reconcile.service';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
@@ -214,6 +215,17 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
         { provide: 'DeliveryAlimTalk', useValue: {} },
         { provide: 'IMailSend', useValue: {} },
         { provide: 'ISmsSend', useValue: smsSend },
+        // PIN 발급 명령 기록(§5.2 최소 배선) — 기록 전용이라 발송 흐름에 영향을 주지 않는다.
+        {
+          provide: PinIssueCommandService,
+          useValue: {
+            recordAttempt: jest.fn(),
+            markSucceeded: jest.fn(),
+            markRetryPending: jest.fn(),
+            markExhausted: jest.fn(),
+            markTerminal: jest.fn(),
+          },
+        },
         // shadow 추적은 발송을 대행하지 않는다 — 상관키 없이 그대로 통과시키는 스텁.
         {
           provide: MessageAttemptService,

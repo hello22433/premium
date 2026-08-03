@@ -101,6 +101,17 @@ import { SsgRefundOutcome } from '../interface/ssg.refund.resolve';
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
+import { SsgTryError } from '../../partner_company_extern/infra/ssg.issue';
+import { DeferredDeliveryError } from '../interface/deferred.delivery.error';
+import { PinIssueCommandService } from './pin-issue-command.service';
+
+/**
+ * 배치 단건 처리 결과 (§4.1 2-pass).
+ * `deferred` 는 실패가 아니라 **이번 pass 판정 보류** 다 — 상태·환불·이력을 남기지 않는다.
+ */
+type BatchDeliveryOutcome =
+  | { kind: 'done'; result: { deliveryHistory: DeliverySendHistoryEntity; orderId: number } | null }
+  | { kind: 'deferred' };
 
 @Injectable()
 export class DeliveryBatchService {
@@ -122,6 +133,7 @@ export class DeliveryBatchService {
     @Inject('ISmsSend')
     private smsSend: ISmsSend,
     private messageAttemptService: MessageAttemptService,
+    private pinIssueCommandService: PinIssueCommandService,
     private messageResultReconcileService: MessageResultReconcileService,
     private deliveryTrackHttp: DeliveryTrackHttp,
     private cryptoCipher: CryptoCipher,
@@ -607,18 +619,13 @@ export class DeliveryBatchService {
     return claimResult.affected ?? 0;
   }
 
-  async issueAndSend() {
-    // 다른 배치가 동시에 돌더라도 UPDATE는 DB에서 직렬화되므로
-    // claimed_at IS NULL 조건에 걸린 행만 이 배치가 소유하게 된다.
-    // claimedAt 값은 이번 배치의 식별자로도 사용해서 뒤의 SELECT가 우리 몫만 가져오도록 한다.
-    const claimedAt = new Date();
-    const claimedCount = await this.claimWaitDeliveries(claimedAt);
-    this.logger.log(`[BATCH] Claimed ${claimedCount} deliveries at ${claimedAt.toISOString()}`);
-
-    if (claimedCount === 0) {
-      return;
-    }
-
+  /**
+   * 이번 배치가 claim 한 발송 대상을 발송에 필요한 관계까지 붙여 읽는다.
+   *
+   * `ids` 를 주면 그 부분집합만 **다시 읽는다**(2-pass 의 pass 2 용). 조건이 동일하므로
+   * 그 사이 종결됐거나 lease 를 뺏긴 행은 자연히 빠진다.
+   */
+  private async findClaimedDeliveries(claimedAt: Date, ids?: number[]): Promise<OrderDeliveryEntity[]> {
     const queryBuilder = this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
@@ -633,7 +640,29 @@ export class DeliveryBatchService {
       .andWhere('orderDelivery.reportState IS NULL')
       .andWhere('order.type != :externalType', { externalType: IOrderType.EXTERNAL });
 
-    const orderDeliveryList = await queryBuilder.getMany();
+    if (ids !== undefined) {
+      if (ids.length === 0) {
+        return [];
+      }
+      queryBuilder.andWhere('orderDelivery.id IN (:...ids)', { ids });
+    }
+
+    return await queryBuilder.getMany();
+  }
+
+  async issueAndSend() {
+    // 다른 배치가 동시에 돌더라도 UPDATE는 DB에서 직렬화되므로
+    // claimed_at IS NULL 조건에 걸린 행만 이 배치가 소유하게 된다.
+    // claimedAt 값은 이번 배치의 식별자로도 사용해서 뒤의 SELECT가 우리 몫만 가져오도록 한다.
+    const claimedAt = new Date();
+    const claimedCount = await this.claimWaitDeliveries(claimedAt);
+    this.logger.log(`[BATCH] Claimed ${claimedCount} deliveries at ${claimedAt.toISOString()}`);
+
+    if (claimedCount === 0) {
+      return;
+    }
+
+    const orderDeliveryList = await this.findClaimedDeliveries(claimedAt);
 
     this.logger.log(`[BATCH] Found ${orderDeliveryList.length} deliveries to send at ${claimedAt.toISOString()}`);
 
@@ -663,13 +692,17 @@ export class DeliveryBatchService {
     // 동시 처리 수는 concurrency 상한 유지. 건별 격리(processOneDeliveryForBatch 내부 try/catch)·SSG mutex 불변.
     let cursor = 0;
     let processedCount = 0;
+    const deferredIds: number[] = [];
     const nextDelivery = (): OrderDeliveryEntity | undefined => uniqueDeliveryList[cursor++];
     const runWorker = async (): Promise<void> => {
       let od: OrderDeliveryEntity | undefined;
       while ((od = nextDelivery()) !== undefined) {
-        const result = await this.processOneDeliveryForBatch(od);
-        if (result !== null) {
-          allResults.push(result);
+        // pass 1 은 판정 불가 건을 확정하지 않고 뒤로 미룬다(allowDefer=true).
+        const outcome = await this.processOneDeliveryForBatch(od, true);
+        if (outcome.kind === 'deferred') {
+          deferredIds.push(od.id);
+        } else if (outcome.result !== null) {
+          allResults.push(outcome.result);
         }
         processedCount++;
         this.logger.log(`[BATCH] Processed ${processedCount}/${uniqueDeliveryList.length}`);
@@ -677,6 +710,26 @@ export class DeliveryBatchService {
     };
     const workerCount = Math.min(concurrency, uniqueDeliveryList.length);
     await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+
+    // pass 2 — 본 처리가 전부 끝난 뒤 미룬 건만 재시도한다(계약 §2 조항 2).
+    //
+    // ★ 반드시 **DB 에서 다시 읽어** issue() 를 진입점부터 재실행한다. pass 1 의 엔티티 스냅샷을
+    //   재사용하면 그 사이 SSG 에 반영된 이전 INSERT(응답 유실로 실제 등록된 PIN)를 못 보고
+    //   중복 발급이 난다. 조회 실패는 "발급 안 됨" 이 아니라 "판정 불가" 라는 점이 핵심이다.
+    //   재조회 조건(status=WAIT AND claimedAt=이번 배치)이 그 사이 종결·탈취된 행도 자연 배제한다.
+    //
+    // 순차 실행이다 — 미룬 건은 소수이고, SSG mutex 를 두고 pass 1 잔여와 경쟁시킬 이유가 없다.
+    if (deferredIds.length > 0) {
+      const retryList = await this.findClaimedDeliveries(claimedAt, deferredIds);
+      this.logger.log(`[BATCH][PASS2] 미룬 ${deferredIds.length}건 중 ${retryList.length}건 재시도`);
+
+      for (const od of retryList) {
+        const outcome = await this.processOneDeliveryForBatch(od, false);
+        if (outcome.kind === 'done' && outcome.result !== null) {
+          allResults.push(outcome.result);
+        }
+      }
+    }
 
     // 결과 집계
     const deliveryHistoryList = allResults.map((r) => r.deliveryHistory);
@@ -1286,12 +1339,21 @@ export class DeliveryBatchService {
    */
   private async processOneDeliveryForBatch(
     orderDelivery: OrderDeliveryEntity,
-  ): Promise<{ deliveryHistory: DeliverySendHistoryEntity; orderId: number } | null> {
+    allowDefer = false,
+  ): Promise<BatchDeliveryOutcome> {
     const claimToken = orderDelivery.claimedAt;
+    let deferred = false;
     try {
-      const result = await this.processOneDeliveryInternal(orderDelivery, claimToken);
-      return result;
+      const result = await this.processOneDeliveryInternal(orderDelivery, claimToken, allowDefer);
+      return { kind: 'done', result };
     } catch (error) {
+      // 미룬 건은 실패가 아니다. claimedAt 을 풀지 않아야 다른 배치가 집어가지 않고,
+      // 변형 lease 도 유지해야 pass 2 전에 폐기·재발행이 끼어들지 못한다(finally 참조).
+      if (error instanceof DeferredDeliveryError) {
+        deferred = true;
+        return { kind: 'deferred' };
+      }
+
       this.logger.error(`[BATCH] Failed to process orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
       try {
         await this.orderDeliveryRepository.update(
@@ -1301,9 +1363,9 @@ export class DeliveryBatchService {
       } catch (resetError) {
         this.logger.error(`[BATCH] claimedAt reset 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${resetError}`);
       }
-      return null;
+      return { kind: 'done', result: null };
     } finally {
-      if (claimToken) {
+      if (claimToken && !deferred) {
         try {
           await this.orderDeliveryRepository.update(
             { id: orderDelivery.id, mutationClaimedAt: claimToken },
@@ -1384,6 +1446,11 @@ export class DeliveryBatchService {
      * 상태 쓰기의 fencing 조건으로 쓴다(다음 커밋). 없으면 종전대로 무울타리.
      */
     claimToken?: Date | null,
+    /**
+     * 이번 pass 에서 판정 불가(SSG 조회 실패)를 `FAIL` 로 확정하지 않고 뒤로 미룰 수 있는지
+     * (§4.1 2-pass). pass 1 은 true, pass 2 는 false — pass 2 는 종전대로 확정한다.
+     */
+    allowDefer = false,
   ): Promise<{ deliveryHistory: DeliverySendHistoryEntity; orderId: number }> {
     const order = orderDelivery.orderProductMapping.order;
     const product = orderDelivery.orderProductMapping.product;
@@ -1407,11 +1474,19 @@ export class DeliveryBatchService {
           });
         }
 
+        await this.pinIssueCommandService.recordAttempt({
+          orderDeliveryId: orderDelivery.id,
+          partnerType: product.partnerCompany?.type ?? 'UNKNOWN',
+          requestKey: orderDelivery.ssgTransactionId ?? orderDelivery.transactionId,
+        });
+
         await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
 
         if (orderDelivery.status === IOrderDeliveryStatus.FAIL || !orderDelivery.barCode) {
           throw new Error('PIN 발급 실패');
         }
+
+        await this.pinIssueCommandService.markSucceeded(orderDelivery.id);
 
         orderDelivery.imagePath = await this.createCouponImage(orderDelivery);
 
@@ -1420,6 +1495,29 @@ export class DeliveryBatchService {
         );
       } catch (error) {
         this.logger.error(`[BATCH] PIN 발급 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+
+        // 조회 판정 불가(SsgTryError)는 **실패가 아니라 미확정**이다. pass 1 이면 여기서 확정하지
+        // 않고 뒤로 미룬다 — status/환불/이력을 건드리지 않아야 pass 2 가 깨끗한 상태에서 재판정한다.
+        // (계약 §2 조항 2: 본 처리 종료 직후 1회 재시도. 고정 대기 없음)
+        const retryableLookupFailure = error instanceof SsgTryError;
+
+        if (allowDefer && retryableLookupFailure) {
+          await this.pinIssueCommandService.markRetryPending(orderDelivery.id, error.message);
+          this.logger.warn(
+            `[BATCH][DEFER] SSG 조회 판정 불가 — pass 2 로 미룸. orderDelivery.id: ${orderDelivery.id}: ${error.message}`,
+          );
+          throw new DeferredDeliveryError(orderDelivery.id, error);
+        }
+
+        // §5.4 전이표: 재시도 가능 실패를 소진한 것(`RETRYING → EXHAUSTED`)과 애초에 재시도가
+        // 무의미한 실패(`STARTED → TERMINAL`)는 다른 상태다. 잔액 부족·파라미터 오류까지
+        // EXHAUSTED 로 적으면 "재시도했는데 안 됐다" 로 읽혀 원인 분석이 왜곡된다.
+        const reason = error instanceof Error ? error.message : String(error);
+        if (retryableLookupFailure) {
+          await this.pinIssueCommandService.markExhausted(orderDelivery.id, reason);
+        } else {
+          await this.pinIssueCommandService.markTerminal(orderDelivery.id, reason);
+        }
 
         // B1/B3: 최초 발송 실패는 환불 보류. SSG 는 ATTEMPTED 만 환불, 재발송 실패는 환불.
         const shouldHold = isInitialSend && (await this.shouldHoldRefundForFail(orderDelivery, order));
