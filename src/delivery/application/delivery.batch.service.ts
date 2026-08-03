@@ -100,6 +100,14 @@ import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 
+/**
+ * 정기파기 각인 로그에 남기는 발송건 id 상한.
+ *
+ * 로그 한 줄이 무한정 길어지는 것을 막는다. 이 값을 넘는 분량은 **DB 에서 덮이고 로그에도 없어
+ * 영구 소실**되므로, 자르는 쪽 로그는 반드시 생략 건수를 함께 적어야 한다(감사 흔적 계약).
+ */
+const RESTAMP_AUDIT_LOG_LIMIT = 50;
+
 @Injectable()
 export class DeliveryBatchService {
   constructor(
@@ -3372,9 +3380,15 @@ export class DeliveryBatchService {
       // 덮어쓰기 전 값 — 갱신하면 복구 불가라 감사 흔적으로 남긴다(아래 warn 로그).
       // toISOString 을 optional call(?.) 로 부른다. destroyedAt 은 Date 로 매핑되지만, 로그 한 줄
       // 때문에 트랜잭션 전체(그 회차 정기파기)가 롤백되는 것은 어떤 경우에도 이득이 아니다.
-      const restampPrevious = restampRows.map(
-        (od) => `${od.id}:${od.destroyedAt?.toISOString?.() ?? 'null'}/${od.destroyedAtSource ?? 'null'}`,
-      );
+      //
+      // ⚠️ 이 감사 흔적은 **완전하지 않다.** 로그 한 줄이 무한정 길어지지 않도록 앞 50건만 남기고,
+      //    51번째부터의 이전 파기일은 DB 에서 덮이고 로그에도 없어 **영구 소실**된다.
+      //    그래서 아래 로그가 생략 건수를 명시한다 — 목록이 완전하다고 오해하면 안 된다.
+      //    포매팅도 slice **뒤에** 한다. 전량을 문자열로 만든 뒤 버리면 @Transactional 락 보유
+      //    구간에서 헛일이고, 배포 직후 레거시가 대량으로 잡히는 회차가 정확히 그 상황이다.
+      const restampPrevious = restampRows
+        .slice(0, RESTAMP_AUDIT_LOG_LIMIT)
+        .map((od) => `${od.id}:${od.destroyedAt?.toISOString?.() ?? 'null'}/${od.destroyedAtSource ?? 'null'}`);
       const firstDestroyIds = orderDeliveryList
         .filter((od) => od.destroyedAt === null && !isDeliveryDestroyed(od))
         .map((od) => od.id);
@@ -3415,10 +3429,12 @@ export class DeliveryBatchService {
       );
       if (unknownDestroyedAtIds.length > 0) {
         // 정상 운영에서는 나오지 않아야 한다. 백필 누락이거나 배포 순서 사고다.
+        const unknownOmitted = unknownDestroyedAtIds.length - RESTAMP_AUDIT_LOG_LIMIT;
         this.logger.error(
           `[정기파기] 이미 파기됐으나 파기 시각을 알 수 없는 발송건 ${unknownDestroyedAtIds.length}건 — ` +
-            `orderDeliveryIds=[${unknownDestroyedAtIds.slice(0, 50).join(', ')}]. ` +
-            `오늘 날짜를 실측으로 박제하지 않고 비워 둔다(해당 주문의 파기일은 null 로 응답된다).`,
+            `orderDeliveryIds=[${unknownDestroyedAtIds.slice(0, RESTAMP_AUDIT_LOG_LIMIT).join(', ')}]` +
+            (unknownOmitted > 0 ? ` 외 ${unknownOmitted}건 생략` : '') +
+            `. 오늘 날짜를 실측으로 박제하지 않고 비워 둔다(해당 주문의 파기일은 null 로 응답된다).`,
         );
       }
       if (restampIds.length > 0) {
@@ -3427,10 +3443,12 @@ export class DeliveryBatchService {
         //    CS 오남용으로 보고되어, 운영이 존재하지 않는 사건을 추적하게 된다(리뷰 4차 M-1).
         //    구분이 필요하면 migration §4-8 로 레거시 모집단을 먼저 계량할 것.
         // 이전 값을 함께 남긴다 — 덮어쓰면 복구 경로가 없다.
+        const restampOmitted = restampIds.length - restampPrevious.length;
         this.logger.warn(
           `[정기파기] 이미 파기 시각이 있으나 PII 가 남아 있어 파기일을 갱신함 ${restampIds.length}건 ` +
             `(원인: CS 수신정보 변경 후 재파기 또는 레거시 부분마스킹 — 데이터로 구분 불가). ` +
-            `갱신 전 값 id:시각/출처=[${restampPrevious.slice(0, 50).join(', ')}]`,
+            `갱신 전 값 id:시각/출처=[${restampPrevious.join(', ')}]` +
+            (restampOmitted > 0 ? ` 외 ${restampOmitted}건 생략 — 이전 파기일 영구 소실` : ''),
         );
       }
 

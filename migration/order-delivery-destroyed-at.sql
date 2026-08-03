@@ -30,9 +30,21 @@
 --   ① 컬럼 2개 추가 (MySQL 8.4.8) → ② §2 8,960건 / §3 27,813건 각인 → ③ 코드 배포 완료
 --   파기완료 36,773행 = BACKFILL_EARLY 8,960 + BACKFILL_ESTIMATE 27,813, 잔여 0.
 --   §4 검증 전종 0. 조기파기 요청서 50건(전부 매핑 전체 지정), soft-delete 요청서 0건.
---   ★ §2·§3 **양쪽 모두** `updated_at = updated_at` 절을 포함한 상태로 실행했고, 직후
---     `destroyed_at_source='BACKFILL_EARLY' AND DATE(updated_at)=CURDATE()` = 0 으로 확인했다.
---     즉 운영에서는 updated_at 이 밀리지 않았다.
+--   ★ §2·§3 **양쪽 모두** `updated_at = updated_at` 절을 포함한 상태로 실행했다.
+--     ⚠️ 다만 **검증은 §2 범위에서만** 했다. 직후 확인한 쿼리가
+--        `destroyed_at_source='BACKFILL_EARLY' AND DATE(updated_at)=CURDATE()` = 0 이라,
+--        §3 이 각인한 27,813행(BACKFILL_ESTIMATE)은 그 술어 **밖**이다. 미검증 모집단이 검증된
+--        쪽의 3배이므로 "운영 전체가 안 밀렸다"고 단정하지 않는다. 확인하려면 넓혀서 볼 것:
+--          SELECT destroyed_at_source, COUNT(*)
+--            FROM order_delivery
+--           WHERE destroyed_at_source IN ('BACKFILL_EARLY','BACKFILL_ESTIMATE')
+--             AND DATE(updated_at) = DATE('2026-07-31')      -- 백필 실행일
+--           GROUP BY destroyed_at_source;
+--     ⚠️ 그리고 **운영 실행분이 당시 레포 파일과 달랐다.** `updated_at = updated_at` 절은
+--        커밋 3573012e(2026-07-31 20:48)에 처음 레포로 들어왔고 운영 백필은 그보다 앞서므로,
+--        그날 운영에는 "레포에 없던 수정본"을 손으로 얹어 실행한 것이다. 결과는 의도대로였으나
+--        이 파일이 근거로 삼는 **"파일 원문 실행" 워크플로우가 한 번 깨진 사건**이라 기록한다.
+--        지금은 파일과 실행분이 일치하므로 재현하려면 현재 §2·§3 을 그대로 쓰면 된다.
 --   ⚠️ 개발 DB(2026-07-31 18:18)는 이 절이 추가되기 **전에** 돌려 79건의 updated_at 이 밀렸다.
 --      원래 값을 남기지 않아 복구 불가이며, 수용하기로 결정했다.
 --
@@ -217,9 +229,17 @@ SET od.destroyed_at = x.destroyed_at,
     -- ★★ updated_at 보존 — 빠뜨리면 되돌릴 수 없는 부작용이 난다.
     --   order_delivery.updated_at 은 DDL 이 `on update CURRENT_TIMESTAMP(6)` 라, SET 절에
     --   적지 않아도 **MySQL 이 알아서 오늘로 갱신한다.** 이 컬럼은 발송이력 표시일자의
-    --   최종 폴백이므로(partner.company.extern.history.service.ts:96
-    --   `COALESCE(actualSendAt, failedAt, updatedAt)`), 백필이 건드린 행 중 앞의 두 컬럼이
-    --   모두 NULL 인 건은 **화면 날짜가 통째로 백필 실행일로 바뀐다.**
+    --   최종 폴백이므로, 백필이 건드린 행 중 앞의 두 컬럼이 모두 NULL 인 건이 영향을 받는다.
+    --   ⚠️ 영향 축이 **표시 하나가 아니라 셋이다.** 같은 파일
+    --      src/partner_company_extern_history/application/partner.company.extern.history.service.ts
+    --        :96  COALESCE(orderDelivery.actualSendAt, failedAt, updatedAt)  → 기간 **필터**
+    --        :127 같은 식의 raw 표현                                          → **정렬** 키
+    --        :290 actualSendAt ?? failedAt ?? updatedAt                       → **표시** 값
+    --      그래서 증상은 "날짜가 틀리게 보인다"보다 **"과거 기간으로 조회하면 행이 목록에서
+    --      사라진다"** 가 크다 — 필터가 먼저 걸리기 때문이다.
+    --      (규모는 좁다: 목록이 status IN (FAIL...) OR resendAt IS NOT NULL 로 좁혀지고 FAIL 행은
+    --       failedAt 이 채워져 COALESCE 가 updatedAt 까지 내려가는 모집단이 제한적이다.
+    --       화면도 SUPER_ADMIN 전용(/send/fail-history)이라 대외 노출은 없다.)
     --   원래 값을 어디에도 남기지 않으므로 복구가 불가능하다.
     --   자기 값으로 명시하면 MySQL 이 자동 갱신을 적용하지 않는다(실증 완료).
     od.updated_at = od.updated_at
@@ -458,6 +478,36 @@ WHERE od.delivery_target = '-'
   AND od.email_receiver_phone IS NOT NULL
   AND od.email_receiver_phone <> '-';
 
+-- 4-9. **술어 사각지대** — 2축 밖 PII 만 남은 행 (리뷰 5차 M-4).
+--
+--      §4-8 은 emailReceiverPhone 축만 센다. 그런데 마스킹 대상은 **5종**이다
+--      (delivery.batch.service.ts 의 마스킹 UPDATE: deliveryTarget / originalDeliveryTarget /
+--       emailReceiverPhone / bankAccount / bankAccountOwner).
+--      술어 isDeliveryDestroyed 는 그중 **앞 둘만** 본다. 따라서
+--        bankAccount · bankAccountOwner · originalDeliveryTarget **만** 살아 있는 행은
+--      술어가 "파기됨(true)"으로 읽고 → 게이트를 통과해 →
+--      **살아있는 금융 PII 옆에 "전량 파기 완료" 확인서가 발행된다.**
+--
+--      ⚠️ 오류 방향이 §4-8 과 정반대다. §4-8 이 세는 행은 파기일이 실제보다 늦어지는(=우리에게
+--         불리한) 오류지만, 이쪽은 **허위 안심**이다. 그래서 더 위험하다.
+--      ⚠️ 이 모집단은 **한 번도 측정된 적이 없다.** 술어를 5종으로 통일할지는 정책 판단이지만,
+--         그 결정보다 **계량이 먼저**다. "실측 0건으로 해소"로 닫지 말 것.
+SELECT
+  COALESCE(SUM(CASE WHEN od.bank_account IS NOT NULL AND od.bank_account <> '-'
+      THEN 1 ELSE 0 END), 0)                                          AS `계좌번호_생존`,
+  COALESCE(SUM(CASE WHEN od.bank_account_owner IS NOT NULL AND od.bank_account_owner <> '-'
+      THEN 1 ELSE 0 END), 0)                                          AS `예금주_생존`,
+  COALESCE(SUM(CASE WHEN od.original_delivery_target IS NOT NULL AND od.original_delivery_target <> '-'
+      THEN 1 ELSE 0 END), 0)                                          AS `최초수신처_생존`,
+  COALESCE(SUM(CASE WHEN (od.bank_account IS NOT NULL AND od.bank_account <> '-')
+                      OR (od.bank_account_owner IS NOT NULL AND od.bank_account_owner <> '-')
+                      OR (od.original_delivery_target IS NOT NULL AND od.original_delivery_target <> '-')
+      THEN 1 ELSE 0 END), 0)                                          AS `합계__술어가_파기로_읽는_행`
+FROM `order_delivery` od
+WHERE od.delivery_target = '-'
+  -- 2축 술어가 '파기됨' 으로 판정하는 행만 (= §4-8 과 배타적)
+  AND (od.email_receiver_phone IS NULL OR od.email_receiver_phone = '-');
+
 -- ── 참고: 대용량 분할 실행 ────────────────────────────────────────────────────
 -- order_delivery 가 수백만 행이면 §3 을 한 번에 돌리지 말고 id 구간으로 쪼갠다.
 --
@@ -467,7 +517,8 @@ WHERE od.delivery_target = '-'
 --
 --   UPDATE `order_delivery` od
 --   JOIN `order_product_mapping` opm ON opm.id = od.order_product_mapping_id
---   SET ... (§3 의 SET 그대로)
+--   SET od.destroyed_at = ..., od.destroyed_at_source = 'BACKFILL_ESTIMATE',
+--       od.updated_at = od.updated_at                      -- ★ 생략 금지 (유실 시 복구 불가)
 --   WHERE od.destroyed_at IS NULL AND od.delivery_target = '-'
 --     AND opm.send_request_at IS NOT NULL
 --     AND opm.request_to_destroy_personal_info_day IS NOT NULL

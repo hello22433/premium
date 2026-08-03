@@ -70,8 +70,10 @@ export function resolveDestructionCertificateGate(order: OrderEntity): Destructi
       // 2축 술어로는 아직 안 지워진 행이 섞여 있다(수신처 부활 / 레거시 부분마스킹).
       // 사유는 NOT_DESTROYED 가 정확하다 — 실제로 남아 있는 PII 가 있다.
       //
-      // ⚠️ 사유 **우선순위가 바뀐 조합은 알려진 것만 둘이다.** 둘 다 종전에는 위 every('-')
-      //    에서 곧바로 canIssue: true 였고 아래 REFUND_IN_PROGRESS 분기에 **도달하지 못한다**:
+      // ⚠️ **결과가 바뀐 조합은 알려진 것만 둘이다.** ('우선순위가 바뀌었다'는 부정확한 표현이다 —
+      //    REFUND_IN_PROGRESS 는 every('-') 블록 **밖**이라 전량 마스킹 주문에서는 구·신 코드
+      //    모두 구조적으로 도달할 수 없다. 바뀐 것은 순서가 아니라 **허용 → 차단**이다.)
+      //    둘 다 종전에는 위 every('-') 에서 곧바로 canIssue: true 였다:
       //      · 전량 마스킹 + emailReceiverPhone 생존 + 환불 진행중 → 여기서 NOT_DESTROYED
       //      · 전량 마스킹 + destroyedAt 결측   + 환불 진행중 → 위에서 DESTROY_TIME_UNKNOWN
       //    의도한 동작이다: "PII 가 남아 있다"·"파기일을 모른다"가 환불 진행 여부보다 앞선
