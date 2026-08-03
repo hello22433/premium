@@ -376,6 +376,17 @@ export class ActivityLogService {
       // 로그를 남기는데(statusCode 500 / result FAILURE), 응답 DTO 에는 result 필드가 없어
       // 화면에서 성공 행과 구별할 방법이 없다. 걸러내지 않으면 운영자가 실패한 발송을
       // "이미 보냈다"로 읽고 재발송하지 않아 고객사가 리포트를 영영 못 받는다.
+      //
+      // ⚠️ 이 필터는 파기확약서(DESTRUCTION_CERTIFICATE_EMAIL)에도 걸린다. "보냈나?"에는 옳지만
+      //    "시도했다 실패한 적 있나?"라는 감사 질문의 UI 경로가 없어진다 — 파기확약서는 카운트
+      //    컬럼이 없어 activity_log 가 유일한 발송 기록이라 더 그렇다(리뷰 M-5).
+      //
+      //    그럼에도 현행을 유지하는 근거는 **프론트가 실패를 표현할 자리가 없다**는 것이다.
+      //      · 정산 이력 모달(ReportHistoryModal.tsx)  : 발행일시 / 발행자 / 발행경로 3열, 성공·실패 열 없음
+      //      · 파기확인서 발송 이력(personal-info/index.tsx): actionType 을 '파기확인서 이메일 발송'
+      //        으로 **하드코딩**해 렌더한다 — 실패 행이 와도 성공과 글자 그대로 동일하게 보인다.
+      //    즉 지금 필터를 풀면 위 문단의 오독 사고가 파기확약서에서 그대로 재현된다.
+      //    실패 이력을 노출하려면 프론트에 상태 열을 먼저 만들어야 하고, 그건 별건이다.
       .andWhere('activityLog.result = :succeeded', { succeeded: ActivityLogResult.SUCCESS })
       .andWhere("JSON_EXTRACT(activityLog.requestParams, '$.orderId') = :orderId", { orderId })
       .orderBy('activityLog.createdAt', 'DESC')
