@@ -7,6 +7,7 @@ import { EarlyDestroyRequestItemEntity } from '../../entity/early.destroy.reques
 import { OrderEntity } from '../../entity/order.entity';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
+import { DESTROYED_AT_SOURCE, isDeliveryDestroyed } from '../domain/destroyed.at.source';
 import { OrderHistoryEntity } from '../../entity/order.history.entity';
 import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.delivery.refund.status.enum';
 import { IOrderStatus } from '../interface/order.status';
@@ -254,6 +255,17 @@ export class EarlyDestroyService {
       const mappingDeliveries = await this.orderDeliveryRepository.find({
         where: { orderProductMappingId: In(targetMappingIds) },
         select: ['id'],
+        // ★ withDeleted 필수 — 아래 PII 마스킹은 UpdateQueryBuilder 로 실행되고, TypeORM 은
+        //   soft-delete 필터를 **select 에만** 자동 부착한다(UPDATE 에는 안 붙는다).
+        //   즉 마스킹 대상에는 soft-delete 된 행(폐기후재발행 되감기 tip)이 포함되는데,
+        //   이 목록이 그 행을 빠뜨리면 집합이 어긋난다:
+        //     · 파기 시각 각인에서 누락 → `deliveryTarget='-' + destroyedAt NULL` 이 영구 고착
+        //       → 그 발송건 때문에 **주문 전체 파기일이 영원히 null** 이 된다.
+        //     · order_history PII 마스킹에서도 누락 → 평문 수신처가 이력에 남는다.
+        //     · 환불 진행중 가드도 그 행을 검사하지 못한다.
+        //   정기파기 배치는 select 에 withDeleted() 를 붙여 이 문제를 이미 피하고 있다
+        //   (delivery.batch.service.ts) — 조기파기 쪽만 비대칭이었다.
+        withDeleted: true,
       });
       affectedDeliveryIds.push(...mappingDeliveries.map((d) => d.id));
     }
@@ -270,6 +282,18 @@ export class EarlyDestroyService {
       }
     }
 
+    // 파기 실행 시각. 발송건 각인(destroyedAt)과 요청서 각인(request.executedAt)에 **같은 값**을
+    // 쓴다 — 각자 new Date() 를 부르면 두 기록이 몇 밀리초 어긋나고, 그 둘을 대조하는
+    // 감사에서 불필요한 노이즈가 된다.
+    // (PII 마스킹 payload 에는 들어가지 않는다 — 아래 ★ 주석 참조.)
+    const destroyedAt = new Date();
+
+    // ★ destroyedAt 은 이 payload 에 넣지 않는다. 이 UPDATE 는 매핑 단위(orderProductMappingId
+    //   IN ...)로도 실행되는데, 매핑 지정/주문 전체 요청은 **미파기 발송건이 하나라도 있으면
+    //   통과**하므로(createRequest / createRequestForOrder) 이미 파기된 형제 행까지 범위에 들어온다.
+    //   payload 에 섞으면 그 형제의 파기일이 무조건 덮이고, 그중에는 **정기파기로 지운 실적**이
+    //   섞여 있을 수 있다. 그러면 정기파기 실적이 조기파기 실적으로 위조된다.
+    //   유효기간 가드가 같은 주문 안에서 발송건별 파기 시점을 갈라놓으므로 흔한 조합이다.
     const piiPayload = {
       deliveryTarget: DESTROY_VALUE,
       originalDeliveryTarget: DESTROY_VALUE,
@@ -277,6 +301,23 @@ export class EarlyDestroyService {
       bankAccount: DESTROY_VALUE,
       bankAccountOwner: DESTROY_VALUE,
     };
+
+    // 각인 대상 판정은 **마스킹 이전 상태**로 해야 하므로 UPDATE 전에 읽는다.
+    // 규칙은 정기파기 배치와 동일하다(delivery.batch.service.ts 참조):
+    //  · 아직 각인된 적 없음        → 각인
+    //  · 각인돼 있는데 수신처가 살아있음(= CS 수신정보 변경으로 부활) → 새 시각으로 갱신
+    //  · 각인돼 있고 이미 '-'        → 최초 파기일 유지 (재실행이어도 PII 는 그때 사라졌다)
+    // 마지막 항목이 백필 SQL 의 MIN(executed_at) 규칙과 같은 뜻이다 — 같은 컬럼에 두 규칙이
+    // 공존하면 감사자가 이 값을 어떻게 읽어야 할지 정의되지 않는다.
+    // 재실행 사실 자체는 early_destroy_request 가 요청별로 보존하므로 여기서 덮을 이유가 없다.
+    const stampTargets = await this.orderDeliveryRepository.find({
+      where: { id: In(affectedDeliveryIds) },
+      select: ['id', 'destroyedAt', 'deliveryTarget', 'emailReceiverPhone'],
+      withDeleted: true,
+    });
+    // 배치와 같은 두 축 분류. (각인 없음 + 이미 파기됨)은 시각을 모르므로 각인하지 않는다 —
+    // 오늘 날짜를 실측으로 박제하면 되돌릴 수 없다(리뷰 HIGH-2).
+    const stampIdList = stampTargets.filter((d) => !isDeliveryDestroyed(d)).map((d) => d.id);
 
     const deliveryUpdateConditions: Array<[string, number[]]> = [];
     if (targetDeliveryIds.length > 0) deliveryUpdateConditions.push(['id', targetDeliveryIds]);
@@ -288,6 +329,26 @@ export class EarlyDestroyService {
         .set(piiPayload)
         .where(`${column} IN (:...ids)`, { ids })
         .execute();
+    }
+
+    if (stampIdList.length > 0) {
+      await this.orderDeliveryRepository
+        .createQueryBuilder()
+        .update(OrderDeliveryEntity)
+        // destroyedAtSource 를 함께 쓴다 — 이 값이 없으면 나중에 이 날짜가 실측인지
+        // 백필 추정인지 판별할 수 없다(날짜만으로는 구분 불가).
+        .set({ destroyedAt, destroyedAtSource: DESTROYED_AT_SOURCE.EARLY })
+        .where('id IN (:...ids)', { ids: stampIdList })
+        .execute();
+    }
+    const keptCount = affectedDeliveryIds.length - stampIdList.length;
+    if (keptCount > 0) {
+      // 이미 파기돼 있던 형제 행을 다시 덮은 경우. 정상 동작(요청이 매핑 단위였다)이지만,
+      // 그 행의 파기일이 이번 요청서(executedAt)와 불일치하게 되므로 감사 대조 시 필요하다.
+      this.logger.log(
+        `[조기파기] 이미 파기된 발송건 ${keptCount}건은 최초 파기일을 유지함 — requestId=${requestId}. ` +
+          `해당 건의 destroyed_at 은 이 요청의 executedAt 과 다를 수 있다(정상).`,
+      );
     }
 
     if (affectedDeliveryIds.length > 0) {
@@ -306,7 +367,9 @@ export class EarlyDestroyService {
     await this.earlyDestroyRequestRepository.update(requestId, {
       status: EarlyDestroyRequestStatus.COMPLETED,
       executedBy: user.id,
-      executedAt: new Date(),
+      // 발송건에 각인한 destroyedAt 과 동일한 값(위 참조). 요청서 단위 기록과 발송건 단위 기록이
+      // 같은 시각을 가리켜야 감사 시 두 테이블을 대조할 수 있다.
+      executedAt: destroyedAt,
     });
 
     this.logger.log(

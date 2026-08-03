@@ -27,7 +27,12 @@ beforeAll(() => {
 afterAll(() => {
   deleteDataSourceByName('default');
 });
-import { OrderPaymentRefundEventType } from '../../entity/order.payment.refund.event.entity';
+import {
+  OrderPaymentRefundEventEntity,
+  OrderPaymentRefundEventType,
+} from '../../entity/order.payment.refund.event.entity';
+import { WalletTransactionEntity } from '../../entity/wallet.transaction.entity';
+import { RefundAttemptStatus } from '../../delivery/interface/refund.attempt.status';
 import { ExternalApiAccountEntity } from '../../entity/external.api.account.entity';
 import { OrderEntity } from '../../entity/order.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
@@ -127,7 +132,14 @@ function refundService(opts: {
     if (name.includes('Allocation')) return allocation;
     return null;
   });
-  (svc as any).dataSource = { manager: { query: managerQuery, findOne: managerFindOne } };
+  const transactionManager = { query: managerQuery, findOne: managerFindOne };
+  const transaction = jest.fn(async (_isolation: string, callback: (manager: typeof transactionManager) => unknown) =>
+    callback(transactionManager),
+  );
+  (svc as any).dataSource = {
+    manager: transactionManager,
+    transaction,
+  };
 
   (svc as any).orderRepository = { save: jest.fn(async (o: any) => o) };
   // processCancelRefund 의 상태 쓰기는 save(merge) 가 아니라 targeted update 다 (D3-60).
@@ -177,6 +189,8 @@ function refundService(opts: {
       managerQuery,
       managerFindOne,
       claim,
+      transaction,
+      transactionManager,
       getLedgerId,
       refund,
       refundBalance,
@@ -208,6 +222,8 @@ describe('phaseC_handleFailure — R7-A claim 멱등 + R2 wallet 환불', () => 
     expect(refundArg.eventType).toBe(OrderPaymentRefundEventType.FAIL_REFUND);
     expect(refundArg.idempotencyKeyPrefix).toBe('fail_refund:1:55:777');
     expect(refundArg.targetDeliveryIds).toEqual([55]);
+    expect(mocks.transaction).toHaveBeenCalledWith('READ COMMITTED', expect.any(Function));
+    expect((mocks.refund.mock.calls[0] as any[])[1]).toBe(mocks.transactionManager);
 
     // legacy mirror 역복원: company.balance += depositUsed, allSettleAmount -= 0
     const companyUpdate = queries.find((q) => q.sql.includes('user_company SET balance = balance + ?'));
@@ -768,5 +784,120 @@ describe('phaseC — full save() 부재 (D3-60 clobber)', () => {
     // transactionId/externalTrId 는 saveTransactionIds 소관
     expect(patch).not.toHaveProperty('transactionId');
     expect(patch).not.toHaveProperty('externalTrId');
+  });
+});
+// ── 재조정 증거 바인딩: attempt ↔ 실제 금전 부작용 (리뷰 P2) ────────────────
+describe('inspectExternalCancelRefund — 환불 증거 바인딩', () => {
+  const ATTEMPT = { id: '31', amount: 30000 };
+
+  function inspectService(opts: {
+    isWalletManaged: boolean;
+    events?: Array<Partial<OrderPaymentRefundEventEntity>>;
+    transaction?: Partial<WalletTransactionEntity> | null;
+  }) {
+    const svc = Object.create(ExternalApiService.prototype) as ExternalApiService;
+    const eventConditions: Array<{ sql: string; params?: Record<string, unknown> }> = [];
+    const eventBuilder: any = {
+      where: jest.fn((sql: string, params?: Record<string, unknown>) => {
+        eventConditions.push({ sql, params });
+        return eventBuilder;
+      }),
+      andWhere: jest.fn((sql: string, params?: Record<string, unknown>) => {
+        eventConditions.push({ sql, params });
+        return eventBuilder;
+      }),
+      getMany: jest.fn(async () => opts.events ?? []),
+    };
+    const transactionFindOne = jest.fn(async () => opts.transaction ?? null);
+    (svc as any).dataSource = {
+      manager: {
+        getRepository: jest.fn((entity: any) =>
+          entity === WalletTransactionEntity
+            ? { findOne: transactionFindOne }
+            : { createQueryBuilder: jest.fn(() => eventBuilder) },
+        ),
+      },
+    };
+    (svc as any).refundLedgerService = {
+      findByAttempt: jest.fn(async () => ({ id: 991, sourcePath: 'EXTERNAL_CANCEL', ssgBalanceSettled: true })),
+    };
+    (svc as any).walletManagedPredicate = {
+      isWalletManaged: jest.fn(async () => opts.isWalletManaged),
+    };
+    (svc as any).loadOrderBillingUser = jest.fn(async () => makeAccount().user);
+    const refundViaWallet = jest.fn(async () => undefined);
+    const refundLegacyBalanceAndAudit = jest.fn(async () => undefined);
+    (svc as any).refundViaWallet = refundViaWallet;
+    (svc as any).refundLegacyBalanceAndAudit = refundLegacyBalanceAndAudit;
+
+    const inspect = () =>
+      (svc as any).inspectExternalCancelRefund(ATTEMPT, makeOrder(), makeOrderDelivery(), makeAccount());
+    return { svc, inspect, eventConditions, transactionFindOne, refundViaWallet, refundLegacyBalanceAndAudit };
+  }
+
+  it('wallet 증거는 이 delivery 의 멱등키 prefix 로 좁힌다 — 과거의 다른 환불 이벤트가 통과하면 안 된다', async () => {
+    const { inspect, eventConditions } = inspectService({
+      isWalletManaged: true,
+      events: [{ refundedGrossBase: 30000, refundedCardSurchargeAmount: 0 }],
+    });
+
+    await inspect();
+
+    expect(eventConditions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sql: 'event.idempotency_key LIKE :prefix',
+          params: { prefix: 'discard_refund:1:55:%' },
+        }),
+      ]),
+    );
+  });
+
+  it('prefix 가 일치하는 증거가 없으면 wallet 환불을 실행한다', async () => {
+    const { inspect, refundViaWallet } = inspectService({ isWalletManaged: true, events: [] });
+
+    const result = await inspect();
+
+    expect(refundViaWallet).toHaveBeenCalled();
+    expect(result).toEqual({ status: RefundAttemptStatus.SUCCEEDED });
+  });
+
+  it('wallet 증거 금액이 attempt 환불액과 다르면 성공으로 확정하지 않는다', async () => {
+    const { inspect, refundViaWallet } = inspectService({
+      isWalletManaged: true,
+      events: [{ refundedGrossBase: 10000, refundedCardSurchargeAmount: 0 }],
+    });
+
+    await expect(inspect()).rejects.toThrow(/refund evidence amount mismatch/);
+    expect(refundViaWallet).not.toHaveBeenCalled();
+  });
+
+  it('legacy 증거는 정확한 멱등키로만 조회한다', async () => {
+    const { inspect, transactionFindOne } = inspectService({
+      isWalletManaged: false,
+      transaction: { amount: 30000 },
+    });
+
+    await inspect();
+
+    expect(transactionFindOne).toHaveBeenCalledWith({
+      where: {
+        idempotencyKey: 'legacy_discard_refund:1:55:deposit',
+        orderDeliveryId: 55,
+        type: 'DISCARD_REFUND',
+      },
+    });
+  });
+
+  it('legacy 증거가 없으면 환불을 실행하고, 금액이 다르면 확정하지 않는다', async () => {
+    const missing = inspectService({ isWalletManaged: false, transaction: null });
+    await missing.inspect();
+    expect(missing.refundLegacyBalanceAndAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: 'legacy_discard_refund:1:55:deposit' }),
+    );
+
+    const mismatched = inspectService({ isWalletManaged: false, transaction: { amount: 25000 } });
+    await expect(mismatched.inspect()).rejects.toThrow(/refund evidence amount mismatch/);
+    expect(mismatched.refundLegacyBalanceAndAudit).not.toHaveBeenCalled();
   });
 });

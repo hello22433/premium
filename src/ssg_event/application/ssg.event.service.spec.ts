@@ -6,8 +6,15 @@ import { SsgEventService } from './ssg.event.service';
 
 describe('SsgEventService', () => {
   const createService = () => {
+    const lockQueryRunner = {
+      connect: jest.fn().mockResolvedValue(undefined),
+      query: jest.fn().mockResolvedValue([{ acquired: 1 }]),
+      release: jest.fn().mockResolvedValue(undefined),
+    };
     const ssgEventRepository = {
+      manager: { connection: { createQueryRunner: () => lockQueryRunner } },
       insert: jest.fn().mockResolvedValue(undefined),
+      findOne: jest.fn().mockResolvedValue(null),
       createQueryBuilder: jest.fn(),
       save: jest.fn().mockResolvedValue(undefined),
     };
@@ -53,6 +60,7 @@ describe('SsgEventService', () => {
 
     return {
       service,
+      lockQueryRunner,
       ssgEventRepository,
       amountHistoryRepository,
       recoveryLogRepository,
@@ -134,6 +142,31 @@ describe('SsgEventService', () => {
       await expect(service.create({ ...dto, eventPrice: 0 })).rejects.toBeInstanceOf(BadRequestException);
       await expect(service.create({ ...dto, eventPrice: -1 })).rejects.toBeInstanceOf(BadRequestException);
       await expect(service.create({ ...dto, eventPrice: 1.5 })).rejects.toBeInstanceOf(BadRequestException);
+      await expect(service.create({ ...dto, eventPrice: 2_147_483_648 })).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(ssgEventRepository.insert).not.toHaveBeenCalled();
+    });
+
+    it('행사 순번이 정수/INT 범위를 벗어나면 거절한다', async () => {
+      const { service, ssgEventRepository } = createService();
+
+      // 0 은 기본값 1 로 치환되지 않고 거절돼야 한다(구 `order ? order : 1` 회귀 방지)
+      await expect(service.create({ ...dto, order: 0 })).rejects.toBeInstanceOf(BadRequestException);
+      await expect(service.create({ ...dto, order: -1 })).rejects.toBeInstanceOf(BadRequestException);
+      await expect(service.create({ ...dto, order: 1.5 })).rejects.toBeInstanceOf(BadRequestException);
+      await expect(service.create({ ...dto, order: 2_147_483_648 })).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(ssgEventRepository.insert).not.toHaveBeenCalled();
+    });
+
+    it('쿠폰 유효기간이 정수/INT 범위를 벗어나면 거절한다', async () => {
+      const { service, ssgEventRepository } = createService();
+
+      await expect(service.create({ ...dto, couponExpiration: 0 })).rejects.toBeInstanceOf(BadRequestException);
+      await expect(service.create({ ...dto, couponExpiration: 1.5 })).rejects.toBeInstanceOf(BadRequestException);
+      await expect(service.create({ ...dto, couponExpiration: 2_147_483_648 })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
 
       expect(ssgEventRepository.insert).not.toHaveBeenCalled();
     });
@@ -149,6 +182,42 @@ describe('SsgEventService', () => {
           eventBalance: dto.eventPrice,
         }),
       );
+    });
+
+    it('이미 등록된 행사(행사키+행사코드+순번)면 거절하고 충전을 안내한다', async () => {
+      const { service, ssgEventRepository } = createService();
+      ssgEventRepository.findOne.mockResolvedValue({ id: 29, code: dto.code, no: dto.no, order: 1 });
+
+      await expect(service.create(dto)).rejects.toThrow('잔액 충전');
+
+      expect(ssgEventRepository.findOne).toHaveBeenCalledWith({
+        where: { code: dto.code, no: dto.no, order: 1 },
+      });
+      expect(ssgEventRepository.insert).not.toHaveBeenCalled();
+    });
+
+    it('등록 락을 못 잡으면 등록하지 않고 커넥션을 반환한다', async () => {
+      const { service, ssgEventRepository, lockQueryRunner } = createService();
+      lockQueryRunner.query.mockResolvedValue([{ acquired: 0 }]);
+
+      await expect(service.create(dto)).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(ssgEventRepository.findOne).not.toHaveBeenCalled();
+      expect(ssgEventRepository.insert).not.toHaveBeenCalled();
+      // 잡지 못한 락을 푸는 RELEASE_LOCK 은 나가면 안 되고, 커넥션은 반드시 반환돼야 한다
+      expect(lockQueryRunner.query).toHaveBeenCalledTimes(1);
+      expect(lockQueryRunner.query).not.toHaveBeenCalledWith('SELECT RELEASE_LOCK(?)', expect.anything());
+      expect(lockQueryRunner.release).toHaveBeenCalledTimes(1);
+    });
+
+    it('등록 도중 실패해도 락을 풀고 커넥션을 반환한다', async () => {
+      const { service, ssgEventRepository, lockQueryRunner } = createService();
+      ssgEventRepository.insert.mockRejectedValue(new Error('insert 실패'));
+
+      await expect(service.create(dto)).rejects.toThrow('insert 실패');
+
+      expect(lockQueryRunner.query).toHaveBeenCalledWith('SELECT RELEASE_LOCK(?)', ['epopkon:ssg_event:register']);
+      expect(lockQueryRunner.release).toHaveBeenCalledTimes(1);
     });
   });
 

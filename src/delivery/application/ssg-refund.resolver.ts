@@ -6,6 +6,7 @@ import { SsgInsertState } from '../interface/ssg.insert.state';
 import { SsgRefundOutcome } from '../interface/ssg.refund.resolve';
 import { RefundLedgerService } from './refund-ledger.service';
 import { SsgInsertStateService } from './ssg-insert-state.service';
+import { RefundExecutionFencing } from './delivery-cutover-guard.service';
 
 /**
  * SSG 행사 잔액 복구 분기 shared resolver.
@@ -51,6 +52,7 @@ export interface SsgRefundResolveInput {
    * orphan/state 분기는 동일하게 적용된다.
    */
   resendDeductionId?: string;
+  refundExecution?: RefundExecutionFencing;
 }
 
 @Injectable()
@@ -149,13 +151,17 @@ export class SsgRefundResolverService {
 
     // 원래 발송 실패 환불 — refund_ledger_id 키 + markSsgSettled.
     try {
-      await this.ssgEventService.refundForDeliveryFail(
+      const args: [number, number, number, number, number?, RefundExecutionFencing?] = [
         input.ssgEventId,
         input.orderId,
         input.refundAmount,
         input.orderDeliveryId,
         input.refundLedgerId,
-      );
+      ];
+      if (input.refundExecution) {
+        args.push(input.refundExecution);
+      }
+      await this.ssgEventService.refundForDeliveryFail(...args);
     } catch (e) {
       this.logger.error(
         `[SSG_REFUND] refundForDeliveryFail 실패 — DEFERRED. orderDeliveryId=${input.orderDeliveryId}, context=${context}, error: ${e instanceof Error ? e.message : e}`,

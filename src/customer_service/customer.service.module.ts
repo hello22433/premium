@@ -18,6 +18,7 @@ import { UserTaskHistoryEntity } from 'src/entity/user.task.history.entity';
 import { WalletModule } from '../wallet/wallet.module';
 import { CouponViewLogEntity } from '../entity/coupon.view.log.entity';
 import { DeliveryCutoverModule } from '../delivery/delivery.cutover.module';
+import { CustomerCancelIntentRecoverySchedule } from './customer.cancel-intent.recovery.schedule';
 
 @Module({
   imports: [
@@ -41,6 +42,6 @@ import { DeliveryCutoverModule } from '../delivery/delivery.cutover.module';
     DeliveryCutoverModule,
   ],
   controllers: [CustomerServiceController],
-  providers: [CustomerServiceService],
+  providers: [CustomerServiceService, CustomerCancelIntentRecoverySchedule],
 })
 export class CustomerServiceModule {}

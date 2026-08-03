@@ -22,6 +22,13 @@ export class OrderDeliveryRefundEntity {
   @Index('uk_order_delivery_refund_delivery', { unique: true })
   @Column({ type: 'int', name: 'order_delivery_id' })
   orderDeliveryId: number;
+  @Index('uk_order_delivery_refund_attempt', { unique: true })
+  @Column({ type: 'bigint', name: 'refund_attempt_id', nullable: true })
+  refundAttemptId: string | null;
+
+  @Index('uk_order_delivery_refund_external_idem', { unique: true })
+  @Column({ type: 'varchar', length: 191, name: 'external_idempotency_key', nullable: true })
+  externalIdempotencyKey: string | null;
 
   @Column({ type: 'int', name: 'user_id' })
   userId: number;

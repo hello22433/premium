@@ -42,6 +42,8 @@ export const ALLOWED_WORKFLOW_STATUSES: Record<DeliveryExclusiveOp, DeliveryWork
     DeliveryWorkflowStatus.PENDING_RECONCILE,
     DeliveryWorkflowStatus.OPS_REVIEW_REQUIRED,
     DeliveryWorkflowStatus.FAILED_FINAL,
+    DeliveryWorkflowStatus.CANCELLED,
+    DeliveryWorkflowStatus.RESOLVED_MANUALLY_FAILED,
   ],
   [DeliveryExclusiveOp.MANUAL_RESEND]: [
     DeliveryWorkflowStatus.FAILED_FINAL,
@@ -450,6 +452,7 @@ export class DeliveryWorkflowSlotService {
                         WHERE ra.order_delivery_id = :orderDeliveryId
                           AND ra.status IN ('CLAIMED','SUBMITTING','RECONCILING','UNKNOWN'))`,
         );
+        qb.andWhere("refunded_at IS NULL AND (refund_status IS NULL OR refund_status = 'FAILED')");
         break;
 
       default:

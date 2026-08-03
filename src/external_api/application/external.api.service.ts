@@ -6,6 +6,7 @@ import dayjs from 'dayjs';
 
 import { OrderEntity } from '../../entity/order.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
+import { DeliveryWorkflowEntity } from '../../entity/delivery.workflow.entity';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
 import { ProductEntity } from '../../entity/product.entity';
 import { UserEntity } from '../../entity/user.entity';
@@ -13,6 +14,12 @@ import { DeliverySendHistoryEntity } from '../../entity/delivery.send.history.en
 import { UserSyncProductEventMappingEntity } from '../../entity/user.sync.product.event.mapping.entity';
 import { ExternalApiAccountEntity } from '../../entity/external.api.account.entity';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
+import { DeliveryCancelIntentEntity } from '../../entity/delivery.cancel.intent.entity';
+import {
+  OrderPaymentRefundEventEntity,
+  OrderPaymentRefundEventType,
+} from '../../entity/order.payment.refund.event.entity';
+import { WalletTransactionEntity } from '../../entity/wallet.transaction.entity';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
 import { IUserSyncProductStatus } from '../../user_sync_product/interface/user.sync.product.status';
 import { IUserAuthority } from '../../user/interface/user.authority';
@@ -48,6 +55,19 @@ import {
 } from '../../delivery/interface/legacy.delivery.entry.point';
 import { SsgRecoveryService } from '../../delivery/application/ssg-recovery.service';
 import { SsgRecoveryResult } from '../../delivery/interface/ssg.recovery.result';
+import {
+  ExecuteRefundContext,
+  RefundAttemptExecutorService,
+} from '../../delivery/application/refund-attempt-executor.service';
+import { RefundAttemptStatus, RefundScope } from '../../delivery/interface/refund.attempt.status';
+import { MessageResultReconcileService } from '../../delivery/application/message-result-reconcile.service';
+import { DeliverySlot, DeliveryWorkflowSlotService } from '../../delivery/application/delivery-workflow-slot.service';
+import { DeliveryExclusiveOp, DeliveryWorkflowStatus } from '../../delivery/interface/delivery.workflow.status';
+import { DeliveryCancelIntentService } from '../../delivery/application/delivery-cancel-intent.service';
+import {
+  DeliveryCancelIntentSource,
+  DeliveryCancelIntentStatus,
+} from '../../delivery/interface/delivery.cancel.intent.status';
 import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
 import { ProductService } from '../../product/application/product.service';
 import { OrderFromService } from '../../order_from/application/order.from.service';
@@ -94,7 +114,6 @@ import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
-import { OrderPaymentRefundEventType } from '../../entity/order.payment.refund.event.entity';
 import { OrderDeliveryAttemptEntity, OrderDeliveryAttemptType } from '../../entity/order.delivery.attempt.entity';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogActionType } from '../../activity_log/interface/activity.log.action.type';
@@ -167,6 +186,10 @@ export class ExternalApiService {
     private legacyWalletCreditSyncService: LegacyWalletCreditSyncService,
     private activityLogService: ActivityLogService,
     private cutoverGuard: DeliveryCutoverGuardService,
+    private refundAttemptExecutor: RefundAttemptExecutorService,
+    private messageResultReconcileService: MessageResultReconcileService,
+    private deliveryWorkflowSlotService: DeliveryWorkflowSlotService,
+    private deliveryCancelIntentService: DeliveryCancelIntentService,
   ) {}
 
   // 주문의 billing user(+company) 로드. getBillingUserId(order)=clientUserId ?? userId.
@@ -388,6 +411,41 @@ export class ExternalApiService {
     );
   }
 
+  @Transactional()
+  private async refundLegacyBalanceAndAudit(input: {
+    billingUser: UserEntity;
+    order: OrderEntity;
+    orderDelivery: OrderDeliveryEntity;
+    sourcePath: 'EXTERNAL_FAIL' | 'EXTERNAL_CANCEL';
+    transactionType: 'FAIL_REFUND' | 'DISCARD_REFUND';
+    idempotencyKey: string;
+    memo: string;
+    refundLedgerId: number | null;
+  }): Promise<void> {
+    const { billingUser, order, orderDelivery, sourcePath, transactionType, idempotencyKey, memo, refundLedgerId } =
+      input;
+    const balanceChange = await this.refundBalance(billingUser, order.settleAmount);
+    await this.legacyWalletCreditSyncService.syncDeposit(this.dataSource.manager, {
+      billingUserId: billingUser.id,
+      orderId: order.id,
+      orderDeliveryId: orderDelivery.id,
+      delta: order.settleAmount,
+      type: transactionType,
+      idempotencyKey,
+      memo,
+    });
+    await this.logExternalRefundActivity({
+      billingUser,
+      order,
+      orderDelivery,
+      amount: order.settleAmount,
+      sourcePath,
+      memo,
+      refundLedgerId,
+      balanceChange,
+    });
+  }
+
   // ─── Wallet 환불 (WALLET cutover 모드) ───────────────────
   // 내부 환불 경로(delivery.batch.service refundForFail / customer.service restoreBalanceOnDiscard)를 미러.
   //   latest INITIAL attempt 조회(없으면 throw=drift) → RefundPoolService.refund(same-tx) → R4 차감 mirror 의 역.
@@ -402,63 +460,63 @@ export class ExternalApiService {
     eventType: OrderPaymentRefundEventType,
     idempotencyPrefix: 'fail_refund' | 'discard_refund',
   ): Promise<void> {
-    const manager = this.dataSource.manager;
-    const user = billingUser;
+    await this.dataSource.transaction('READ COMMITTED', async (manager) => {
+      const user = billingUser;
+      const latestAttempt = await manager.findOne(OrderDeliveryAttemptEntity, {
+        where: {
+          orderDeliveryId: orderDelivery.id,
+          attemptType: OrderDeliveryAttemptType.INITIAL,
+        },
+        order: { id: 'DESC' },
+      });
+      if (!latestAttempt) {
+        throw new Error(
+          `wallet-managed delivery ${orderDelivery.id} missing INITIAL attempt — drift, aborting external refund`,
+        );
+      }
 
-    const latestAttempt = await manager.findOne(OrderDeliveryAttemptEntity, {
-      where: {
-        orderDeliveryId: orderDelivery.id,
-        attemptType: OrderDeliveryAttemptType.INITIAL,
-      },
-      order: { id: 'DESC' },
-    });
-    if (!latestAttempt) {
-      throw new Error(
-        `wallet-managed delivery ${orderDelivery.id} missing INITIAL attempt — drift, aborting external refund`,
+      // R4 차감 mirror 역복원에 쓸 원 차감 총액. RefundPoolService 는 *RestoredAmount 카운터만 증가시키므로
+      // depositUsedAmount/creditUsedAmount/creditExcessAmount 는 원 차감값 그대로 보존된다.
+      const allocation = await manager.findOne(OrderPaymentAllocationEntity, {
+        where: { orderId: order.id },
+      });
+      if (!allocation) {
+        throw new Error(`wallet-managed order ${order.id} missing allocation — drift, aborting external refund`);
+      }
+
+      const refundResult = await this.refundPoolService.refund(
+        {
+          orderId: order.id,
+          eventType,
+          targetDeliveryIds: [orderDelivery.id],
+          idempotencyKeyPrefix: `${this.walletRefundKeyPrefix(idempotencyPrefix, order, orderDelivery)}${latestAttempt.id}`,
+        },
+        manager,
       );
-    }
 
-    // R4 차감 mirror 역복원에 쓸 원 차감 총액. RefundPoolService 는 *RestoredAmount 카운터만 증가시키므로
-    // depositUsedAmount/creditUsedAmount/creditExcessAmount 는 원 차감값 그대로 보존된다.
-    const allocation = await manager.findOne(OrderPaymentAllocationEntity, {
-      where: { orderId: order.id },
-    });
-    if (!allocation) {
-      throw new Error(`wallet-managed order ${order.id} missing allocation — drift, aborting external refund`);
-    }
+      // R4 legacy mirror 역복원 (차감의 정확한 역). RefundPoolService 는 legacy 컬럼 미터치 → 풀 기준 이중복원 없음.
+      // 단, 멱등 retry(alreadyRefunded) 면 refund 는 no-op 인데 mirror 는 무조건 전액 복원해 잔액이 이중 반영된다.
+      // → 신규 환불이 실제 적용된 경우(alreadyRefunded=false)에만 mirror 를 실행한다.
+      if (refundResult.alreadyRefunded) {
+        this.logger.warn(
+          `[EXTERNAL_REFUND] 멱등 retry — 풀 환불 no-op, legacy mirror skip (이중복원 방지). orderDelivery.id: ${orderDelivery.id}`,
+        );
+        return;
+      }
 
-    const refundResult = await this.refundPoolService.refund(
-      {
-        orderId: order.id,
-        eventType,
-        targetDeliveryIds: [orderDelivery.id],
-        idempotencyKeyPrefix: `${idempotencyPrefix}:${order.id}:${orderDelivery.id}:${latestAttempt.id}`,
-      },
-      manager,
-    );
-
-    // R4 legacy mirror 역복원 (차감의 정확한 역). RefundPoolService 는 legacy 컬럼 미터치 → 풀 기준 이중복원 없음.
-    // 단, 멱등 retry(alreadyRefunded) 면 refund 는 no-op 인데 mirror 는 무조건 전액 복원해 잔액이 이중 반영된다.
-    // → 신규 환불이 실제 적용된 경우(alreadyRefunded=false)에만 mirror 를 실행한다.
-    if (refundResult.alreadyRefunded) {
-      this.logger.warn(
-        `[EXTERNAL_REFUND] 멱등 retry — 풀 환불 no-op, legacy mirror skip (이중복원 방지). orderDelivery.id: ${orderDelivery.id}`,
-      );
-      return;
-    }
-
-    const isCompany = user.company?.balanceManagementType === 'COMPANY';
-    if (isCompany) {
-      await manager.query('UPDATE user_company SET balance = balance + ? WHERE id = ?', [
-        allocation.depositUsedAmount,
-        user.companyId,
+      const isCompany = user.company?.balanceManagementType === 'COMPANY';
+      if (isCompany) {
+        await manager.query('UPDATE user_company SET balance = balance + ? WHERE id = ?', [
+          allocation.depositUsedAmount,
+          user.companyId,
+        ]);
+      }
+      const allSettleDelta = allocation.creditUsedAmount + allocation.creditExcessAmount;
+      await manager.query('UPDATE user SET all_settle_amount = all_settle_amount - ? WHERE id = ?', [
+        allSettleDelta,
+        user.id,
       ]);
-    }
-    const allSettleDelta = allocation.creditUsedAmount + allocation.creditExcessAmount;
-    await manager.query('UPDATE user SET all_settle_amount = all_settle_amount - ? WHERE id = ?', [
-      allSettleDelta,
-      user.id,
-    ]);
+    });
   }
 
   // ─── 정산 헬퍼 ──────────────────────────────────────────
@@ -1110,40 +1168,72 @@ export class ExternalApiService {
 
   // ─── Phase C: 실패 처리 + 환불 ──────────────────────────
 
-  @Transactional()
   private async phaseC_handleFailure(
     order: OrderEntity,
     orderDelivery: OrderDeliveryEntity,
     account: ExternalApiAccountEntity,
     error: any,
   ) {
-    // 컷오버 전환 건 거부(§9 인벤토리 #6). 전환 건의 발송 실패 환불도 refund_attempt 로만 실행한다.
-    await this.cutoverGuard.assertLegacyAllowed(orderDelivery.id, LegacyDeliveryEntryPoint.EXTERNAL_API_FAIL_REFUND);
+    const isCutover = await this.cutoverGuard.isCutover(orderDelivery.id);
+    if (!isCutover) {
+      await this.phaseC_handleLegacyFailure(order, orderDelivery, account, error);
+      return;
+    }
 
+    await this.phaseC_persistFailure(order, orderDelivery, error);
+    await this.messageResultReconcileService.markWorkflowFailedIfSettled(orderDelivery.id, new Date());
+    await this.refundAttemptExecutor.execute({
+      orderDeliveryId: orderDelivery.id,
+      amount: order.settleAmount,
+      scope: RefundScope.FULL,
+      externalIdempotencyKey: `external-fail:${orderDelivery.id}:${ulid()}`,
+      execute: async (fencing) => {
+        await this.phaseC_executeFailureRefund(order, orderDelivery, account, fencing);
+        return { status: RefundAttemptStatus.SUCCEEDED };
+      },
+    });
+  }
+
+  @Transactional()
+  private async phaseC_handleLegacyFailure(
+    order: OrderEntity,
+    orderDelivery: OrderDeliveryEntity,
+    account: ExternalApiAccountEntity,
+    error: any,
+  ): Promise<void> {
+    await this.cutoverGuard.assertLegacyAllowed(orderDelivery.id, LegacyDeliveryEntryPoint.EXTERNAL_API_FAIL_REFUND);
+    await this.phaseC_persistFailure(order, orderDelivery, error);
+    await this.phaseC_executeFailureRefund(order, orderDelivery, account);
+  }
+
+  @Transactional()
+  private async phaseC_persistFailure(
+    order: OrderEntity,
+    orderDelivery: OrderDeliveryEntity,
+    error: any,
+  ): Promise<void> {
     orderDelivery.status = IOrderDeliveryStatus.FAIL;
     orderDelivery.apiErrorMessage = error?.message?.substring(0, 500) ?? null;
     if (!orderDelivery.failedAt) {
       orderDelivery.failedAt = new Date();
     }
-    // 성공 경로와 같은 컬럼 계약. 실패 경로가 특히 중요하다 — barCode 는 persistIssuedPin 이
-    // 이미 영속했으므로, 발급까지 성공하고 발송만 실패한 건은 FAIL 행에 유효 PIN 이 남는다.
-    // save(merge) 였다면 그 사이 들어온 폐기의 coupon_status 까지 되돌려 "환불됐는데 살아있는 핀"
-    // 을 만들 수 있었다.
     await this.persistPhaseCResult(orderDelivery);
 
     order.status = IOrderStatus.DELIVERY_CANCEL;
     await this.orderRepository.save(order);
+  }
 
-    // 매핑모드: 환불/회사모드/ledger claim 을 billing user 기준으로 (단순모드는 account.user=billingUser 동일).
+  private async phaseC_executeFailureRefund(
+    order: OrderEntity,
+    orderDelivery: OrderDeliveryEntity,
+    account: ExternalApiAccountEntity,
+    refundExecution?: ExecuteRefundContext,
+  ): Promise<void> {
     const billingUser = await this.loadOrderBillingUser(order, account.user);
-
     const isCompanyMode = billingUser.company?.balanceManagementType === 'COMPANY';
     const isSsg = order.type === IOrderType.SSG && !!orderDelivery.ssgEventId;
     const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(order.id, this.dataSource.manager);
 
-    // R7-A: claim 멱등 게이트 (내부 batch 패턴).
-    //  - legacy: 중복이면 이전 처리 성공이므로 short-circuit return.
-    //  - wallet: claim 만 commit 되고 wallet 환불이 실패한 retry 케이스 가능 → 흡수 후 wallet 재시도 진행.
     try {
       await this.refundLedgerService.claim({
         orderDeliveryId: orderDelivery.id,
@@ -1155,9 +1245,8 @@ export class ExternalApiService {
         sourcePath: 'EXTERNAL_FAIL',
         operatorUserId: null,
         memo: `외부 API 발송 실패 환불 (주문번호: ${order.id})`,
-        // SSG 주문은 ledger.ssg_balance_settled 를 false 로 시작 → resolver 가 RESTORED/SKIPPED_CONFIRMED
-        // 반환 시 markSsgSettled 로 true 갱신. DEFERRED 면 false 유지 → 다음 재발송 가드 차단.
         ssgPending: isSsg,
+        refundExecution,
       });
     } catch (claimError) {
       if (claimError instanceof BadRequestException) {
@@ -1174,18 +1263,22 @@ export class ExternalApiService {
       }
     }
 
-    // plans/ssg-balance-refactor.md PR3.C — 외부 API SSG 주문도 Phase B 실패 시 SSG 행사 잔액 분기 적용.
-    // HIGH-2: 실시간 경로도 sweep 과 동일한 단일 CAS 게이트(recoverWithLease)를 경유한다.
-    //   - resolver 직접 호출(우회) 시 sweep 과 race → 별도 게이트 2개. recoverWithLease 가 token-fenced lease 로 단일화.
-    //   - CAS WHERE(settled=false AND lease free)가 "이미 settled/타 actor 진행중"을 거른다 → 별도 isSsgSettled 선체크 불필요.
-    //   - claim 중복(wallet retry) 케이스도 settled=false 면 CAS 가 claim 해 재실행, settled=true 면 SKIPPED_NO_CLAIM.
     if (isSsg) {
-      const result = await this.ssgRecoveryService.recoverWithLease(
-        orderDelivery.id,
-        orderDelivery.ssgEventId!,
-        order.id,
-        order.sendAmount,
-      );
+      const result = refundExecution
+        ? await this.ssgRecoveryService.recoverWithLease(
+            orderDelivery.id,
+            orderDelivery.ssgEventId!,
+            order.id,
+            order.sendAmount,
+            undefined,
+            refundExecution,
+          )
+        : await this.ssgRecoveryService.recoverWithLease(
+            orderDelivery.id,
+            orderDelivery.ssgEventId!,
+            order.id,
+            order.sendAmount,
+          );
       if (result === SsgRecoveryResult.DEFERRED) {
         this.logger.error(
           `[EXTERNAL_FAIL] SSG 잔액 보정 DEFERRED — ledger.ssg_balance_settled=false 유지. 운영 점검 필요. orderDelivery.id: ${orderDelivery.id}`,
@@ -1193,10 +1286,7 @@ export class ExternalApiService {
       }
     }
 
-    // R2: 환불 wallet 분기. wallet-managed 면 풀 기반 환불 + R4 차감 mirror 역복원,
-    // 그 외(LEGACY/SHADOW)는 기존 raw refundBalance 유지(회귀 0).
     const refundLedgerId = await this.refundLedgerService.getLedgerId(orderDelivery.id);
-
     if (isWalletManaged) {
       await this.refundViaWallet(
         billingUser,
@@ -1205,29 +1295,19 @@ export class ExternalApiService {
         OrderPaymentRefundEventType.FAIL_REFUND,
         'fail_refund',
       );
-    } else {
-      const balanceChange = await this.refundBalance(billingUser, order.settleAmount);
-      // 레거시 예치금 wallet 동기화 (same-tx). settlement_code 단일 wallet 로 수렴(isCompanyMode 무관 1회).
-      await this.legacyWalletCreditSyncService.syncDeposit(this.dataSource.manager, {
-        billingUserId: billingUser.id,
-        orderId: order.id,
-        orderDeliveryId: orderDelivery.id,
-        delta: order.settleAmount,
-        type: 'FAIL_REFUND',
-        idempotencyKey: `legacy_fail_refund:${order.id}:${orderDelivery.id}:deposit`,
-        memo: `외부 API 발송 실패 환불 (주문번호: ${order.id})`,
-      });
-      await this.logExternalRefundActivity({
-        billingUser,
-        order,
-        orderDelivery,
-        amount: order.settleAmount,
-        sourcePath: 'EXTERNAL_FAIL',
-        memo: `외부 API 발송 실패 환불 (주문번호: ${order.id})`,
-        refundLedgerId,
-        balanceChange,
-      });
+      return;
     }
+
+    await this.refundLegacyBalanceAndAudit({
+      billingUser,
+      order,
+      orderDelivery,
+      sourcePath: 'EXTERNAL_FAIL',
+      transactionType: 'FAIL_REFUND',
+      idempotencyKey: `legacy_fail_refund:${order.id}:${orderDelivery.id}:deposit`,
+      memo: `외부 API 발송 실패 환불 (주문번호: ${order.id})`,
+      refundLedgerId,
+    });
   }
 
   // ─── 주문 상태 조회 ─────────────────────────────────────
@@ -1412,6 +1492,101 @@ export class ExternalApiService {
     }
   }
 
+  async reconcileOpenCancelIntents(limit = 50): Promise<void> {
+    const intents = await this.deliveryCancelIntentService.findOpen(DeliveryCancelIntentSource.EXTERNAL_API, limit);
+    for (const intent of intents) {
+      try {
+        await this.reconcileCancelIntent(intent);
+      } catch (error) {
+        await this.deliveryCancelIntentService.markReconciling(
+          intent.id,
+          `EXTERNAL_RECONCILE_FAILED:${this.safeErrorMessage(error)}`,
+        );
+        this.logger.error(
+          `[CANCEL_INTENT] 외부 API 재조정 실패. intentId=${intent.id}, orderDeliveryId=${intent.orderDeliveryId}`,
+          error,
+        );
+      }
+    }
+  }
+
+  private async reconcileCancelIntent(intent: DeliveryCancelIntentEntity): Promise<void> {
+    const acquired = await this.deliveryWorkflowSlotService.acquire({
+      orderDeliveryId: intent.orderDeliveryId,
+      op: DeliveryExclusiveOp.DISCARD,
+    });
+    if (!acquired.acquired) {
+      return;
+    }
+
+    const slot = acquired.slot;
+    let slotOwned = true;
+    try {
+      const claimed = await this.deliveryCancelIntentService.claimForReconcile(intent.id, slot);
+      let status = this.deliveryCancelIntentService.effectiveStatus(claimed);
+      const orderDelivery = await this.orderDeliveryRepository.findOne({
+        where: { id: intent.orderDeliveryId },
+        relations: [
+          'orderProductMapping',
+          'orderProductMapping.order',
+          'orderProductMapping.product',
+          'orderProductMapping.product.partnerCompany',
+          'choiceSelectProduct',
+          'choiceSelectProduct.partnerCompany',
+        ],
+      });
+      if (!orderDelivery) {
+        throw new Error(`cancel intent delivery not found: ${intent.orderDeliveryId}`);
+      }
+
+      const order = orderDelivery.orderProductMapping.order;
+      const billingUserId = order.clientUserId ?? order.userId;
+      const billingUser = await this.userRepository.findOne({
+        where: { id: billingUserId },
+        relations: ['company'],
+      });
+      if (!billingUser) {
+        throw new Error(`cancel intent billing user not found: ${billingUserId}`);
+      }
+      const account = { user: billingUser } as ExternalApiAccountEntity;
+
+      if (status === DeliveryCancelIntentStatus.PENDING) {
+        const product = orderDelivery.orderProductMapping.product;
+        if (orderDelivery.barCode && product?.partnerCompany) {
+          const refreshed = await this.partnerCompanyExternService.refreshCouponStatus(orderDelivery);
+          if (refreshed.couponStatus === OrderDeliveryCouponStatus.NOT_USED) {
+            await this.partnerCompanyExternService.cancelByExternalApi(orderDelivery);
+          } else if (
+            refreshed.couponStatus !== OrderDeliveryCouponStatus.CANCEL &&
+            refreshed.couponStatus !== OrderDeliveryCouponStatus.REFUND_CANCEL
+          ) {
+            throw new Error(`partner cancellation cannot resume from: ${refreshed.couponStatus ?? 'UNKNOWN'}`);
+          }
+        }
+        await this.deliveryCancelIntentService.markExternalCancelled(claimed.id, slot);
+        status = DeliveryCancelIntentStatus.CANCEL_CONFIRMED;
+      }
+
+      if (status === DeliveryCancelIntentStatus.CANCEL_CONFIRMED) {
+        await this.processCutoverCancelRefund(order, orderDelivery, account, slot, claimed.id);
+        slotOwned = false;
+        return;
+      }
+
+      if (status === DeliveryCancelIntentStatus.DB_APPLIED) {
+        if (!(await this.deliveryWorkflowSlotService.release(slot))) {
+          throw new Error(`cancel intent DISCARD slot release failed: ${claimed.id}`);
+        }
+        slotOwned = false;
+        await this.executeCutoverCancelRefund(order, orderDelivery, account, claimed.id);
+      }
+    } finally {
+      if (slotOwned) {
+        await this.deliveryWorkflowSlotService.release(slot);
+      }
+    }
+  }
+
   async cancelOrder(
     account: ExternalApiAccountEntity,
     trId: string,
@@ -1426,29 +1601,31 @@ export class ExternalApiService {
       throw new ExternalApiException('3009', '신세계 상품권은 폐기할 수 없습니다');
     }
 
-    // 컷오버 전환 건은 취소도 legacy 경로로 처리하지 않는다(§9 인벤토리 #7).
-    // 협력사 취소는 비가역이라 **호출 전** 최상단에서 막아야 한다. 뒤쪽 processCancelRefund 가드만
-    // 있으면 "협력사 쿠폰은 죽었는데 환불 경로는 거부" 상태가 되므로 여기서 먼저 닫는다.
-    await this.cutoverGuard.assertLegacyAllowed(orderDelivery.id, LegacyDeliveryEntryPoint.EXTERNAL_API_CANCEL_REFUND);
+    const isCutover = await this.cutoverGuard.isCutover(orderDelivery.id);
+    let discardSlot: DeliverySlot | null = null;
+    let mutationClaimAt: Date | null = null;
+    let cancelIntentId: string | null = null;
 
-    // D3-55 후속: 변형 lease 로 재발행 진행중 창을 입구에서 닫는다.
-    // 재발행 tip 은 INSERT 시점부터 lease 를 보유하므로, 발급/발송 중인 tip 취소는 3010(일시적, 재시도 유도).
-    // 과거 status/actualSendAt 기반 가드는 살아있는 FAIL_SMS tip 을 오차단해 제거했던 이력이 있다(리뷰2/3).
-    const mutationClaimAt = new Date();
-    if (!(await this.acquireMutationLease(orderDelivery.id, mutationClaimAt))) {
-      throw new ExternalApiException('3010', '해당 주문에 다른 처리가 진행 중입니다. 잠시 후 다시 시도해 주세요.');
+    if (isCutover) {
+      const acquired = await this.deliveryWorkflowSlotService.acquire({
+        orderDeliveryId: orderDelivery.id,
+        op: DeliveryExclusiveOp.DISCARD,
+      });
+      if (!acquired.acquired) {
+        throw new ExternalApiException('3010', '해당 주문에 다른 처리가 진행 중입니다. 잠시 후 다시 시도해 주세요.');
+      }
+      discardSlot = acquired.slot;
+    } else {
+      await this.cutoverGuard.assertLegacyAllowed(
+        orderDelivery.id,
+        LegacyDeliveryEntryPoint.EXTERNAL_API_CANCEL_REFUND,
+      );
+      mutationClaimAt = new Date();
+      if (!(await this.acquireMutationLease(orderDelivery.id, mutationClaimAt))) {
+        throw new ExternalApiException('3010', '해당 주문에 다른 처리가 진행 중입니다. 잠시 후 다시 시도해 주세요.');
+      }
+      orderDelivery.mutationClaimedAt = mutationClaimAt;
     }
-    // 메모리 엔티티에도 lease 를 반영한다. orderDelivery 는 findOrderDeliveryByTrId 가 full entity 로
-    // 로드한 스냅샷이라 mutationClaimedAt=null 이고, acquireMutationLease 는 DB row 만 UPDATE 한다.
-    //
-    // 종전에는 이것이 **필수 방어**였다: processCancelRefund 가 save(orderDelivery)(=merge) 를 했고,
-    // 그 merge 가 "메모리 null vs DB claimAt" 을 변경으로 인식해 mutation_claimed_at=NULL 을 써
-    // 환불 도중 자기 lease 를 스스로 해제했다.
-    // 그 save 는 targeted update + fencing 으로 교체됐고, fencing 은 이 필드가 아니라
-    // mutationClaimAt 지역변수를 직접 조건으로 쓴다 — 즉 더는 이 동기화에 의존하지 않는다.
-    // 그래도 남긴다: 이 엔티티를 읽는 하위 코드가 실제 소유 상태를 보는 것이 맞고,
-    // 누군가 다시 save 를 들여와도 같은 사고가 재발하지 않는다.
-    orderDelivery.mutationClaimedAt = mutationClaimAt;
     try {
       // lease 획득 전 스냅샷은 stale 일 수 있다(직전까지 진행되던 재발행이 barCode/couponStatus 를 갱신).
       // 아래 가드와 "barCode 있으면 협력사 취소" 판단이 옛 값으로 내려가지 않도록 volatile 컬럼을 재조회한다.
@@ -1492,6 +1669,22 @@ export class ExternalApiService {
         throw new ExternalApiException('3009', '취소 불가 상품');
       }
 
+      if (discardSlot) {
+        const cancelIntent = await this.deliveryCancelIntentService.create(
+          orderDelivery.id,
+          DeliveryCancelIntentSource.EXTERNAL_API,
+          discardSlot,
+          {
+            requestedCouponStatus: OrderDeliveryCouponStatus.CANCEL,
+            refundRequired: true,
+            requestedByUserId: order.clientUserId ?? order.userId,
+            expectedRefundAmount: order.settleAmount,
+            expectedRefundScope: RefundScope.FULL,
+          },
+        );
+        cancelIntentId = cancelIntent.id;
+      }
+
       if (orderDelivery.barCode && product?.partnerCompany) {
         try {
           await this.partnerCompanyExternService.cancelByExternalApi(orderDelivery);
@@ -1500,12 +1693,33 @@ export class ExternalApiService {
           throw translatePartnerError(error, 'cancel');
         }
       }
+      if (discardSlot && cancelIntentId) {
+        await this.deliveryCancelIntentService.markExternalCancelled(cancelIntentId, discardSlot);
+      }
 
-      await this.processCancelRefund(order, orderDelivery, account, mutationClaimAt);
+      if (discardSlot) {
+        await this.processCutoverCancelRefund(order, orderDelivery, account, discardSlot, cancelIntentId!);
+        discardSlot = null;
+      } else {
+        await this.processCancelRefund(order, orderDelivery, account, mutationClaimAt!);
+      }
 
       return ExternalApiResponse.success();
+    } catch (error) {
+      if (cancelIntentId) {
+        await this.deliveryCancelIntentService.markReconciling(
+          cancelIntentId,
+          `EXTERNAL_CANCEL_FLOW_FAILED:${this.safeErrorMessage(error)}`,
+        );
+      }
+      throw error;
     } finally {
-      await this.releaseMutationLease(orderDelivery.id, mutationClaimAt);
+      if (discardSlot) {
+        await this.deliveryWorkflowSlotService.release(discardSlot);
+      }
+      if (mutationClaimAt) {
+        await this.releaseMutationLease(orderDelivery.id, mutationClaimAt);
+      }
     }
   }
 
@@ -1564,9 +1778,261 @@ export class ExternalApiService {
     order.status = IOrderStatus.DELIVERY_CANCEL;
     await this.orderRepository.save(order);
 
-    // 매핑모드: 취소 환불/회사모드/ledger claim 을 billing user 기준으로 (단순모드 동일).
-    const billingUser = await this.loadOrderBillingUser(order, account.user);
+    await this.executeCancelRefund(order, orderDelivery, account);
+  }
 
+  private async processCutoverCancelRefund(
+    order: OrderEntity,
+    orderDelivery: OrderDeliveryEntity,
+    account: ExternalApiAccountEntity,
+    slot: DeliverySlot,
+    cancelIntentId: string,
+  ): Promise<void> {
+    const discardedAt = new Date();
+    await this.dataSource.transaction(async (manager) => {
+      await manager.getRepository(OrderDeliveryEntity).update(
+        { id: orderDelivery.id },
+        {
+          status: IOrderDeliveryStatus.CANCEL,
+          couponStatus: OrderDeliveryCouponStatus.CANCEL,
+          discardedAt,
+        },
+      );
+      await manager.getRepository(OrderEntity).update({ id: order.id }, { status: IOrderStatus.DELIVERY_CANCEL });
+      const transitioned = await manager
+        .getRepository(DeliveryWorkflowEntity)
+        .createQueryBuilder()
+        .update(DeliveryWorkflowEntity)
+        .set({
+          workflowStatus: DeliveryWorkflowStatus.CANCELLED,
+          stateEnteredAt: discardedAt,
+          activeExclusiveOp: null,
+          exclusiveOwnerToken: null,
+          exclusiveLeaseExpiresAt: null,
+          workflowVersion: () => 'workflow_version + 1',
+        })
+        .where('order_delivery_id = :orderDeliveryId', { orderDeliveryId: orderDelivery.id })
+        .andWhere('active_exclusive_op = :op', { op: DeliveryExclusiveOp.DISCARD })
+        .andWhere('exclusive_owner_token = :ownerToken', { ownerToken: slot.ownerToken })
+        .andWhere('workflow_version = :workflowVersion', { workflowVersion: slot.workflowVersion })
+        .execute();
+      if (!transitioned.affected) {
+        throw new ExternalApiException('3010', '취소 처리 소유권이 만료되었습니다. 다시 시도해 주세요.');
+      }
+      await this.deliveryCancelIntentService.markDbApplied(cancelIntentId, slot, manager, discardedAt);
+    });
+
+    orderDelivery.status = IOrderDeliveryStatus.CANCEL;
+    orderDelivery.couponStatus = OrderDeliveryCouponStatus.CANCEL;
+    orderDelivery.discardedAt = discardedAt;
+    order.status = IOrderStatus.DELIVERY_CANCEL;
+
+    await this.executeCutoverCancelRefund(order, orderDelivery, account, cancelIntentId);
+  }
+
+  private async executeCutoverCancelRefund(
+    order: OrderEntity,
+    orderDelivery: OrderDeliveryEntity,
+    account: ExternalApiAccountEntity,
+    cancelIntentId: string,
+  ): Promise<void> {
+    const intent = await this.deliveryCancelIntentService.getRequired(cancelIntentId);
+    if (intent.expectedRefundAmount !== order.settleAmount || intent.expectedRefundScope !== RefundScope.FULL) {
+      throw new Error(`cancel intent refund expectation mismatch: ${cancelIntentId}`);
+    }
+    const boundAttempt = intent.refundAttemptId
+      ? await this.refundAttemptExecutor.findBoundAttempt({
+          attemptId: intent.refundAttemptId,
+          orderDeliveryId: orderDelivery.id,
+          amount: intent.expectedRefundAmount,
+          scope: RefundScope.FULL,
+        })
+      : null;
+    if (intent.refundAttemptId && !boundAttempt) {
+      throw new Error(`cancel intent refund attempt binding mismatch: ${cancelIntentId}`);
+    }
+    if (boundAttempt?.status === RefundAttemptStatus.SUCCEEDED) {
+      await this.deliveryCancelIntentService.markRefundSucceeded(cancelIntentId, {
+        attemptId: boundAttempt.id,
+        orderDeliveryId: orderDelivery.id,
+        amount: intent.expectedRefundAmount,
+        scope: RefundScope.FULL,
+      });
+      return;
+    }
+    if (
+      boundAttempt?.status === RefundAttemptStatus.CLAIMED ||
+      boundAttempt?.status === RefundAttemptStatus.SUBMITTING ||
+      boundAttempt?.status === RefundAttemptStatus.RECONCILING ||
+      boundAttempt?.status === RefundAttemptStatus.UNKNOWN
+    ) {
+      const reconciledStatus = await this.refundAttemptExecutor.reconcile({
+        attemptId: boundAttempt.id,
+        orderDeliveryId: orderDelivery.id,
+        amount: intent.expectedRefundAmount,
+        scope: RefundScope.FULL,
+        inspect: async () => await this.inspectExternalCancelRefund(boundAttempt, order, orderDelivery, account),
+      });
+      if (reconciledStatus === RefundAttemptStatus.SUCCEEDED) {
+        await this.deliveryCancelIntentService.markRefundSucceeded(cancelIntentId, {
+          attemptId: boundAttempt.id,
+          orderDeliveryId: orderDelivery.id,
+          amount: intent.expectedRefundAmount,
+          scope: RefundScope.FULL,
+        });
+      } else {
+        await this.deliveryCancelIntentService.markReconciling(
+          cancelIntentId,
+          `REFUND_${reconciledStatus ?? 'LOCKED'}`,
+        );
+      }
+      return;
+    }
+
+    const refundResult = await this.refundAttemptExecutor.execute({
+      orderDeliveryId: orderDelivery.id,
+      amount: order.settleAmount,
+      scope: RefundScope.FULL,
+      externalIdempotencyKey: `external-cancel:${orderDelivery.id}:${ulid()}`,
+      bindAttempt: async (attempt, manager) => {
+        await this.deliveryCancelIntentService.bindRefundAttempt(cancelIntentId, attempt, manager);
+      },
+      execute: async (fencing) => {
+        await this.executeCancelRefund(order, orderDelivery, account, fencing);
+        return { status: RefundAttemptStatus.SUCCEEDED };
+      },
+    });
+    if (refundResult.status === RefundAttemptStatus.SUCCEEDED) {
+      await this.deliveryCancelIntentService.markRefundSucceeded(cancelIntentId, {
+        attemptId: refundResult.attemptId,
+        orderDeliveryId: orderDelivery.id,
+        amount: order.settleAmount,
+        scope: RefundScope.FULL,
+      });
+    } else {
+      await this.deliveryCancelIntentService.markReconciling(cancelIntentId, `REFUND_${refundResult.status}`);
+    }
+  }
+
+  private async inspectExternalCancelRefund(
+    attempt: { id: string; amount: number },
+    order: OrderEntity,
+    orderDelivery: OrderDeliveryEntity,
+    account: ExternalApiAccountEntity,
+  ): Promise<
+    { status: RefundAttemptStatus.SUCCEEDED } | { status: RefundAttemptStatus.FAILED; reason: string } | null
+  > {
+    const ledger = await this.refundLedgerService.findByAttempt(attempt.id, orderDelivery.id, attempt.amount);
+    // ledger 는 실제 환불보다 먼저 커밋되므로 부재는 미실행 증거다(존재는 아직 성공 증거가 아니다).
+    // 직전 실행이 커밋 전일 가능성은 executor 의 정지 판정이 막는다.
+    if (!ledger) {
+      return {
+        status: RefundAttemptStatus.FAILED,
+        reason: 'REFUND_LEDGER_NOT_CREATED',
+      };
+    }
+    if (ledger.sourcePath !== 'EXTERNAL_CANCEL' || !ledger.ssgBalanceSettled) {
+      return null;
+    }
+
+    const billingUser = await this.loadOrderBillingUser(order, account.user);
+    const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(order.id, this.dataSource.manager);
+    if (isWalletManaged) {
+      // 증거를 이 delivery 의 환불 멱등키 prefix 로 좁힌다. order + eventType + affectedDeliveryIds 만으로는
+      // 과거의 다른 DISCARD_REFUND 이벤트가 이번 attempt 의 성공 증거로 통과한다.
+      const events = await this.dataSource.manager
+        .getRepository(OrderPaymentRefundEventEntity)
+        .createQueryBuilder('event')
+        .where('event.order_id = :orderId', { orderId: order.id })
+        .andWhere('event.event_type = :eventType', {
+          eventType: OrderPaymentRefundEventType.DISCARD_REFUND,
+        })
+        .andWhere('event.reversed_at IS NULL')
+        .andWhere('event.idempotency_key LIKE :prefix', {
+          prefix: `${this.walletRefundKeyPrefix('discard_refund', order, orderDelivery)}%`,
+        })
+        .andWhere(`JSON_CONTAINS(event.affected_delivery_ids, :deliveryId, '$')`, {
+          deliveryId: JSON.stringify(orderDelivery.id),
+        })
+        .getMany();
+      if (events.length === 0) {
+        await this.refundViaWallet(
+          billingUser,
+          order,
+          orderDelivery,
+          OrderPaymentRefundEventType.DISCARD_REFUND,
+          'discard_refund',
+        );
+      } else {
+        this.assertRefundEvidenceAmount(
+          events.reduce((sum, event) => sum + event.refundedGrossBase + event.refundedCardSurchargeAmount, 0),
+          attempt,
+          orderDelivery.id,
+        );
+      }
+    } else {
+      // legacy 는 멱등키가 결정론적이므로 정확히 그 키의 트랜잭션만 증거로 인정한다.
+      const idempotencyKey = `legacy_discard_refund:${order.id}:${orderDelivery.id}:deposit`;
+      const transaction = await this.dataSource.manager.getRepository(WalletTransactionEntity).findOne({
+        where: {
+          idempotencyKey,
+          orderDeliveryId: orderDelivery.id,
+          type: 'DISCARD_REFUND',
+        },
+      });
+      if (!transaction) {
+        await this.refundLegacyBalanceAndAudit({
+          billingUser,
+          order,
+          orderDelivery,
+          sourcePath: 'EXTERNAL_CANCEL',
+          transactionType: 'DISCARD_REFUND',
+          idempotencyKey,
+          memo: `외부 API 취소 환불 (주문번호: ${order.id})`,
+          refundLedgerId: ledger.id,
+        });
+      } else {
+        this.assertRefundEvidenceAmount(transaction.amount, attempt, orderDelivery.id);
+      }
+    }
+
+    return { status: RefundAttemptStatus.SUCCEEDED };
+  }
+
+  /** wallet 환불 이벤트 멱등키의 delivery 단위 prefix. 실행(refundViaWallet)과 증거 조회가 같은 규약을 쓴다. */
+  private walletRefundKeyPrefix(
+    kind: 'fail_refund' | 'discard_refund',
+    order: OrderEntity,
+    orderDelivery: OrderDeliveryEntity,
+  ): string {
+    return `${kind}:${order.id}:${orderDelivery.id}:`;
+  }
+
+  /**
+   * 영구 증거(환불 이벤트·트랜잭션)의 금액이 attempt 가 지시한 환불액과 다르면 성공으로 확정하지 않는다.
+   * 금액이 어긋난 증거로 SUCCEEDED 를 확정하면 attempt ↔ 실제 금전 부작용의 연결이 끊긴다.
+   */
+  private assertRefundEvidenceAmount(
+    refundedAmount: number,
+    attempt: { id: string; amount: number },
+    orderDeliveryId: number,
+  ): void {
+    if (refundedAmount === attempt.amount) {
+      return;
+    }
+    throw new Error(
+      `refund evidence amount mismatch: refundAttemptId=${attempt.id} orderDeliveryId=${orderDeliveryId} ` +
+        `expected=${attempt.amount} actual=${refundedAmount}`,
+    );
+  }
+
+  private async executeCancelRefund(
+    order: OrderEntity,
+    orderDelivery: OrderDeliveryEntity,
+    account: ExternalApiAccountEntity,
+    refundExecution?: ExecuteRefundContext,
+  ): Promise<void> {
+    const billingUser = await this.loadOrderBillingUser(order, account.user);
     const isCompanyMode = billingUser.company?.balanceManagementType === 'COMPANY';
     const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(order.id, this.dataSource.manager);
     await this.refundLedgerService.claim({
@@ -1579,11 +2045,10 @@ export class ExternalApiService {
       sourcePath: 'EXTERNAL_CANCEL',
       operatorUserId: null,
       memo: `외부 API 취소 환불 (주문번호: ${order.id})`,
+      refundExecution,
     });
 
-    // R2: 취소 환불 wallet 분기. cancel 경로는 SSG 차단(cancelOrder:606)이라 SSG resolver 불필요.
     const refundLedgerId = await this.refundLedgerService.getLedgerId(orderDelivery.id);
-
     if (isWalletManaged) {
       await this.refundViaWallet(
         billingUser,
@@ -1592,29 +2057,19 @@ export class ExternalApiService {
         OrderPaymentRefundEventType.DISCARD_REFUND,
         'discard_refund',
       );
-    } else {
-      const balanceChange = await this.refundBalance(billingUser, order.settleAmount);
-      // 레거시 예치금 wallet 동기화 (same-tx). settlement_code 단일 wallet 로 수렴(isCompanyMode 무관 1회).
-      await this.legacyWalletCreditSyncService.syncDeposit(this.dataSource.manager, {
-        billingUserId: billingUser.id,
-        orderId: order.id,
-        orderDeliveryId: orderDelivery.id,
-        delta: order.settleAmount,
-        type: 'DISCARD_REFUND',
-        idempotencyKey: `legacy_discard_refund:${order.id}:${orderDelivery.id}:deposit`,
-        memo: `외부 API 취소 환불 (주문번호: ${order.id})`,
-      });
-      await this.logExternalRefundActivity({
-        billingUser,
-        order,
-        orderDelivery,
-        amount: order.settleAmount,
-        sourcePath: 'EXTERNAL_CANCEL',
-        memo: `외부 API 취소 환불 (주문번호: ${order.id})`,
-        refundLedgerId,
-        balanceChange,
-      });
+      return;
     }
+
+    await this.refundLegacyBalanceAndAudit({
+      billingUser,
+      order,
+      orderDelivery,
+      sourcePath: 'EXTERNAL_CANCEL',
+      transactionType: 'DISCARD_REFUND',
+      idempotencyKey: `legacy_discard_refund:${order.id}:${orderDelivery.id}:deposit`,
+      memo: `외부 API 취소 환불 (주문번호: ${order.id})`,
+      refundLedgerId,
+    });
   }
 
   // ─── 재발송 ─────────────────────────────────────────────
@@ -2168,5 +2623,8 @@ export class ExternalApiService {
       }
     }
     throw new Error('externalTrId 생성 실패');
+  }
+  private safeErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
   }
 }

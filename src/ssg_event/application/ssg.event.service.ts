@@ -36,11 +36,19 @@ import { Transactional } from 'typeorm-transactional';
 import { evaluateSsgEventSignals, SsgBalanceCheckResult, SsgEventSignalResult } from './ssg.balance.guard';
 import { ulid } from 'ulid';
 import { allocateSsgEventsForDeliveries, SsgAllocationIndeterminateError } from '../domain/ssg.event.allocation';
-import { DeliveryCutoverGuardService } from '../../delivery/application/delivery-cutover-guard.service';
+import {
+  DeliveryCutoverGuardService,
+  RefundExecutionFencing,
+} from '../../delivery/application/delivery-cutover-guard.service';
 import { LegacyDeliveryEntryPoint } from '../../delivery/interface/legacy.delivery.entry.point';
 
 // 상세조회 임계경로에서 SSG 외부 API(getAmount) 지연이 페이지 로딩을 묶지 않도록 하는 가드 타임아웃
 const SSG_BALANCE_CHECK_TIMEOUT_MS = 3000;
+// ssg_event 의 금액/일수 컬럼은 MySQL signed int — 범위를 넘으면 insert 가 500 으로 터지므로 등록 단계에서 막는다
+const SSG_EVENT_INT_COLUMN_MAX = 2_147_483_647;
+// 행사 등록 직렬화용 MySQL 네임드 락 (조회 후 저장 사이의 중복 등록 창 차단)
+const SSG_EVENT_REGISTER_LOCK_NAME = 'epopkon:ssg_event:register';
+const SSG_EVENT_REGISTER_LOCK_TIMEOUT_SECONDS = 10;
 
 @Injectable()
 export class SsgEventService {
@@ -518,10 +526,58 @@ export class SsgEventService {
 
   async create(getBody: SsgEventCreateReqDto) {
     const { code, no, order, name, startAt, endAt, couponExpiration, eventPrice } = getBody;
-    const orderInsert = order ? order : 1;
+    // ?? 로 받는다. `order ? order : 1` 은 명시적으로 넘어온 0 을 1 로 삼켜 아래 범위 가드를 통과시킨다.
+    const orderInsert = order ?? 1;
 
-    if (!Number.isInteger(eventPrice) || eventPrice < 1) {
-      throw new BadRequestException('행사 금액은 1원 이상의 정수여야 합니다.');
+    // ★ 상한/정수 검증. DTO 는 @IsNumber 뿐이라 소수·int 초과가 통과하는데,
+    //   그대로 insert 하면 MySQL signed int 컬럼에서 500 으로 터진다.
+    if (!Number.isInteger(orderInsert) || orderInsert < 1 || orderInsert > SSG_EVENT_INT_COLUMN_MAX) {
+      throw new BadRequestException(
+        `행사 순번은 1 이상 ${SSG_EVENT_INT_COLUMN_MAX.toLocaleString('ko-KR')} 이하의 정수여야 합니다.`,
+      );
+    }
+
+    if (!Number.isInteger(couponExpiration) || couponExpiration < 1 || couponExpiration > SSG_EVENT_INT_COLUMN_MAX) {
+      throw new BadRequestException(
+        `쿠폰 유효기간(일)은 1 이상 ${SSG_EVENT_INT_COLUMN_MAX.toLocaleString('ko-KR')} 이하의 정수여야 합니다.`,
+      );
+    }
+
+    if (!Number.isInteger(eventPrice) || eventPrice < 1 || eventPrice > SSG_EVENT_INT_COLUMN_MAX) {
+      throw new BadRequestException(
+        `행사 금액은 1원 이상 ${SSG_EVENT_INT_COLUMN_MAX.toLocaleString('ko-KR')}원 이하의 정수여야 합니다.`,
+      );
+    }
+
+    return this.withRegisterLock(() =>
+      this.insertEvent({ code, no, order: orderInsert, name, startAt, endAt, couponExpiration, eventPrice }),
+    );
+  }
+
+  /**
+   * 수기 등록 확정 구간(중복검사 + 저장). 반드시 등록 락 안에서 호출한다.
+   */
+  @Transactional()
+  private async insertEvent(input: {
+    code: string;
+    no: string;
+    order: number;
+    name: string;
+    startAt: Date;
+    endAt: Date;
+    couponExpiration: number;
+    eventPrice: number;
+  }): Promise<void> {
+    const { code, no, order, name, startAt, endAt, couponExpiration, eventPrice } = input;
+
+    // ★ 동일 행사(행사키+행사코드+순번) 재등록 차단. 운영 데이터에 4분 간격 이중 등록(잔액 1.2억 유령 행사,
+    //   같은 날 삭제)과, 잔액이 바닥나자 같은 키로 1.8억 행사를 새로 만들어 주문 1건을 통과시킨 사례가 있다.
+    //   행사금액이 곧 잔액이라 재등록은 장부에 없는 예산을 만들어낸다 — 금액 추가는 잔액 충전(updateAmount)이 정답.
+    const duplicated = await this.ssgEventRepository.findOne({ where: { code, no, order } });
+    if (duplicated) {
+      throw new BadRequestException(
+        '이미 등록된 행사입니다. 금액을 더하려는 것이면 신규 등록이 아니라 [잔액 충전]을 사용하세요.',
+      );
     }
 
     // endAt을 해당 날짜의 23:59:59로 설정
@@ -530,7 +586,7 @@ export class SsgEventService {
 
     await this.ssgEventRepository.insert({
       code,
-      order: orderInsert,
+      order,
       no: no,
       name,
       startAt: new Date(startAt),
@@ -539,6 +595,39 @@ export class SsgEventService {
       eventPrice,
       eventBalance: eventPrice, // 등록 시 행사금액을 초기 잔액으로 설정
     });
+  }
+
+  /**
+   * 행사 등록 직렬화.
+   *
+   * ★ (code, no, order) 유니크 인덱스를 걸 수 없어서(운영 데이터에 동일 키 2건이 살아 있고 둘 다 사용
+   *   이력 보유) "조회 후 저장" 사이의 창을 DB 제약으로 막을 수 없다. MySQL 네임드 락으로 등록 자체를
+   *   직렬화해 동시 요청이 서로의 중복을 못 보는 상황을 없앤다. 락은 전용 커넥션에서 잡고 풀며(풀 반환으로
+   *   다른 커넥션이 RELEASE 하는 사고 방지), 커밋이 끝난 뒤 해제되도록 트랜잭션 바깥에서 감싼다.
+   *   데이터 정리(id 35 잔액 확정)가 끝나면 유니크 인덱스로 대체한다.
+   */
+  private async withRegisterLock<T>(run: () => Promise<T>): Promise<T> {
+    const queryRunner = this.ssgEventRepository.manager.connection.createQueryRunner();
+    await queryRunner.connect();
+
+    try {
+      const [acquired] = await queryRunner.query('SELECT GET_LOCK(?, ?) AS acquired', [
+        SSG_EVENT_REGISTER_LOCK_NAME,
+        SSG_EVENT_REGISTER_LOCK_TIMEOUT_SECONDS,
+      ]);
+
+      if (Number(acquired?.acquired) !== 1) {
+        throw new BadRequestException('다른 행사 등록이 진행 중입니다. 잠시 후 다시 시도해 주세요.');
+      }
+
+      try {
+        return await run();
+      } finally {
+        await queryRunner.query('SELECT RELEASE_LOCK(?)', [SSG_EVENT_REGISTER_LOCK_NAME]);
+      }
+    } finally {
+      await queryRunner.release();
+    }
   }
 
   /**
@@ -1067,10 +1156,17 @@ export class SsgEventService {
     amount: number,
     orderDeliveryId: number,
     refundLedgerId?: number,
+    refundExecution?: RefundExecutionFencing,
   ): Promise<void> {
-    // 컷오버 전환 건 거부(§9 인벤토리 #9). SSG 행사 잔액은 고객 환불과 다른 원장이지만, 진입은 반드시
-    // refund_attempt 를 거친다(기존 recovery_log 멱등키를 refund_attempt 외부 idempotency key 와 1:1 매핑).
-    await this.cutoverGuard.assertLegacyAllowed(orderDeliveryId, LegacyDeliveryEntryPoint.SSG_EVENT_REFUND);
+    if (refundExecution) {
+      await this.cutoverGuard.assertRefundExecutionAllowed({
+        orderDeliveryId,
+        fencing: refundExecution,
+        entryPoint: LegacyDeliveryEntryPoint.SSG_EVENT_REFUND,
+      });
+    } else {
+      await this.cutoverGuard.assertLegacyAllowed(orderDeliveryId, LegacyDeliveryEntryPoint.SSG_EVENT_REFUND);
+    }
 
     const ssgEvent = await this.findSsgEventForUpdate(ssgEventId);
 
