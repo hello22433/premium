@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { OrderService } from './order.service';
 import { IReportSource } from '../interface/report.source';
+import { IUserAuthority } from '../../user/interface/user.authority';
 
 /**
  * PDF 발행 카운트 경로의 IDOR 방지 (view_scope 검증).
@@ -15,14 +16,19 @@ import { IReportSource } from '../interface/report.source';
  * DIRECT 와 EMAIL 을 같은 '발행 완료'로 분기하므로, EMAIL 을 막아도 DIRECT 로 사용자에게
  * 보이는 결과가 동일하다. 경계는 source 축이 아니라 **주문 소유 축**이다.
  *
+ * 막으려는 것은 **고객사 계정이 남의 회사 주문 상태를 뒤집는 것**이다. 운영자 이상은 면제한다 —
+ * 이메일 발송 3종이 이미 AuthUserSuperAndOperationAdminGuard 를 요구하고, 프론트의 정산 발행
+ * 화면도 permission: [SUPER_ADMIN, OPERATION_ADMIN] 이다. 같은 선을 옮겨 적는 것이다.
+ *
  * 여기서 고정하는 계약:
- *  1) 범위 밖 주문이면 카운트도 activity_log 도 남기지 않고 400
+ *  1) 고객사 계정 + 범위 밖 주문이면 카운트도 activity_log 도 남기지 않고 400
  *  2) 거부 메시지는 존재 여부를 흘리지 않는다 ('주문이 존재하지 않습니다.')
  *  3) 범위 안이면 종전대로 동작한다 (회귀 없음)
  *  4) 검증은 **본체 조회보다 먼저** 돈다 (범위 밖이면 주문 로드 자체를 하지 않는다)
+ *  5) **SUPER_ADMIN / OPERATION_ADMIN 은 범위 밖이어도 통과** — view_scope 조회 자체를 하지 않는다
  */
 
-const BASE_USER = { id: 3, email: 'ops@enmad.com' } as any;
+const CORPORATE_USER = { id: 3, email: 'client@example.com', authority: IUserAuthority.CORPORATE_ADMIN } as any;
 const IP = '127.0.0.1';
 
 type SetupOptions = {
@@ -79,7 +85,7 @@ describe.each([
   ['deliveryCompleteReportPdf', 'deliveryCompleteReportCount', 'deliveryReportLastSource'],
   ['orderCompleteReportPdf', 'orderCompleteReportCount', 'transactionStatementLastSource'],
 ] as const)('%s — view_scope 밖 주문', (method, countColumn, sourceColumn) => {
-  const call = (service: any) => service[method]({ id: 14, source: IReportSource.DIRECT } as any, BASE_USER, IP);
+  const call = (service: any) => service[method]({ id: 14, source: IReportSource.DIRECT } as any, CORPORATE_USER, IP);
 
   it('400 으로 거부한다', async () => {
     const { service } = setupService({ inScope: false });
@@ -124,7 +130,7 @@ describe.each([
   ['deliveryCompleteReportPdf', 'deliveryCompleteReportCount', 'deliveryReportLastSource'],
   ['orderCompleteReportPdf', 'orderCompleteReportCount', 'transactionStatementLastSource'],
 ] as const)('%s — view_scope 안 주문 (회귀 없음)', (method, countColumn, sourceColumn) => {
-  const call = (service: any) => service[method]({ id: 14, source: IReportSource.DIRECT } as any, BASE_USER, IP);
+  const call = (service: any) => service[method]({ id: 14, source: IReportSource.DIRECT } as any, CORPORATE_USER, IP);
 
   it('종전대로 카운트가 오르고 source 가 기록된다', async () => {
     const { service, order } = setupService({ inScope: true });
@@ -141,5 +147,40 @@ describe.each([
     await call(service);
 
     expect(service.activityLogService.createLog).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * 운영자 이상은 view_scope 면제.
+ *
+ * 운영관리자는 자기가 배정되지 않은 주문의 리포트도 발행한다 — 정산 목록(settle.service)이
+ * view_scope 를 적용하지 않아 전체를 보여주기 때문이고 그것이 정상 동선이다.
+ * 운영 DB 실측에서 범위 밖 발행 54건이 전부 OPERATION_ADMIN 2명이었다(고객사는 0건).
+ * 면제하지 않으면 그 사용이 그대로 400 이 된다.
+ */
+describe.each([
+  [IUserAuthority.SUPER_ADMIN, 'deliveryCompleteReportPdf', 'deliveryCompleteReportCount'],
+  [IUserAuthority.SUPER_ADMIN, 'orderCompleteReportPdf', 'orderCompleteReportCount'],
+  [IUserAuthority.OPERATION_ADMIN, 'deliveryCompleteReportPdf', 'deliveryCompleteReportCount'],
+  [IUserAuthority.OPERATION_ADMIN, 'orderCompleteReportPdf', 'orderCompleteReportCount'],
+] as const)('%s — %s 는 view_scope 밖이어도 통과한다', (authority, method, countColumn) => {
+  const adminUser = { id: 19, email: 'ops@enmad.com', authority } as any;
+  const call = (service: any) => service[method]({ id: 14, source: IReportSource.DIRECT } as any, adminUser, IP);
+
+  it('범위 밖(getCount=0)이어도 카운트가 오른다', async () => {
+    const { service, order } = setupService({ inScope: false });
+
+    await call(service);
+
+    expect(order[countColumn]).toBe(1);
+  });
+
+  it('view_scope 조회 자체를 하지 않는다 (불필요한 쿼리 3개 절약)', async () => {
+    const { service, builtQueries } = setupService({ inScope: false });
+
+    await call(service);
+
+    expect(builtQueries).toEqual(['loadOrder']);
+    expect(service.userViewScopeRepository.findOne).not.toHaveBeenCalled();
   });
 });

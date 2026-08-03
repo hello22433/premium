@@ -1661,6 +1661,48 @@ export class OrderService {
     };
   }
 
+  /**
+   * PDF 발행 카운트 경로에서 view_scope 검증을 면제받는 권한.
+   *
+   * 이 선은 새로 긋는 것이 아니라 **이미 그어져 있는 선을 옮겨 적은 것**이다.
+   *  - 리포트 이메일 발송 3종은 AuthUserSuperAndOperationAdminGuard 를 요구한다.
+   *  - 프론트의 정산 발행 화면(settlement/user/detail)도
+   *    permission: [SUPER_ADMIN, OPERATION_ADMIN] 으로 막혀 있다(route.tsx).
+   * 즉 "리포트를 발행한다"는 행위 자체가 운영자 이상의 업무다.
+   *
+   * 운영관리자는 자기가 배정되지 않은 주문의 리포트도 발행한다 — 정산 목록(settle.service)이
+   * view_scope 를 적용하지 않아 전체를 보여주기 때문이고, 그것이 정상 동선이다.
+   * (운영 DB 실측: 범위 밖 발행 54건이 전부 OPERATION_ADMIN 2명. 고객사는 0건.)
+   */
+  private static readonly REPORT_PDF_SCOPE_EXEMPT_ROLES: ReadonlyArray<IUserAuthority> = [
+    IUserAuthority.SUPER_ADMIN,
+    IUserAuthority.OPERATION_ADMIN,
+  ];
+
+  /**
+   * PDF 발행 카운트 경로의 IDOR 방지.
+   *
+   * 두 엔드포인트(POST /order/delivery-complete/report/pdf, /order/order-complete/report/pdf)는
+   * 클래스 레벨 AuthUserAuthorizationGuard(=JWT 서명 검증) 하나만 거친다. "로그인했나"만 묻고
+   * "이 주문이 네 것인가"는 묻지 않아, 아무 계정이나 임의 orderId 로 카운트를 올릴 수 있었다.
+   * 같은 컨트롤러의 조회(getOrderCompleteReport)·이력 조회는 이미 검증하는데 **쓰기 경로만**
+   * 빠져 있던 비대칭이다.
+   *
+   * ⚠️ source 를 DOCUMENT/DIRECT 로 좁힌 것으로는 닫히지 않는다. formatReportStatus 가 DIRECT 와
+   *    EMAIL 을 같은 '발행 완료'로 분기하므로, EMAIL 을 막아도 DIRECT 로 사용자에게 보이는 결과가
+   *    동일하다. 경계는 source 축이 아니라 **주문 소유 축**이다.
+   *
+   * 막으려는 것은 고객사 계정이 남의 회사 주문 상태를 뒤집는 것이다. 운영자 이상은 면제한다
+   * (위 상수 주석 참조). 인쇄 화면(order/general/print, order/ssg/print)은 프론트에 권한 제한이
+   * 없어 고객사도 쓰지만, 실측상 전부 자기 범위 안이라 이 검증으로 막히지 않는다.
+   */
+  private async assertReportPdfWritable(user: ILoginUserInfo, orderId: number): Promise<void> {
+    if (OrderService.REPORT_PDF_SCOPE_EXEMPT_ROLES.includes(user.authority as IUserAuthority)) {
+      return;
+    }
+    await this.assertOrderInViewScope(user, orderId);
+  }
+
   private canUnmaskDeliveryTarget(unmasked: boolean | undefined, user: ILoginUserInfo): boolean {
     return (
       unmasked === true &&
@@ -1924,18 +1966,8 @@ export class OrderService {
     user: ILoginUserInfo,
     ipAddress: string,
   ): Promise<void> {
-    // IDOR 방지: 호출자의 조회 범위(view_scope) 밖 주문은 카운트를 올릴 수 없다.
-    //
-    // 이 엔드포인트는 클래스 레벨 AuthUserAuthorizationGuard(=JWT 서명 검증) 하나만 거친다.
-    // 즉 "로그인했나"만 묻고 "이 주문이 네 것인가"는 묻지 않았다. 그 결과 아무 계정이나
-    // 임의 orderId 로 { id, source: 'DIRECT' } 를 보내면 카운트가 오르고 정산 목록이
-    // '발행 완료'로 뒤집혔다 — 같은 컨트롤러의 조회(getOrderCompleteReport)·이력 조회는
-    // 이미 이 검증을 하는데 **쓰기 경로만** 빠져 있던 비대칭이다.
-    //
-    // source 를 허용 목록으로 좁힌 것만으로는 닫히지 않는다. formatReportStatus 가
-    // DIRECT 와 EMAIL 을 같은 '발행 완료'로 분기하므로, EMAIL 을 막아도 DIRECT 로
-    // 사용자에게 보이는 결과가 100% 동일하다. 경계는 source 축이 아니라 주문 소유 축이다.
-    await this.assertOrderInViewScope(user, getBody.id);
+    // IDOR 방지 — 상세 근거는 assertReportPdfWritable 주석 참조.
+    await this.assertReportPdfWritable(user, getBody.id);
 
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
@@ -2082,8 +2114,8 @@ export class OrderService {
     user: ILoginUserInfo,
     ipAddress: string,
   ): Promise<void> {
-    // IDOR 방지 — deliveryCompleteReportPdf 와 같은 이유. 상세 주석은 그쪽 참조.
-    await this.assertOrderInViewScope(user, getBody.id);
+    // IDOR 방지 — 상세 근거는 assertReportPdfWritable 주석 참조.
+    await this.assertReportPdfWritable(user, getBody.id);
 
     const queryBuilder = this.orderRepository
       .createQueryBuilder('order')
