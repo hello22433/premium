@@ -339,7 +339,7 @@ CREATE TABLE `stale_external_response` (
   `owner_token`        VARCHAR(64)  NULL                                  COMMENT '응답 소유자 토큰(불일치 근거)',
   `generation`         BIGINT       NULL,
   `workflow_version`   BIGINT       NULL,
-  `mismatch_reason`    VARCHAR(32)  NOT NULL                              COMMENT 'OWNER_TOKEN|GENERATION|WORKFLOW_VERSION|MULTIPLE',
+  `mismatch_reason`    VARCHAR(32)  NOT NULL                              COMMENT 'OWNER_TOKEN|GENERATION|WORKFLOW_VERSION|HEARTBEAT_ERROR|MULTIPLE',
   `response_body_enc`  MEDIUMTEXT   NOT NULL                              COMMENT '원본 응답 암호문(§8.3 암호화 저장)',
   `created_at`         DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   PRIMARY KEY (`id`),

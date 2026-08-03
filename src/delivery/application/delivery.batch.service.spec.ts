@@ -27,6 +27,7 @@ import { UserManagementService } from '../../user_management/application/user.ma
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { DeliveryTrackHttp } from '../infra/delivery.track.http';
 import { DeliveryBatchService } from './delivery.batch.service';
+import { RefundAttemptExecutorService } from './refund-attempt-executor.service';
 import { DeliverySendService } from './delivery.send.service';
 import { RefundLedgerService } from './refund-ledger.service';
 import { SsgInsertStateService } from './ssg-insert-state.service';
@@ -72,6 +73,7 @@ describe('DeliveryBatchService', () => {
             splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
           },
         },
+        { provide: RefundAttemptExecutorService, useValue: { execute: jest.fn() } },
         DeliveryBatchService,
         { provide: getRepositoryToken(OrderEntity), useValue: {} },
         { provide: getRepositoryToken(OrderRealProductEntity), useValue: {} },

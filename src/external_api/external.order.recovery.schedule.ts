@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 
 import { ExternalOrderRecoveryService } from './application/external.order.recovery.service';
+import { ExternalApiService } from './application/external.api.service';
 
 /**
  * 외부주문 완료전이 drift 복구 스윕 스케줄.
@@ -13,7 +14,10 @@ export class ExternalOrderRecoverySchedule {
   private readonly logger = new Logger('EXT_RECOVERY');
   private running = false;
 
-  constructor(private readonly recoveryService: ExternalOrderRecoveryService) {}
+  constructor(
+    private readonly recoveryService: ExternalOrderRecoveryService,
+    private readonly externalApiService: ExternalApiService,
+  ) {}
 
   // 5분마다. 다른 5분 cron(0/15/30/45초 offset)과 동시 trigger 회피를 위해 50초 offset.
   @Cron('50 */5 * * * *')
@@ -29,6 +33,15 @@ export class ExternalOrderRecoverySchedule {
       this.logger.error(e);
     } finally {
       this.running = false;
+    }
+  }
+
+  @Cron('55 */5 * * * *')
+  async handleCancelIntentRecovery(): Promise<void> {
+    try {
+      await this.externalApiService.reconcileOpenCancelIntents();
+    } catch (error) {
+      this.logger.error('[CANCEL_INTENT] 외부 API sweep 실패', error);
     }
   }
 }

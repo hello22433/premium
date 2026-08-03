@@ -36,6 +36,7 @@ import { DeliveryTrackHttp } from '../infra/delivery.track.http';
 import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
 import { SsgInsertState } from '../interface/ssg.insert.state';
 import { DeliveryBatchService } from './delivery.batch.service';
+import { RefundAttemptExecutorService } from './refund-attempt-executor.service';
 import { DeliverySendService } from './delivery.send.service';
 import { RefundLedgerService } from './refund-ledger.service';
 import { SsgInsertStateService } from './ssg-insert-state.service';
@@ -197,6 +198,7 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
             splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
           },
         },
+        { provide: RefundAttemptExecutorService, useValue: { execute: jest.fn() } },
         DeliveryBatchService,
         { provide: getRepositoryToken(OrderEntity), useValue: {} },
         { provide: getRepositoryToken(OrderRealProductEntity), useValue: {} },

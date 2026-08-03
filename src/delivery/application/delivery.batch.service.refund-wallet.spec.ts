@@ -31,6 +31,7 @@ import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
 import { DeliveryBatchService } from './delivery.batch.service';
+import { RefundAttemptExecutorService } from './refund-attempt-executor.service';
 import { ResendDeductService } from '../../wallet/application/resend-deduct.service';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 import { OrderPaymentRefundEventEntity } from '../../entity/order.payment.refund.event.entity';
@@ -147,6 +148,7 @@ describe('DeliveryBatchService.refundForFail - wallet path', () => {
             splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
           },
         },
+        { provide: RefundAttemptExecutorService, useValue: { execute: jest.fn() } },
         DeliveryBatchService,
         { provide: getRepositoryToken(OrderEntity), useValue: {} },
         { provide: getRepositoryToken(OrderRealProductEntity), useValue: {} },

@@ -36,7 +36,10 @@ import { Transactional } from 'typeorm-transactional';
 import { evaluateSsgEventSignals, SsgBalanceCheckResult, SsgEventSignalResult } from './ssg.balance.guard';
 import { ulid } from 'ulid';
 import { allocateSsgEventsForDeliveries, SsgAllocationIndeterminateError } from '../domain/ssg.event.allocation';
-import { DeliveryCutoverGuardService } from '../../delivery/application/delivery-cutover-guard.service';
+import {
+  DeliveryCutoverGuardService,
+  RefundExecutionFencing,
+} from '../../delivery/application/delivery-cutover-guard.service';
 import { LegacyDeliveryEntryPoint } from '../../delivery/interface/legacy.delivery.entry.point';
 
 // 상세조회 임계경로에서 SSG 외부 API(getAmount) 지연이 페이지 로딩을 묶지 않도록 하는 가드 타임아웃
@@ -1067,10 +1070,17 @@ export class SsgEventService {
     amount: number,
     orderDeliveryId: number,
     refundLedgerId?: number,
+    refundExecution?: RefundExecutionFencing,
   ): Promise<void> {
-    // 컷오버 전환 건 거부(§9 인벤토리 #9). SSG 행사 잔액은 고객 환불과 다른 원장이지만, 진입은 반드시
-    // refund_attempt 를 거친다(기존 recovery_log 멱등키를 refund_attempt 외부 idempotency key 와 1:1 매핑).
-    await this.cutoverGuard.assertLegacyAllowed(orderDeliveryId, LegacyDeliveryEntryPoint.SSG_EVENT_REFUND);
+    if (refundExecution) {
+      await this.cutoverGuard.assertRefundExecutionAllowed({
+        orderDeliveryId,
+        fencing: refundExecution,
+        entryPoint: LegacyDeliveryEntryPoint.SSG_EVENT_REFUND,
+      });
+    } else {
+      await this.cutoverGuard.assertLegacyAllowed(orderDeliveryId, LegacyDeliveryEntryPoint.SSG_EVENT_REFUND);
+    }
 
     const ssgEvent = await this.findSsgEventForUpdate(ssgEventId);
 

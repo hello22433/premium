@@ -1,4 +1,5 @@
 import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
+import { DeliveryWorkflowStatus } from '../delivery/interface/delivery.workflow.status';
 import { RefundAttemptStatus, RefundEntryPath, RefundScope } from '../delivery/interface/refund.attempt.status';
 
 /**
@@ -60,8 +61,23 @@ export class RefundAttemptEntity {
   @Column({ type: 'bigint', comment: '생성 시점 workflow_version' })
   createdWorkflowVersion: string;
 
+  @Column({
+    type: 'varchar',
+    length: 32,
+    nullable: true,
+    comment: '환불 시작 시점 workflow_status. 경로 B UNKNOWN 승격을 되돌릴 때의 복원 기준(§5.4)',
+  })
+  entryWorkflowStatus: DeliveryWorkflowStatus | null;
+
   @Column({ type: 'varchar', length: 500, nullable: true, comment: 'FAILED/UNKNOWN 사유(민감정보 금지)' })
   failureReason: string | null;
+
+  @Column({
+    type: 'bigint',
+    nullable: true,
+    comment: '외부 환불 콜백이 실제 종료된 세대. NULL 이면 in-flight 가능성이 남아 미실행(FAILED) 확정 금지(§6.1)',
+  })
+  executionQuiescedGeneration: string | null;
 
   @Column({
     type: 'datetime',

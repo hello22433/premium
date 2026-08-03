@@ -49,6 +49,8 @@ import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
 import { LegacyDeliveryEntryPoint, NOT_CUTOVER_ORDER_DELIVERY } from '../interface/legacy.delivery.entry.point';
 import { MessageAttemptChannel, MessageAttemptType } from '../interface/message.attempt.status';
 import { DeliveryExclusiveOp } from '../interface/delivery.workflow.status';
+import { RefundAttemptStatus, RefundScope } from '../interface/refund.attempt.status';
+import { ExecuteRefundContext, RefundAttemptExecutorService } from './refund-attempt-executor.service';
 import { computeNextAttemptAt, isWithinAllowedSendWindow } from '../domain/resend.schedule';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { IOrderStatus } from '../../order/interface/order.status';
@@ -153,6 +155,7 @@ export class DeliveryBatchService {
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly orderFromService: OrderFromService,
     private readonly cutoverGuard: DeliveryCutoverGuardService,
+    private readonly refundAttemptExecutor: RefundAttemptExecutorService,
   ) {}
 
   private readonly logger = new Logger('batch');
@@ -270,10 +273,32 @@ export class DeliveryBatchService {
    * (이전 순서: SSG 먼저 → ledger 가 막더라도 SSG 잔액은 이미 복구됨 = 중복 위험.)
    */
   private async refundForFail(orderDelivery: OrderDeliveryEntity): Promise<void> {
-    // 컷오버 전환 건 거부(§9 인벤토리 #5). 전환 건의 환불은 refund_attempt CLAIMED→SUBMITTING 뒤
-    // 실행 단계로만 호출한다. 호출처 4곳 어디서 들어와도 여기서 한 번에 막힌다.
-    await this.cutoverGuard.assertLegacyAllowed(orderDelivery.id, LegacyDeliveryEntryPoint.BATCH_REFUND_FOR_FAIL);
+    const isCutover = await this.cutoverGuard.isCutover(orderDelivery.id);
+    if (isCutover) {
+      await this.messageResultReconcileService.markWorkflowFailedIfSettled(orderDelivery.id, new Date());
+      const mapping = orderDelivery.orderProductMapping;
+      const amount = calculateSettlementPrice(mapping, mapping.order.cardSurchargeApplied, orderDelivery);
+      await this.refundAttemptExecutor.execute({
+        orderDeliveryId: orderDelivery.id,
+        amount,
+        scope: RefundScope.FULL,
+        externalIdempotencyKey: `delivery-fail:${orderDelivery.id}:${randomUUID()}`,
+        execute: async (fencing) => {
+          await this.executeRefundForFail(orderDelivery, fencing);
+          return { status: RefundAttemptStatus.SUCCEEDED };
+        },
+      });
+      return;
+    }
 
+    await this.cutoverGuard.assertLegacyAllowed(orderDelivery.id, LegacyDeliveryEntryPoint.BATCH_REFUND_FOR_FAIL);
+    await this.executeRefundForFail(orderDelivery);
+  }
+
+  private async executeRefundForFail(
+    orderDelivery: OrderDeliveryEntity,
+    refundExecution?: ExecuteRefundContext,
+  ): Promise<void> {
     const order = orderDelivery.orderProductMapping.order;
     const mapping = orderDelivery.orderProductMapping;
     const productPrice = mapping.product.price;
@@ -305,6 +330,7 @@ export class DeliveryBatchService {
         // resolver 가 RESTORED/SKIPPED_CONFIRMED 반환 시 markSsgSettled 로 true 갱신.
         // DEFERRED 면 false 유지 → 다음 재발송 가드 차단 (이중 차감 방지).
         ssgPending: isSsg,
+        refundExecution,
       });
     } catch (error) {
       if (error instanceof BadRequestException) {
@@ -339,6 +365,7 @@ export class DeliveryBatchService {
           refundAmount: productPrice,
           orderId: order.id,
           refundLedgerId: refundLedgerId ?? undefined,
+          refundExecution,
         });
         if (outcome === SsgRefundOutcome.DEFERRED) {
           this.logger.error(
