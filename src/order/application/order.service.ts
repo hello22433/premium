@@ -297,6 +297,7 @@ type OrderListQueryParams = {
   section: IOrderSection;
   type: IOrderType;
   status?: IOrderStatus;
+  hasFailedDelivery?: boolean;
   startAt?: string;
   endAt?: string;
   searchType?: OrderSearchType;
@@ -751,6 +752,29 @@ export class OrderService {
     }
 
     this.applyDirectSendingFilter(queryBuilder, user, sendingType);
+    if (params.hasFailedDelivery === true) {
+      queryBuilder = queryBuilder.andWhere(
+        (subQuery) =>
+          `EXISTS ${subQuery
+            .subQuery()
+            .select('1')
+            .from(OrderDeliveryEntity, 'failedDelivery')
+            .innerJoin(
+              OrderProductMappingEntity,
+              'failedOrderProductMapping',
+              'failedOrderProductMapping.id = failedDelivery.orderProductMappingId',
+            )
+            .where('failedOrderProductMapping.orderId = order.id')
+            .andWhere('failedDelivery.deletedAt IS NULL')
+            .andWhere('failedDelivery.resendAt IS NULL')
+            .andWhere('failedDelivery.status IN (:...failedDeliveryStatuses)')
+            .getQuery()}`,
+        {
+          failedDeliveryStatuses: [IOrderDeliveryStatus.FAIL, IOrderDeliveryStatus.FAIL_SMS],
+        },
+      );
+    }
+
 
     if (status) {
       queryBuilder = queryBuilder.andWhere('order.status = :status', { status });
@@ -968,6 +992,55 @@ export class OrderService {
     });
 
     return { list: resultList, totalPage, totalCount, currentPage: page };
+  }
+  async getListSummary(
+    user: ILoginUserInfo,
+    params: Omit<OrderListQueryParams, 'status'>,
+  ): Promise<{
+    total: number;
+    deliveryRequest: number;
+    reviewComplete: number;
+    deliveryConfirmed: number;
+    deliveryComplete: number;
+    deliveryCancel: number;
+    failed: number;
+  }> {
+    const queryBuilder = await this.buildOrderListQuery(user, { ...params, status: undefined });
+    const summary = await queryBuilder
+      .clone()
+      .orderBy()
+      .select([
+        'COUNT(DISTINCT order.id) AS total',
+        `COUNT(DISTINCT CASE WHEN order.status = '${IOrderStatus.DELIVERY_REQUEST}' THEN order.id END) AS deliveryRequest`,
+        `COUNT(DISTINCT CASE WHEN order.status = '${IOrderStatus.REVIEW_COMPLETE}' THEN order.id END) AS reviewComplete`,
+        `COUNT(DISTINCT CASE WHEN order.status = '${IOrderStatus.DELIVERY_CONFIRMED}' THEN order.id END) AS deliveryConfirmed`,
+        `COUNT(DISTINCT CASE WHEN order.status = '${IOrderStatus.DELIVERY_COMPLETE}' THEN order.id END) AS deliveryComplete`,
+        `COUNT(DISTINCT CASE WHEN order.status = '${IOrderStatus.DELIVERY_CANCEL}' THEN order.id END) AS deliveryCancel`,
+      ])
+      .getRawOne<{
+        total: string;
+        deliveryRequest: string;
+        reviewComplete: string;
+        deliveryConfirmed: string;
+        deliveryComplete: string;
+        deliveryCancel: string;
+      }>();
+
+    const failedRows = await (await this.buildOrderListQuery(user, { ...params, status: undefined, hasFailedDelivery: true }))
+      .clone()
+      .orderBy()
+      .select('COUNT(DISTINCT order.id)', 'failed')
+      .getRawOne<{ failed: string }>();
+
+    return {
+      total: Number(summary?.total ?? 0),
+      deliveryRequest: Number(summary?.deliveryRequest ?? 0),
+      reviewComplete: Number(summary?.reviewComplete ?? 0),
+      deliveryConfirmed: Number(summary?.deliveryConfirmed ?? 0),
+      deliveryComplete: Number(summary?.deliveryComplete ?? 0),
+      deliveryCancel: Number(summary?.deliveryCancel ?? 0),
+      failed: Number(failedRows?.failed ?? 0),
+    };
   }
 
   private static readonly CUSTOMER_SETTLEMENT_ROLES: ReadonlyArray<IUserAuthority> = [

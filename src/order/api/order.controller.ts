@@ -44,6 +44,7 @@ import {
   OrderGetDestructionCertificatePdfReqDto,
   OrderGetDetailReqParamDto,
   OrderGetListReqDto,
+  OrderGetListSummaryReqDto,
   OrderGetCustomerSettlementReqDto,
   OrderGetOrderCompleteReportPdfReqDto,
   OrderGetOrderCompleteReportReqDto,
@@ -147,6 +148,22 @@ export class OrderController {
     }
 
     return this.orderService.getList(user, getQuery);
+  }
+  @ApiOperation({
+    summary: '발송관리 상태별 주문 수 집계 API',
+    description: '목록과 동일한 조회 조건에서 상태별 주문 수와 미해결 발송 실패 포함 주문 수를 반환합니다.',
+  })
+  @Get('/order/list/summary')
+  async getListSummary(@User() user: ILoginUserInfo, @Query() getQuery: OrderGetListSummaryReqDto) {
+    if (getQuery.type === 'GENERAL') {
+      await this.authService.authorityValidator(user, UserAuthSubEnum.SEND_GENERAL);
+    }
+
+    if (getQuery.type === 'SSG') {
+      await this.authService.authorityValidator(user, UserAuthSubEnum.SEND_SSG);
+    }
+
+    return this.orderService.getListSummary(user, getQuery);
   }
 
   @ApiOperation({
