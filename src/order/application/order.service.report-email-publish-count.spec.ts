@@ -68,6 +68,8 @@ type SetupOptions = {
   counterUpdateFails?: boolean;
   /** 엔티티 프로퍼티 리네임 등으로 컬럼명 해석이 실패하는 상황 */
   unknownColumn?: boolean;
+  /** 메일은 나갔는데 activity_log INSERT 가 실패하는 상황 */
+  createLogFails?: boolean;
 };
 
 const setupService = ({
@@ -75,6 +77,7 @@ const setupService = ({
   order = { id: 6142 },
   counterUpdateFails = false,
   unknownColumn = false,
+  createLogFails = false,
 }: SetupOptions = {}) => {
   const service = Object.create(OrderService.prototype) as any;
   const callOrder: string[] = [];
@@ -141,6 +144,9 @@ const setupService = ({
   service.activityLogService = {
     createLog: jest.fn().mockImplementation(async () => {
       callOrder.push('createLog');
+      if (createLogFails) {
+        throw new Error('Deadlock found when trying to get lock');
+      }
     }),
   };
 
@@ -228,6 +234,42 @@ describe('sendTransactionStatementReportEmail — 거래명세서 이메일 발�
       'orderCompleteReportCount',
       'transactionStatementLastSource',
     ]);
+  });
+});
+
+describe('메일은 나갔는데 activity_log 기록이 실패하면', () => {
+  // 발송(비가역) 이후의 DB 쓰기는 전부 best-effort 여야 한다. 여기서 예외가 밖으로 나가면
+  // 500 → 운영자 재시도 → 고객사 중복 수신이 된다. 카운터 갱신에 적용한 판단과 동일하다.
+  it('예외를 밖으로 내지 않고 성공으로 응답한다 (중복 발송 방지)', async () => {
+    const { service } = setupService({ createLogFails: true });
+
+    const result = await service.sendDeliveryCompleteReportEmail(makeEmailBody(), BASE_USER, IP);
+
+    expect(result.success).toBe(true);
+  });
+
+  it('카운터 갱신은 그대로 진행한다 (정산 목록은 발행으로 뒤집힌다)', async () => {
+    const { service } = setupService({ createLogFails: true });
+
+    await service.sendDeliveryCompleteReportEmail(makeEmailBody(), BASE_USER, IP);
+
+    expect(service.updateCalls).toHaveLength(1);
+  });
+
+  it('추적할 수 있도록 error 로그를 남긴다', async () => {
+    const { service, loggedErrors } = setupService({ createLogFails: true });
+
+    await service.sendDeliveryCompleteReportEmail(makeEmailBody(), BASE_USER, IP);
+
+    expect(loggedErrors.some((message) => message.includes('activity_log'))).toBe(true);
+  });
+
+  it('발송 자체가 실패한 경우는 여전히 500 이다 (메일이 안 나갔으므로 재시도가 옳다)', async () => {
+    const { service } = setupService({ createLogFails: true, sendSuccess: false });
+
+    await expect(service.sendDeliveryCompleteReportEmail(makeEmailBody(), BASE_USER, IP)).rejects.toBeInstanceOf(
+      InternalServerErrorException,
+    );
   });
 });
 

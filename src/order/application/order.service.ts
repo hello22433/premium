@@ -5900,28 +5900,45 @@ export class OrderService {
       ],
     });
 
-    // 활동 로그 기록
-    await this.activityLogService.createLog({
-      userId: user.id,
-      userEmail: user.email,
-      method: 'POST',
-      requestUrl: logMeta.requestUrl,
-      actionType: logMeta.actionType,
-      ipAddress,
-      statusCode: result.success ? 200 : 500,
-      result: result.success ? ActivityLogResult.SUCCESS : ActivityLogResult.FAILURE,
-      responseTime: 0,
-      requestParams: {
-        orderId,
-        to: toEmail,
-        cc: ccEmails || null,
-        subject,
-        pdfFileName,
-        messageId: result.messageId,
-        error: result.error,
-      },
-      errorMessage: result.error || undefined,
-    });
+    // 활동 로그 기록 — best-effort. 카운터 갱신과 **같은 이유**로 삼킨다.
+    //
+    // 이 시점엔 mailSendSmtp.send() 가 이미 끝났다(비가역). 여기서 DB INSERT 가 실패해
+    // 예외가 밖으로 나가면 500 이 되고, 운영자는 "전송 실패"로 읽어 재시도한다 →
+    // 고객사가 같은 메일을 두 번 받는다. 되돌릴 수 없는 쪽(중복 발송)보다 되돌릴 수 있는
+    // 쪽(감사 기록 누락)을 택한다 — 아래 카운터 갱신에 적용한 판단과 동일하다.
+    //
+    // ⚠️ 삼키는 것은 **발송 이후**의 기록 실패뿐이다. 발송 자체의 실패(result.success=false)는
+    //    바로 아래에서 그대로 500 으로 올린다. 그 경우엔 메일이 나가지 않았으므로 재시도가 옳다.
+    try {
+      await this.activityLogService.createLog({
+        userId: user.id,
+        userEmail: user.email,
+        method: 'POST',
+        requestUrl: logMeta.requestUrl,
+        actionType: logMeta.actionType,
+        ipAddress,
+        statusCode: result.success ? 200 : 500,
+        result: result.success ? ActivityLogResult.SUCCESS : ActivityLogResult.FAILURE,
+        responseTime: 0,
+        requestParams: {
+          orderId,
+          to: toEmail,
+          cc: ccEmails || null,
+          subject,
+          pdfFileName,
+          messageId: result.messageId,
+          error: result.error,
+        },
+        errorMessage: result.error || undefined,
+      });
+    } catch (error) {
+      this.logger.error(
+        `[REPORT] 메일 발송 결과를 activity_log 에 남기지 못했다 — 발행 이력 모달이 비게 된다. ` +
+          `orderId: ${orderId}, actionType: ${logMeta.actionType}, sendSuccess: ${result.success}, ` +
+          `messageId: ${result.messageId ?? '-'}, ` +
+          `message: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
 
     if (!result.success) {
       throw new InternalServerErrorException(result.error || '이메일 발송에 실패했습니다.');
