@@ -101,12 +101,27 @@ import { RefundPoolService } from '../../wallet/application/refund-pool.service'
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 
 /**
- * 정기파기 각인 로그에 남기는 발송건 id 상한.
+ * 재각인(restamp) 감사 로그를 여러 줄로 나눌 때의 **한 줄당 항목 수**. 상한이 아니다.
  *
- * 로그 한 줄이 무한정 길어지는 것을 막는다. 이 값을 넘는 분량은 **DB 에서 덮이고 로그에도 없어
- * 영구 소실**되므로, 자르는 쪽 로그는 반드시 생략 건수를 함께 적어야 한다(감사 흔적 계약).
+ * 이 값을 덮어쓰기 전 파기일은 DB 에서 덮여 **복구 경로가 없다.** 그래서 자르지 않고 전량을
+ * `ceil(n/이 값)` 줄에 나눠 남긴다. 이 상수가 정하는 것은 **줄 길이뿐**이고, 값이 몇이든
+ * 남는 정보량은 같다 — 따라서 조정해도 안전하다(그 점이 상한이었던 종전과 결정적으로 다르다).
+ *
+ * ⚠️ 다시 `slice(0, N)` 형태의 **상한으로 되돌리지 말 것.** 종전이 그랬고, 근거 없이 정한 50 이
+ *    그대로 "무엇을 영구히 버릴지"를 결정하고 있었다(리뷰 5차 HIGH-1/M-C).
+ * ⚠️ 아래 UNKNOWN_ID_LOG_LIMIT 과 **성격이 다르다. 값이 같다고 합치지 말 것.**
+ *    그쪽은 진짜 상한이지만 버려도 재산출되므로 안전하다. 이쪽은 그렇지 않다.
  */
-const RESTAMP_AUDIT_LOG_LIMIT = 50;
+const RESTAMP_AUDIT_LOG_CHUNK = 50;
+
+/**
+ * "이미 파기됐으나 파기 시각을 알 수 없는" 발송건 id 로그 상한.
+ *
+ * 이쪽은 **소실이 없다.** 그 행들은 각인 대상에서 의도적으로 제외되어 destroyed_at 이 NULL 로
+ * 남으므로, 다음 회차가 다시 보고하고 migration §4-1 이 언제든 재산출한다. 생략 건수를 적는
+ * 것은 소실 때문이 아니라 두 로그의 표기를 통일하기 위해서다.
+ */
+const UNKNOWN_ID_LOG_LIMIT = 50;
 
 @Injectable()
 export class DeliveryBatchService {
@@ -3340,6 +3355,8 @@ export class DeliveryBatchService {
       //          emailReceiverPhone) **밖의** 컬럼일 때만이다. 즉 bankAccount ·
       //          bankAccountOwner · originalDeliveryTarget 이 남아 있던 경우다. 그 셋이
       //          늦게 정리되는 것은 파기일을 바꾸지 않는다.
+      //          ⚠️ **파기일 축에서만 무해하다.** 확인서 발행 축에서는 같은 모집단이 사각지대다 —
+      //             술어가 '파기됨'으로 읽어 게이트가 막지 않는다. 계량은 migration §4-9.
       //       ⚠️ emailReceiverPhone 이 남아 있던 행은 **(나)로 분류된다** — 부활한 적이 없어도.
       //          술어가 2축이라 그 행은 "지금 파기돼 있지 않음"이 되기 때문이다. 아래 (나) 참조.
       //       (초기 주석은 "판정 술어는 deliveryTarget 단일" 이라고 적고, 술어가 5종으로 바뀌면
@@ -3360,7 +3377,8 @@ export class DeliveryBatchService {
       //          현재 그런 행은 실측 0건이지만 구조적으로 열려 있는 경로이므로 적어 둔다.
       //       어느 쪽이든 **그 컬럼의 PII 는 지금 이 회차 직전까지 살아 있었다.** 옛 날짜를
       //       유지하면 "그때 이미 지웠다"는 거짓 증명이 되므로 새 시각으로 **갱신**한다.
-      //       (갱신 전 값은 아래 로그에 남긴다 — 덮어쓰면 복구할 수 없으므로 감사 흔적이 필요하다.)
+      //       (갱신 전 값은 아래 로그에 남긴다 — 덮어쓰면 복구할 수 없으므로 감사 흔적이 필요하다.
+      //        전량이 남는다 — 여러 줄로 나뉠 뿐이다. 아래 restampPrevious 참조.)
       //
       // 두 경우를 SQL 한 줄로 가를 수 없다. 위 마스킹 UPDATE 가 이미 돌아서 지금 DB 의
       // deliveryTarget 은 전부 '-' 이기 때문이다. 판정 근거는 **마스킹 이전 상태**이므로,
@@ -3381,14 +3399,15 @@ export class DeliveryBatchService {
       // toISOString 을 optional call(?.) 로 부른다. destroyedAt 은 Date 로 매핑되지만, 로그 한 줄
       // 때문에 트랜잭션 전체(그 회차 정기파기)가 롤백되는 것은 어떤 경우에도 이득이 아니다.
       //
-      // ⚠️ 이 감사 흔적은 **완전하지 않다.** 로그 한 줄이 무한정 길어지지 않도록 앞 50건만 남기고,
-      //    51번째부터의 이전 파기일은 DB 에서 덮이고 로그에도 없어 **영구 소실**된다.
-      //    그래서 아래 로그가 생략 건수를 명시한다 — 목록이 완전하다고 오해하면 안 된다.
-      //    포매팅도 slice **뒤에** 한다. 전량을 문자열로 만든 뒤 버리면 @Transactional 락 보유
-      //    구간에서 헛일이고, 배포 직후 레거시가 대량으로 잡히는 회차가 정확히 그 상황이다.
-      const restampPrevious = restampRows
-        .slice(0, RESTAMP_AUDIT_LOG_LIMIT)
-        .map((od) => `${od.id}:${od.destroyedAt?.toISOString?.() ?? 'null'}/${od.destroyedAtSource ?? 'null'}`);
+      // ★ **전량을 만든다. 자르지 않는다.** 아래 warn 이 RESTAMP_AUDIT_LOG_CHUNK 건씩 여러 줄로
+      //   나눠 남기므로 줄 길이는 묶이고 정보는 하나도 버려지지 않는다.
+      //   종전에는 여기서 slice(0, 50) 으로 잘랐는데, 그 50 은 측정 근거 없는 임의값이면서
+      //   "무엇을 영구히 버릴지"를 결정하고 있었다(리뷰 5차 HIGH-1/M-C 반영, 운영 결정).
+      //   전량 포매팅은 @Transactional 구간의 비용이지만, 같은 트랜잭션이 이미 destroyIdList
+      //   전량에 대한 대형 IN-list UPDATE 를 세 번 돌리므로 이 비용은 그 옆에서 지배적이지 않다.
+      const restampPrevious = restampRows.map(
+        (od) => `${od.id}:${od.destroyedAt?.toISOString?.() ?? 'null'}/${od.destroyedAtSource ?? 'null'}`,
+      );
       const firstDestroyIds = orderDeliveryList
         .filter((od) => od.destroyedAt === null && !isDeliveryDestroyed(od))
         .map((od) => od.id);
@@ -3429,10 +3448,13 @@ export class DeliveryBatchService {
       );
       if (unknownDestroyedAtIds.length > 0) {
         // 정상 운영에서는 나오지 않아야 한다. 백필 누락이거나 배포 순서 사고다.
-        const unknownOmitted = unknownDestroyedAtIds.length - RESTAMP_AUDIT_LOG_LIMIT;
+        const unknownShown = unknownDestroyedAtIds.slice(0, UNKNOWN_ID_LOG_LIMIT);
+        // 생략 건수는 상수가 아니라 **실제 출력 길이**에서 유도한다. 상수에서 빼면 slice 인자만
+        // 바뀌었을 때 카운트가 조용히 거짓말한다(리뷰 5차 M-4).
+        const unknownOmitted = unknownDestroyedAtIds.length - unknownShown.length;
         this.logger.error(
           `[정기파기] 이미 파기됐으나 파기 시각을 알 수 없는 발송건 ${unknownDestroyedAtIds.length}건 — ` +
-            `orderDeliveryIds=[${unknownDestroyedAtIds.slice(0, RESTAMP_AUDIT_LOG_LIMIT).join(', ')}]` +
+            `orderDeliveryIds=[${unknownShown.join(', ')}]` +
             (unknownOmitted > 0 ? ` 외 ${unknownOmitted}건 생략` : '') +
             `. 오늘 날짜를 실측으로 박제하지 않고 비워 둔다(해당 주문의 파기일은 null 로 응답된다).`,
         );
@@ -3443,13 +3465,26 @@ export class DeliveryBatchService {
         //    CS 오남용으로 보고되어, 운영이 존재하지 않는 사건을 추적하게 된다(리뷰 4차 M-1).
         //    구분이 필요하면 migration §4-8 로 레거시 모집단을 먼저 계량할 것.
         // 이전 값을 함께 남긴다 — 덮어쓰면 복구 경로가 없다.
-        const restampOmitted = restampIds.length - restampPrevious.length;
+        //
+        // ★ 자르지 않고 **전량을 청크로 나눠** 남긴다(운영 결정). 종전에는 앞 50건만 남기고
+        //   나머지를 버렸는데, 그 50 은 측정 근거 없이 정한 임의값이었고 버린 값은 DB 에서도
+        //   덮여 영구 소실이었다. 줄 길이를 묶는 것이 원래 목적이었으므로, 목적은 청크로 지키고
+        //   소실은 0 으로 만든다(리뷰 5차 HIGH-1/M-C).
+        //   각 줄에 (k/total) 을 붙인다 — 하류 수집기가 줄 단위로 유실해도 **빠진 것을 셀 수 있어야**
+        //   한다. 총건수만 헤더에 있으면 3줄 중 2줄만 도착했을 때 그 사실을 알 수 없다.
+        const chunkTotal = Math.max(1, Math.ceil(restampPrevious.length / RESTAMP_AUDIT_LOG_CHUNK));
         this.logger.warn(
           `[정기파기] 이미 파기 시각이 있으나 PII 가 남아 있어 파기일을 갱신함 ${restampIds.length}건 ` +
             `(원인: CS 수신정보 변경 후 재파기 또는 레거시 부분마스킹 — 데이터로 구분 불가). ` +
-            `갱신 전 값 id:시각/출처=[${restampPrevious.join(', ')}]` +
-            (restampOmitted > 0 ? ` 외 ${restampOmitted}건 생략 — 이전 파기일 영구 소실` : ''),
+            `갱신 전 값을 ${chunkTotal}줄에 나눠 남긴다 — 전량이며 생략 없음.`,
         );
+        for (let chunkIndex = 0; chunkIndex < chunkTotal; chunkIndex++) {
+          const from = chunkIndex * RESTAMP_AUDIT_LOG_CHUNK;
+          this.logger.warn(
+            `[정기파기] 갱신 전 값 (${chunkIndex + 1}/${chunkTotal}) id:시각/출처=` +
+              `[${restampPrevious.slice(from, from + RESTAMP_AUDIT_LOG_CHUNK).join(', ')}]`,
+          );
+        }
       }
 
       // order_history 의 PII 도 함께 파기. '수신정보 변경요청'/'폐기 후 신규 발송' 이력의

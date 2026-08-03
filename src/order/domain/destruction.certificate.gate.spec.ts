@@ -181,11 +181,13 @@ describe('resolveDestructionCertificateGate', () => {
       expect(resolveDestructionCertificateGate(order)).toEqual({ canIssue: true, reason: null });
     });
 
-    it('★ 전량 마스킹 + 수신처 생존 + 환불 진행중이면 REFUND_IN_PROGRESS 가 아니라 NOT_DESTROYED', () => {
-      // 사유 우선순위가 바뀐 조합 둘 중 하나다(리뷰 4차 LOW). 다른 하나는 위 DESTROY_TIME_UNKNOWN
-      // 케이스이며, 둘 다 종전에는 every('-') 에서 곧바로
-      // canIssue: true 였고, 환불 분기에는 애초에 도달하지 않았다.
-      // 살아있는 PII 가 있다는 사실이 환불 진행 여부보다 앞선 차단 사유다.
+    it('★ 전량 마스킹 + 수신처 생존이면 환불 진행중이어도 NOT_DESTROYED (환불 분기는 도달하지 않는다)', () => {
+      // **결과가 바뀐** 조합 둘 중 하나다(리뷰 4차 LOW → 5차 L-2 로 표현 정정). 다른 하나는 위
+      // DESTROY_TIME_UNKNOWN 케이스이며, 둘 다 종전에는 every('-') 에서 곧바로 canIssue: true 였다.
+      // ⚠️ '사유 우선순위가 바뀌었다'로 적지 말 것 — 두 사유는 순서를 다투지 않는다.
+      //    REFUND_IN_PROGRESS 는 every('-') 블록 **밖**이라 전량 마스킹 주문에서는 구·신 코드
+      //    모두 구조적으로 도달 불가다. 바뀐 것은 순서가 아니라 **허용 → 차단**이다.
+      //    이 케이스가 환불 진행중을 세팅하는 것은 "그래도 도달하지 않는다"를 고정하기 위해서다.
       const order = makeOrder(IOrderStatus.DELIVERY_COMPLETE, [
         [
           destroyed(),

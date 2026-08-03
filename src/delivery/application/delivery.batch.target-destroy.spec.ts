@@ -326,6 +326,14 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
     emailReceiverPhone: 'enc-01099998888',
     destroyedAtSource: source,
   });
+  /** 이미 파기됐는데 각인이 없는 행 — 각인 대상에서 빠지고 error 로그로만 보고된다. */
+  const destroyedNoStampRow = (id: number) => ({
+    id,
+    destroyedAt: null,
+    deliveryTarget: '-',
+    emailReceiverPhone: '-',
+    destroyedAtSource: null,
+  });
 
   it('파기 시각(destroyedAt)을 각인한다 — 파기일을 계산이 아니라 기록으로 답하기 위해', async () => {
     // 이 값이 없으면 화면이 파기일을 `발송요청일 + 파기일수` 로 역산하는데, 파기 규칙이 바뀌면
@@ -397,6 +405,74 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
     // 덮어쓰기 전 값이 남아야 복구·감사 근거가 된다.
     expect(warned).toContain('BACKFILL_ESTIMATE');
     expect(warned).toContain(first.toISOString());
+  });
+
+  /**
+   * 감사 로그 절단 — 상한을 넘는 분량이 있을 때만 관측되는 경로다.
+   *
+   * 다른 케이스의 픽스처가 전부 1~2행이라 이 블록이 없으면 청크 로직이 **한 줄도 실행되지 않은 채**
+   * 그린이 된다. 그러면 누군가 `slice(0, N)` 상한으로 되돌려도 전부 통과한다(리뷰 5차 M-A/HIGH-1).
+   *
+   * restamp 축과 unknown 축은 **계약이 다르다**:
+   *   · restamp  — 덮어쓰면 복구 불가 → **전량 보존**(여러 줄로 분할)
+   *   · unknown  — 각인하지 않아 다음 회차가 재보고 → 상한 + 생략 표시로 충분
+   * 상수 값(50)에 의존하지 않도록, 고정하는 것은 값이 아니라 위 계약이다.
+   */
+  describe('감사 로그 — 청크 분할과 상한', () => {
+    const first = new Date('2026-01-31T00:00:00');
+    const rows = (n: number, make: (id: number) => any) => Array.from({ length: n }, (_, i) => make(101 + i));
+
+    it('★ 청크 크기를 넘어도 이전 파기일을 하나도 버리지 않는다 (전량 보존)', async () => {
+      const sut = makeSut(makeSelectQb(rows(51, (id) => emailRevivedRow(id, first))));
+
+      await sut.deliveryDeliveryTargetDestroy();
+
+      const warned = sut.logger.warn.mock.calls.map((c: any[]) => String(c[0])).join('\n');
+      expect(warned).toContain('51건');
+      // 핵심 계약 — 51번째(id 151)가 로그에 실제로 있어야 한다. 종전에는 여기서 버려졌다.
+      expect(warned).toContain('151:');
+      // 51건 전부가 빠짐없이 남는지 id 단위로 확인한다(한 건이라도 새면 실패).
+      for (let id = 101; id <= 151; id++) expect(warned).toContain(`${id}:`);
+      // 'N건 생략' 은 restamp 축에 있으면 안 된다(그 문구가 살아 있으면 상한으로 되돌아간 것).
+      expect(warned).not.toContain('건 생략');
+      expect(sut.__stampQb.calls.where[0][1].ids).toHaveLength(51);
+    });
+
+    it('여러 줄로 나뉠 때 (k/total) 을 붙인다 — 줄이 유실되면 셀 수 있어야 한다', async () => {
+      const sut = makeSut(makeSelectQb(rows(51, (id) => emailRevivedRow(id, first))));
+
+      await sut.deliveryDeliveryTargetDestroy();
+
+      const warned = sut.logger.warn.mock.calls.map((c: any[]) => String(c[0])).join('\n');
+      expect(warned).toContain('(1/2)');
+      expect(warned).toContain('(2/2)');
+    });
+
+    it('청크 크기 이하면 한 줄로만 남는다 (불필요한 분할 없음)', async () => {
+      const sut = makeSut(makeSelectQb(rows(50, (id) => emailRevivedRow(id, first))));
+
+      await sut.deliveryDeliveryTargetDestroy();
+
+      const warned = sut.logger.warn.mock.calls.map((c: any[]) => String(c[0])).join('\n');
+      expect(warned).toContain('(1/1)');
+      expect(warned).not.toContain('(2/');
+    });
+
+    it('시각 미상 error 로그도 같은 계약을 지킨다 (두 로그가 갈라지지 않게)', async () => {
+      const sut = makeSut(makeSelectQb(rows(51, destroyedNoStampRow)));
+
+      await sut.deliveryDeliveryTargetDestroy();
+
+      const errored = sut.logger.error.mock.calls.map((c: any[]) => String(c[0])).join('\n');
+      expect(errored).toContain('51건');
+      expect(errored).toContain('외 1건 생략');
+      expect(errored).not.toContain('151');
+      // 이쪽은 소실이 없다(각인하지 않으므로 다음 회차가 다시 보고한다) — restamp 쪽 문구를
+      // 복사해 오면 안 된다.
+      expect(errored).not.toContain('영구 소실');
+      // 시각 미상 행은 각인 대상에서 빠지므로 각인 UPDATE 자체가 없다.
+      expect(sut.__stampQb.calls.set).toHaveLength(0);
+    });
   });
 
   it('각인할 행이 하나도 없으면 각인 UPDATE 자체를 실행하지 않는다', async () => {

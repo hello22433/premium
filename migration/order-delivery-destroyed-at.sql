@@ -29,8 +29,13 @@
 -- 실행 기록 (운영, 2026-07-31)
 --   ① 컬럼 2개 추가 (MySQL 8.4.8) → ② §2 8,960건 / §3 27,813건 각인 → ③ 코드 배포 완료
 --   파기완료 36,773행 = BACKFILL_EARLY 8,960 + BACKFILL_ESTIMATE 27,813, 잔여 0.
---   §4 검증 전종 0. 조기파기 요청서 50건(전부 매핑 전체 지정), soft-delete 요청서 0건.
---   ★ §2·§3 **양쪽 모두** `updated_at = updated_at` 절을 포함한 상태로 실행했다.
+--   §4-1~4-8 검증 전종 0. 조기파기 요청서 50건(전부 매핑 전체 지정), soft-delete 요청서 0건.
+--   ⚠️ **§4-9 는 신설 후 미실행이다**(리뷰 5차 M-4 로 추가). "§4 전종 0" 으로 읽지 말 것 —
+--      그 절이 재는 모집단은 아직 한 번도 측정된 적이 없다.
+--   ★ §2·§3 **양쪽 모두** `od.updated_at = od.updated_at` 절을 포함한 상태로 실행했다.
+--     ⚠️ 이 문장의 근거는 **실행자 진술뿐이다.** 동시대 기록(3573012e 커밋 본문)은 §2 의
+--        8,960건만 든다 — §3 의 27,813건에 대한 당대 근거는 없다. 아래 검증 범위 한정과
+--        같은 이유로, 이 줄도 "확인된 사실"이 아니라 "진술"로 읽을 것.
 --     ⚠️ 다만 **검증은 §2 범위에서만** 했다. 직후 확인한 쿼리가
 --        `destroyed_at_source='BACKFILL_EARLY' AND DATE(updated_at)=CURDATE()` = 0 이라,
 --        §3 이 각인한 27,813행(BACKFILL_ESTIMATE)은 그 술어 **밖**이다. 미검증 모집단이 검증된
@@ -40,10 +45,18 @@
 --           WHERE destroyed_at_source IN ('BACKFILL_EARLY','BACKFILL_ESTIMATE')
 --             AND DATE(updated_at) = DATE('2026-07-31')      -- 백필 실행일
 --           GROUP BY destroyed_at_source;
---     ⚠️ 그리고 **운영 실행분이 당시 레포 파일과 달랐다.** `updated_at = updated_at` 절은
+--        ⚠️ 결과 해석은 **비대칭이다.** 원래 쿼리는 백필 직후 CURDATE() 로 돌려 다른 갱신이
+--           섞일 여지가 작았지만, 이 쿼리는 절대일자 고정이라 사후 언제든 돌릴 수 있는 대신
+--           **그날 정상 운영으로 갱신된 행까지 전부 잡는다.**
+--             · 0 이면 → 밀림 없음 **확정**
+--             · 0 이 아니면 → 밀림의 증거가 **아니다.** destroyed_at 과 updated_at 의 시:분
+--               근접도로 2차 판별할 것(백필이 밀렸다면 둘이 거의 같은 시각이다).
+--     ⚠️ 그리고 **운영 실행분이 당시 레포 파일과 달랐다.** `od.updated_at = od.updated_at` 절은
 --        커밋 3573012e(2026-07-31 20:48)에 처음 레포로 들어왔고 운영 백필은 그보다 앞서므로,
 --        그날 운영에는 "레포에 없던 수정본"을 손으로 얹어 실행한 것이다. 결과는 의도대로였으나
 --        이 파일이 근거로 삼는 **"파일 원문 실행" 워크플로우가 한 번 깨진 사건**이라 기록한다.
+--        확인 명령(접두어 `od.` 를 빼면 롤백 절만 잡혀 **다른 답**이 나온다 — 주의):
+--          git log -S "od.updated_at = od.updated_at" --oneline -- migration/order-delivery-destroyed-at.sql
 --        지금은 파일과 실행분이 일치하므로 재현하려면 현재 §2·§3 을 그대로 쓰면 된다.
 --   ⚠️ 개발 DB(2026-07-31 18:18)는 이 절이 추가되기 **전에** 돌려 79건의 updated_at 이 밀렸다.
 --      원래 값을 남기지 않아 복구 불가이며, 수용하기로 결정했다.
@@ -483,16 +496,29 @@ WHERE od.delivery_target = '-'
 --      §4-8 은 emailReceiverPhone 축만 센다. 그런데 마스킹 대상은 **5종**이다
 --      (delivery.batch.service.ts 의 마스킹 UPDATE: deliveryTarget / originalDeliveryTarget /
 --       emailReceiverPhone / bankAccount / bankAccountOwner).
---      술어 isDeliveryDestroyed 는 그중 **앞 둘만** 본다. 따라서
+--      술어 isDeliveryDestroyed 는 그중 **deliveryTarget 과 emailReceiverPhone 둘만**
+--      본다(위 나열 순서로는 1·3번째다 — "앞 둘"이 아니다. originalDeliveryTarget 은
+--       술어 **밖**이다). 따라서
 --        bankAccount · bankAccountOwner · originalDeliveryTarget **만** 살아 있는 행은
---      술어가 "파기됨(true)"으로 읽고 → 게이트를 통과해 →
---      **살아있는 금융 PII 옆에 "전량 파기 완료" 확인서가 발행된다.**
+--      술어가 "파기됨(true)"으로 읽고 → 게이트가 발행을 막지 않아 →
+--      **살아있는 금융 PII 옆에 "전량 파기 완료" 확인서가 발행될 수 있다.**
 --
 --      ⚠️ 오류 방향이 §4-8 과 정반대다. §4-8 이 세는 행은 파기일이 실제보다 늦어지는(=우리에게
 --         불리한) 오류지만, 이쪽은 **허위 안심**이다. 그래서 더 위험하다.
 --      ⚠️ 이 모집단은 **한 번도 측정된 적이 없다.** 술어를 5종으로 통일할지는 정책 판단이지만,
 --         그 결정보다 **계량이 먼저**다. "실측 0건으로 해소"로 닫지 말 것.
+--      ⚠️ **이 수치는 행 단위 상한(superset)이지 발행 건수가 아니다** — §4-8 의 '근사' 경고와
+--         같은 성격이다. 게이트(destruction.certificate.gate.ts:51-86)는 여기에 없는 축을
+--         셋 더 요구한다:
+--           · order.status = DELIVERY_COMPLETE (게이트 첫 분기)
+--           · **형제 발송건 전부** delivery_target='-' (게이트는 주문 단위 every 판정, 이 쿼리는 행 단위)
+--           · destroyed_at 으로 파기일을 답할 수 있을 것 (아니면 DESTROY_TIME_UNKNOWN 으로 차단)
+--         soft-delete 행(deleted_at IS NOT NULL)도 포함된다 — 배치는 withDeleted 로 세지만
+--         게이트가 읽는 관계 목록에는 통상 없다. 그래서 아래에 분모와 soft-delete 열을 함께 둔다.
+--         0 이 아니게 나와도 "허위 확인서 N건"으로 **보고하지 말 것.** 그 N 에서 위 세 축을
+--         조인해 좁힌 값이 실제 노출 건수다.
 SELECT
+  COUNT(*)                                                            AS `분모__술어가_파기로_읽는_행_전체`,
   COALESCE(SUM(CASE WHEN od.bank_account IS NOT NULL AND od.bank_account <> '-'
       THEN 1 ELSE 0 END), 0)                                          AS `계좌번호_생존`,
   COALESCE(SUM(CASE WHEN od.bank_account_owner IS NOT NULL AND od.bank_account_owner <> '-'
@@ -502,7 +528,12 @@ SELECT
   COALESCE(SUM(CASE WHEN (od.bank_account IS NOT NULL AND od.bank_account <> '-')
                       OR (od.bank_account_owner IS NOT NULL AND od.bank_account_owner <> '-')
                       OR (od.original_delivery_target IS NOT NULL AND od.original_delivery_target <> '-')
-      THEN 1 ELSE 0 END), 0)                                          AS `합계__술어가_파기로_읽는_행`
+      THEN 1 ELSE 0 END), 0)                                          AS `합계__2축밖_PII가_남은_행`,
+  COALESCE(SUM(CASE WHEN od.deleted_at IS NOT NULL
+                     AND ( (od.bank_account IS NOT NULL AND od.bank_account <> '-')
+                        OR (od.bank_account_owner IS NOT NULL AND od.bank_account_owner <> '-')
+                        OR (od.original_delivery_target IS NOT NULL AND od.original_delivery_target <> '-') )
+      THEN 1 ELSE 0 END), 0)                                          AS `그중_soft_delete__게이트_미도달`
 FROM `order_delivery` od
 WHERE od.delivery_target = '-'
   -- 2축 술어가 '파기됨' 으로 판정하는 행만 (= §4-8 과 배타적)

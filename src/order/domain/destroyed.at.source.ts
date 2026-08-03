@@ -55,7 +55,9 @@ export const isEstimatedDestroyedAt = (source: string | null | undefined): boole
  *    (resolveOrderEffectiveDestroyAt)을 교차검증하고, 그 함수가 이 술어를 쓴다. 결과적으로
  *    **게이트는 2축을 포함하고, 거기에 날짜 축이 하나 더 붙는다 — 즉 2축보다 엄격하다.**
  *    (2축으로는 파기된 행이라도 destroyed_at 이 없으면 DESTROY_TIME_UNKNOWN 으로 막힌다.
- *     '동등'이 아니다. 차단 사유가 어느 것이 되는지는 게이트의 우선순위 주석을 볼 것.)
+ *     '동등'이 아니다. 차단 사유가 어느 것이 되는지는 게이트의 **차단 사유 분기 주석**
+ *     (destruction.certificate.gate.ts 의 SCHEDULED 분기)을 볼 것. — '우선순위 주석'이라는
+ *     이름으로 찾지 말 것. 그 표현은 부정확해서 폐기됐다(리뷰 5차 L-2).)
  *
  *    (이 문단은 원래 정반대를 서술하고 있었다 — "게이트를 넓히면 레거시 행에서 발행이 새로
  *     막혀 운영 회귀가 되므로 의도적으로 1축을 유지한다". 그 서술은 게이트에 교차검증이
