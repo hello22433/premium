@@ -244,6 +244,15 @@ describe('DeliveryBatchService.processOneDeliveryInternal — full save() 부재
     };
     (sut as any).orderDeliveryRepository = repo;
     (sut as any).logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    // PIN 발급 명령 기록(§5.2 최소 배선) — 기록 전용이라 이 스펙의 검증 대상은 아니지만,
+    // PIN 발급 성공·실패 경로가 모두 호출하므로 스텁이 없으면 그 분기에서 터진다.
+    (sut as any).pinIssueCommandService = {
+      recordAttempt: jest.fn().mockResolvedValue(undefined),
+      markSucceeded: jest.fn().mockResolvedValue(undefined),
+      markRetryPending: jest.fn().mockResolvedValue(undefined),
+      markExhausted: jest.fn().mockResolvedValue(undefined),
+      markTerminal: jest.fn().mockResolvedValue(undefined),
+    };
     (sut as any).cryptoCipher = {
       safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01011112222'),
       encryptDeliveryTarget: jest.fn().mockReturnValue('ENC_OUT'),

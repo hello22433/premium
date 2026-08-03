@@ -36,7 +36,7 @@ describe('DeliveryBatchService — PIN 발급 실패 2-pass 재시도', () => {
     failedAt: null,
     orderProductMapping: {
       order: { id: 7001, type: IOrderType.SSG },
-      product: { type: IProductType.COUPON, partnerCompany: { type: 'SSG' } },
+      product: { type: IProductType.SSG, partnerCompany: { type: 'SSG' } },
     },
     ...overrides,
   });
@@ -187,7 +187,8 @@ describe('DeliveryBatchService — PIN 발급 실패 2-pass 재시도', () => {
     beforeEach(() => {
       sut = Object.create(DeliveryBatchService.prototype);
       (sut as any).logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
-      (sut as any).concurrencyLimit = 2;
+      // concurrencyLimit 은 getter 전용이라 대입이 안 된다 — 프로퍼티를 덮어쓴다.
+      Object.defineProperty(sut, 'concurrencyLimit', { get: () => 2, configurable: true });
       (sut as any).claimWaitDeliveries = jest.fn().mockResolvedValue(2);
       (sut as any).deliverySendHistoryRepository = { insert: jest.fn().mockResolvedValue({}) };
       (sut as any).markOrderTerminalAndSettle = jest.fn().mockResolvedValue(undefined);
