@@ -110,6 +110,12 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
       execute: jest.fn(() => {
         captured.push(current);
         if (current.isSoftDelete) {
+          // 잔류 정리는 선점분(limit_claimed = 1)과 미선점분(= 0)을 각각 지운다.
+          // 한도 회수는 선점분 affected 만 써야 하므로 결과를 분리해서 준다.
+          const clause = current.where.join(' ');
+          if (clause.includes('limit_claimed = 0')) {
+            return Promise.resolve({ affected: builder.staleUnclaimedAffected ?? 0 });
+          }
           return Promise.resolve({ affected: builder.staleAffected ?? 0 });
         }
         const affected = affectedQueue.length > 0 ? affectedQueue.shift()! : 1;
@@ -122,7 +128,12 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
 
   const buildService = (
     mapping: any,
-    opts: { claimAffected?: number[]; confirmAffected?: number[]; staleAffected?: number } = {},
+    opts: {
+      claimAffected?: number[];
+      confirmAffected?: number[];
+      staleAffected?: number;
+      staleUnclaimedAffected?: number;
+    } = {},
   ) => {
     const fullMapping = {
       id: 5,
@@ -174,6 +185,7 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
     const confirmBuilder = createUpdateBuilder(opts.confirmAffected ? [...opts.confirmAffected] : []);
     // 진입부 잔류 정리 결과. 기본은 정리 대상 없음(affected=0).
     confirmBuilder.staleAffected = opts.staleAffected ?? 0;
+    confirmBuilder.staleUnclaimedAffected = opts.staleUnclaimedAffected ?? 0;
     service.testOrderDeliveryRepository = {
       save: jest.fn().mockResolvedValue({ id: 101 }),
       softDelete: jest.fn().mockResolvedValue({ affected: 1 }),
@@ -225,25 +237,100 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
     expect(service.deliveryBatchService.oneSend).toHaveBeenCalled();
   });
 
-  it('운영관리자: 한도 조건부 UPDATE 없이 increment 로 무제한 발송된다 (우회)', async () => {
+  // 관리자는 무제한이라 한도(test_delivery_count)를 아예 건드리지 않는다.
+  // 여기서 카운트를 올리면 기업관리자 한도(상품당 2회)를 관리자 발송이 대신 소진한다.
+  it('운영관리자: 한도를 증가시키지 않고 무제한 발송된다 (우회)', async () => {
     const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 99 });
 
     await expect(service.testDelivery(owner(IUserAuthority.OPERATION_ADMIN), body())).resolves.toBeUndefined();
 
     expect(service.deliveryBatchService.oneSend).toHaveBeenCalled();
-    expect(service.orderProductMappingRepository.increment).toHaveBeenCalledWith({ id: 5 }, 'testDeliveryCount', 1);
-    // 조건부 선점 UPDATE 는 호출되지 않는다.
+    // 조건부 선점 UPDATE 도, increment 도 호출되지 않는다.
+    expect(service.orderProductMappingRepository.increment).not.toHaveBeenCalled();
     expect(service.updateBuilder.captured.length).toBe(0);
+    // 선점하지 않은 건으로 기록되어야 잔류 정리가 한도를 회수하지 않는다.
+    expect(service.testOrderDeliveryRepository.save).toHaveBeenCalledWith(
+      expect.objectContaining({ limitClaimed: false }),
+    );
   });
 
-  it('최고관리자: 한도 조건부 UPDATE 없이 increment 로 무제한 발송된다 (우회)', async () => {
+  it('최고관리자: 한도를 증가시키지 않고 무제한 발송된다 (우회)', async () => {
     const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 99 });
 
     await expect(service.testDelivery(owner(IUserAuthority.SUPER_ADMIN), body())).resolves.toBeUndefined();
 
     expect(service.deliveryBatchService.oneSend).toHaveBeenCalled();
-    expect(service.orderProductMappingRepository.increment).toHaveBeenCalledWith({ id: 5 }, 'testDeliveryCount', 1);
+    expect(service.orderProductMappingRepository.increment).not.toHaveBeenCalled();
     expect(service.updateBuilder.captured.length).toBe(0);
+    expect(service.testOrderDeliveryRepository.save).toHaveBeenCalledWith(
+      expect.objectContaining({ limitClaimed: false }),
+    );
+  });
+
+  /**
+   * 권한 혼합: 관리자 발송이 기업관리자 한도를 소진하면 안 된다.
+   * 관리자 경로가 카운트를 올리면(과거 동작) 기업관리자가 한 번도 안 썼는데 2회 제한에 막힌다.
+   */
+  describe('권한 혼합 시나리오', () => {
+    it('운영관리자가 2회 발송해도 기업관리자는 여전히 2회 발송할 수 있다', async () => {
+      // 실제 DB 카운트를 모사한다. 조건부 UPDATE 는 count < 2 일 때만 +1 한다.
+      let count = 0;
+      const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 0 });
+      // execute 를 대체하므로 원본이 하던 captured 기록을 여기서 직접 수행한다.
+      const originalExecute = service.updateBuilder.execute;
+      service.updateBuilder.execute = jest.fn(() => {
+        const result = originalExecute();
+        const captured = service.updateBuilder.captured;
+        const clause = captured[captured.length - 1]?.where.join(' ') ?? '';
+        if (clause.includes('test_delivery_count < :maxLimitCount')) {
+          if (count >= 2) return Promise.resolve({ affected: 0 });
+          count += 1;
+          return Promise.resolve({ affected: 1 });
+        }
+        return result;
+      });
+      // increment 도 같은 카운터에 반영한다. 관리자 경로가 카운트를 올리면 여기서 드러나야 한다.
+      service.orderProductMappingRepository.increment = jest.fn(() => {
+        count += 1;
+        return Promise.resolve({ affected: 1 });
+      });
+
+      // 운영관리자 2회 — 카운트는 그대로 0 이어야 한다.
+      await service.testDelivery(owner(IUserAuthority.OPERATION_ADMIN), body());
+      await service.testDelivery(owner(IUserAuthority.OPERATION_ADMIN), body());
+      expect(count).toBe(0);
+
+      // 기업관리자는 자기 몫 2회를 온전히 쓸 수 있다.
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).resolves.toBeUndefined();
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).resolves.toBeUndefined();
+      expect(count).toBe(2);
+
+      // 3회째는 한도 초과로 차단된다.
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).rejects.toThrow(LIMIT_MSG);
+      expect(service.deliveryBatchService.oneSend).toHaveBeenCalledTimes(4);
+    });
+
+    it('기업관리자가 한도를 모두 쓴 뒤에도 운영관리자는 계속 발송할 수 있다', async () => {
+      const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 2 }, { claimAffected: [0] });
+
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).rejects.toThrow(LIMIT_MSG);
+      await expect(service.testDelivery(owner(IUserAuthority.OPERATION_ADMIN), body())).resolves.toBeUndefined();
+
+      expect(service.deliveryBatchService.oneSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('관리자 발송이 실패해도 한도를 보상 차감하지 않는다 (선점한 적이 없다)', async () => {
+      const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 1 });
+      service.deliveryBatchService.oneSend.mockResolvedValue(false);
+
+      await expect(service.testDelivery(owner(IUserAuthority.OPERATION_ADMIN), body())).rejects.toThrow(
+        '테스트 발송에 실패했습니다. 수신자 정보를 확인해주세요.',
+      );
+
+      // 이력은 정리하되, 한도 UPDATE 는 선점(+1)도 보상(-1)도 없어야 한다.
+      expect(service.testOrderDeliveryRepository.softDelete).toHaveBeenCalledWith(101);
+      expect(service.updateBuilder.captured.length).toBe(0);
+    });
   });
 
   it('IDOR: mapping.orderId 가 요청 orderId 와 다르면 거부된다', async () => {
@@ -395,7 +482,12 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
    * TEMP(발송 전 크래시)만 대상이고, WAIT(발송 여부 불명)은 중복 발송 위험 때문에 손대지 않는다.
    */
   describe('진입부 잔류 정리', () => {
-    const findStaleCleanup = (service: any) => service.confirmBuilder.captured.find((c: any) => c.isSoftDelete);
+    // 선점분(limit_claimed = 1) 정리 — 이 건의 affected 만 한도 회수에 쓰인다.
+    const findStaleCleanup = (service: any) =>
+      service.confirmBuilder.captured.find((c: any) => c.isSoftDelete && c.where.join(' ').includes('limit_claimed = 1'));
+    // 미선점분(관리자) 정리 — 이력만 지우고 한도는 건드리지 않는다.
+    const findUnclaimedCleanup = (service: any) =>
+      service.confirmBuilder.captured.find((c: any) => c.isSoftDelete && c.where.join(' ').includes('limit_claimed = 0'));
 
     it('grace 경과한 TEMP 잔류를 정리하고 한도를 회수한다', async () => {
       const service = buildService(
@@ -410,10 +502,44 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
       const where = cleanup.where.join(' ');
       expect(where).toContain('status = :temp');
       expect(where).toContain('order_product_mapping_id = :orderProductMappingId');
+      // 회수량(affected)을 그대로 쓰므로 선점한 건만 대상이어야 한다.
+      expect(where).toContain('limit_claimed = 1');
       // 진행 중인 정상 흐름을 잔류로 오인하지 않도록 grace 를 둔다.
       expect(where).toContain('INTERVAL 600 SECOND');
 
       // 회수한 횟수만큼 한도를 되돌린다. 0 미만으로는 내려가지 않는다.
+      const recovery = service.updateBuilder.captured[0];
+      expect(recovery.set.testDeliveryCount()).toContain('GREATEST(test_delivery_count - 1, 0)');
+    });
+
+    it('관리자(한도 미선점) TEMP 잔류는 정리하되 한도를 회수하지 않는다', async () => {
+      // 선점분 잔류는 없고(0), 관리자 잔류만 1건 있는 상황.
+      const service = buildService(
+        { id: 5, orderId: 77, testDeliveryCount: 1 },
+        { claimAffected: [1], staleAffected: 0, staleUnclaimedAffected: 1 },
+      );
+
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).resolves.toBeUndefined();
+
+      // 관리자 잔류도 화면에 남지 않도록 지운다.
+      const unclaimed = findUnclaimedCleanup(service);
+      expect(unclaimed).toBeDefined();
+      expect(unclaimed.where.join(' ')).toContain('status = :temp');
+
+      // 한도 UPDATE 는 이번 요청의 선점(+1) 하나뿐 — 회수(GREATEST) 는 없어야 한다.
+      expect(service.updateBuilder.captured.length).toBe(1);
+      expect(service.updateBuilder.captured[0].set.testDeliveryCount()).toContain('test_delivery_count + 1');
+    });
+
+    it('선점분과 관리자 잔류가 섞여 있으면 선점분 수만큼만 회수한다', async () => {
+      const service = buildService(
+        { id: 5, orderId: 77, testDeliveryCount: 2 },
+        { claimAffected: [1], staleAffected: 1, staleUnclaimedAffected: 3 },
+      );
+
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).resolves.toBeUndefined();
+
+      // 관리자 잔류 3건은 회수량에 포함되지 않는다(-4 가 아니라 -1).
       const recovery = service.updateBuilder.captured[0];
       expect(recovery.set.testDeliveryCount()).toContain('GREATEST(test_delivery_count - 1, 0)');
     });
@@ -433,10 +559,13 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
         { id: 5, orderId: 77, testDeliveryCount: 2 },
         { claimAffected: [1], staleAffected: 1 },
       );
-      let claimedBeforeCleanup = false;
+      // 진입부 정리는 선점분·미선점분 두 번 호출된다. 순서 판정은 첫 호출 시점만 본다.
+      let claimedBeforeCleanup: boolean | null = null;
       const originalSoftDelete = service.confirmBuilder.softDelete;
       service.confirmBuilder.softDelete = jest.fn(() => {
-        claimedBeforeCleanup = service.updateBuilder.captured.length > 0;
+        if (claimedBeforeCleanup === null) {
+          claimedBeforeCleanup = service.updateBuilder.captured.length > 0;
+        }
         return originalSoftDelete();
       });
 
@@ -529,8 +658,10 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
 
     it('확정 UPDATE 가 실패하면 이력 삭제·한도 보상을 하지 않는다 (중복 발송 방지)', async () => {
       const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 0 }, { claimAffected: [1] });
-      // execute 순서: 진입부 정리(softDelete) → 경보 마킹 → WAIT 전환 → 확정. 확정만 실패시킨다.
+      // execute 순서: 진입부 정리(선점분 softDelete → 미선점분 softDelete) → 경보 마킹 → WAIT 전환 → 확정.
+      // 위치 의존을 피하려고 마지막(확정) 호출만 실패시킨다.
       service.confirmBuilder.execute
+        .mockResolvedValueOnce({ affected: 0 })
         .mockResolvedValueOnce({ affected: 0 })
         .mockResolvedValueOnce({ affected: 0 })
         .mockResolvedValueOnce({ affected: 1 })

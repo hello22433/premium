@@ -5673,7 +5673,10 @@ export class OrderService {
 
     // 한도 용량 원자 선점: count < 2 인 경우에만 +1. affected=0 이면 한도 초과(동시 요청 포함)로 차단한다.
     // 락+검사 대신 조건부 UPDATE 로 선점해 동시 요청의 한도 초과를 구조적으로 막는다.
-    // 발송 전에 선점하므로, 이후 발송이 실패하면 보상(-1)한다. 운영관리자/최고관리자는 무제한이라 무조건 +1.
+    // 발송 전에 선점하므로, 이후 발송이 실패하면 보상(-1)한다.
+    //
+    // 운영관리자/최고관리자는 무제한이라 카운트를 아예 건드리지 않는다. 여기서 +1 하면 관리자 발송이
+    // 기업관리자 한도(상품당 2회)를 대신 소진해 "기업관리자만 2회 제한" 정책과 어긋난다.
     if (!canBypassTestDeliveryLimit) {
       const claim = await this.orderProductMappingRepository
         .createQueryBuilder()
@@ -5685,8 +5688,6 @@ export class OrderService {
       if ((claim.affected ?? 0) === 0) {
         throw new BadRequestException('테스트발송은 상품당 최대 2회입니다.');
       }
-    } else {
-      await this.orderProductMappingRepository.increment({ id: orderProductMappingId }, 'testDeliveryCount', 1);
     }
 
     // 선점 이후의 모든 준비 단계(이미지 생성·이력 저장)와 발송을 한 번에 보상 범위로 묶는다.
@@ -5730,6 +5731,9 @@ export class OrderService {
       testOrderDelivery.expireAt = expireAt;
       testOrderDelivery.barCode = barCode;
       testOrderDelivery.personalCode = barCode;
+      // 이 건이 한도를 선점했는지 남긴다. 관리자 발송(false)은 카운트를 올리지 않았으므로
+      // 잔류 정리 시에도 회수 대상이 아니다. 행만 보고 회수 여부를 판단할 수 있어야 한다.
+      testOrderDelivery.limitClaimed = !canBypassTestDeliveryLimit;
       const savedTestOrderDelivery = await this.testOrderDeliveryRepository.save(testOrderDelivery);
       testOrderDeliveryId = savedTestOrderDelivery.id;
 
@@ -5782,7 +5786,8 @@ export class OrderService {
         throw error;
       }
       // 준비 단계 실패 시에는 아직 이력이 없을 수 있으므로 testOrderDeliveryId 는 null 일 수 있다.
-      await this.rollbackTestDelivery(testOrderDeliveryId, orderProductMappingId);
+      // 관리자 발송은 한도를 선점하지 않았으므로 보상 차감도 하지 않는다(하면 기업관리자 한도를 깎는다).
+      await this.rollbackTestDelivery(testOrderDeliveryId, orderProductMappingId, !canBypassTestDeliveryLimit);
       throw error;
     }
   }
@@ -5791,6 +5796,8 @@ export class OrderService {
    * 크래시나 확정 실패로 rollbackTestDelivery 가 실행되지 못해 남은 이력을 정리한다.
    *
    * TEMP 는 oneSend 호출 전에 죽은 경우라 확실한 미발송이다. 이력을 지우고 선점한 한도를 회수한다.
+   * 단, 한도 회수는 선점한 건(limit_claimed = 1)만 대상이다. 관리자 발송은 카운트를 올리지 않았으므로
+   * 이력만 지우고 한도는 건드리지 않는다.
    * WAIT 은 발송됐을 수 있어 provider 도달 여부를 알 수 없다. 지우면 재발송으로 중복이 될 수 있어
    * 그대로 두고 한도도 소진 상태로 유지한다. 대신 화면에 안 보이면서 횟수만 소진된 상태라
    * 운영이 인지할 수 있도록 1회 경보·마킹한다(자동 확정은 미발송 건을 성공으로 만들 수 있어 하지 않는다).
@@ -5800,12 +5807,15 @@ export class OrderService {
   private async discardStaleTestDeliveries(orderProductMappingId: number): Promise<void> {
     const graceSeconds = 600;
     try {
+      // 한도를 선점한 건(limit_claimed = 1)만 대상으로 한다. affected 를 그대로 회수량으로 쓰므로
+      // 관리자 발송(선점 없음)이 섞이면 올리지도 않은 한도를 깎게 된다.
       const stale = await this.testOrderDeliveryRepository
         .createQueryBuilder()
         .softDelete()
         .where('order_product_mapping_id = :orderProductMappingId', { orderProductMappingId })
         .andWhere('status = :temp', { temp: IOrderDeliveryStatus.TEMP })
         .andWhere('deleted_at IS NULL')
+        .andWhere('limit_claimed = 1')
         .andWhere(`created_at < NOW(6) - INTERVAL ${graceSeconds} SECOND`)
         .execute();
 
@@ -5821,6 +5831,23 @@ export class OrderService {
 
         this.logger.warn(
           `테스트 발송 미발송 잔류 ${discarded}건 정리·한도 회수 (orderProductMappingId: ${orderProductMappingId})`,
+        );
+      }
+
+      // 선점하지 않은(관리자) TEMP 잔류도 화면에 남지 않도록 정리한다. 한도는 올린 적이 없어 회수하지 않는다.
+      const discardedUnclaimed = await this.testOrderDeliveryRepository
+        .createQueryBuilder()
+        .softDelete()
+        .where('order_product_mapping_id = :orderProductMappingId', { orderProductMappingId })
+        .andWhere('status = :temp', { temp: IOrderDeliveryStatus.TEMP })
+        .andWhere('deleted_at IS NULL')
+        .andWhere('limit_claimed = 0')
+        .andWhere(`created_at < NOW(6) - INTERVAL ${graceSeconds} SECOND`)
+        .execute();
+
+      if ((discardedUnclaimed.affected ?? 0) > 0) {
+        this.logger.warn(
+          `테스트 발송 미발송 잔류(관리자, 한도 미선점) ${discardedUnclaimed.affected}건 정리 (orderProductMappingId: ${orderProductMappingId})`,
         );
       }
 
@@ -5853,7 +5880,12 @@ export class OrderService {
   // 테스트 발송 실패 시 저장한 이력 제거 + 선점한 한도 보상 차감(-1).
   // 발송 전에 한도를 선점(+1)했으므로 이후 단계가 실패하면 되돌린다. 원 실패 사유를 덮지 않도록 예외는 로그만 남긴다.
   // testOrderDeliveryId 가 null 이면 이력 저장 전(이미지 생성 등)에 실패한 경우라 한도 보상만 수행한다.
-  private async rollbackTestDelivery(testOrderDeliveryId: number | null, orderProductMappingId: number): Promise<void> {
+  // limitClaimed 가 false 면 관리자 발송이라 선점 자체가 없었으므로 이력만 제거한다.
+  private async rollbackTestDelivery(
+    testOrderDeliveryId: number | null,
+    orderProductMappingId: number,
+    limitClaimed: boolean,
+  ): Promise<void> {
     // 이력 삭제와 한도 보상은 서로 독립이므로 각각 try 로 감싼다.
     if (testOrderDeliveryId !== null) {
       try {
@@ -5866,7 +5898,12 @@ export class OrderService {
       }
     }
 
-    // 관리자 무제한이어도 발송 전 +1 했으므로 보상 대상이다. 0 미만으로 내려가지 않도록 조건부 차감.
+    // 선점하지 않았으면(관리자 무제한 경로) 되돌릴 것도 없다. 여기서 차감하면 남의 한도를 깎는다.
+    if (!limitClaimed) {
+      return;
+    }
+
+    // 발송 전 +1 한 선점을 되돌린다. 0 미만으로 내려가지 않도록 조건부 차감.
     try {
       await this.orderProductMappingRepository
         .createQueryBuilder()
