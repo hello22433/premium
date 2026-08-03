@@ -244,11 +244,19 @@ export class SsgIssue implements ISsgIssue {
     const sendUrl = `${this.url}/GetSsgTry.do?${data.toString()}`;
     this.logger.log(sendUrl);
 
-    const response = await firstValueFrom(this.httpService.get(sendUrl));
-    this.logger.log(response.data);
+    let resultToJson: ISsgTryOut;
+    try {
+      const response = await firstValueFrom(this.httpService.get(sendUrl));
+      this.logger.log(response.data);
 
-    const resultToJson = (await this.parser.parseStringPromise(response.data)) as unknown as ISsgTryOut;
-    this.logger.log(resultToJson);
+      resultToJson = (await this.parser.parseStringPromise(response.data)) as unknown as ISsgTryOut;
+      this.logger.log(resultToJson);
+    } catch (e) {
+      // 네트워크·파싱 실패도 "제출 여부 미확정" 이라는 점에서 응답 이상(tryYn 없음)과 같은 의미다.
+      // 종전에는 raw 에러가 그대로 새어나가 호출자가 조회 실패를 한 타입으로 다룰 수 없었다.
+      // 발송 배치의 2-pass 보류 판정(§10 구현명세)이 이 타입 하나만 보면 되도록 통일한다.
+      throw new SsgTryError(`SSG 시도내역 조회 호출 실패: ${e instanceof Error ? e.message : String(e)}`);
+    }
 
     const tryYn = resultToJson?.response?.value?.[0]?.tryYn?.[0];
     if (tryYn !== 'Y' && tryYn !== 'N') {
