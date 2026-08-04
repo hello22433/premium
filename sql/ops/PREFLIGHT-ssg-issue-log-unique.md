@@ -9,6 +9,34 @@
 
 따라서 **마이그레이션은 검사만 하고, 중복이 하나라도 있으면 실패한다.** 정리는 아래 판정을 거쳐 승인된 대상만 별도로 수행한다.
 
+## 0. 배포 순서 (먼저 확인)
+
+이 DDL 은 **애플리케이션의 typed 충돌 분류가 이미 배포된 뒤에만** 적용한다. 순서가 뒤집히면 UNIQUE 위반이 raw `QueryFailedError` 로 올라가 일반 발급 실패로 뭉개지거나 기존 PIN 복구 분기로 오진입해 다른 고객의 PIN 이 발송 건에 부착될 수 있다.
+
+배포 대상 앱에 `SsgIssueLogKeyCollisionError` 가 포함되어 있는지 확인한 뒤 진행한다.
+
+## 0-1. 인덱스 현황 확인
+
+마이그레이션은 `idx_ssg_issue_log_bar_code` / `idx_ssg_issue_log_personal_code` 를 DROP 한다. 실제 DB 의 인덱스명이 다르면 ALTER 가 실패한다(부분 적용은 아니므로 안전하지만 헛도는 작업이 된다).
+
+```sql
+SHOW INDEX FROM ssg_issue_log;
+```
+
+확인 항목:
+
+- `idx_ssg_issue_log_bar_code` / `idx_ssg_issue_log_personal_code` 가 실제로 존재하는가 (없으면 마이그레이션의 DROP 절을 실제 이름으로 교체하거나 제거)
+- `uq_ssg_issue_log_bar_code` / `uq_ssg_issue_log_personal_code` 가 이미 있는가 (있으면 적용 완료 상태)
+- `bar_code` / `personal_code` 가 다른 복합 인덱스의 선두 컬럼으로 쓰이는가
+
+## 0-2. 규모 확인
+
+UNIQUE 인덱스 생성은 테이블을 재구성한다. 행 수에 따라 잠금 시간이 달라지므로 적용 창을 정할 때 확인한다.
+
+```sql
+SELECT COUNT(*) AS rows_total FROM ssg_issue_log;
+```
+
 ## 1. 중복 검사
 
 ```sql
@@ -78,3 +106,9 @@ SELECT id, order_delivery_id, bar_code, personal_code,
 ## 3. 정리 후 재검사
 
 정리를 수행했다면 §1 을 다시 실행해 0행을 확인한 뒤 마이그레이션을 진행한다.
+
+## 4. 실행 기록
+
+| 일자 | 대상 DB | §1 bar_code | §1 personal_code | 조치 |
+|---|---|---|---|---|
+| 2026-08-04 | `epopkon` | 0행 | 0행 | 정리 불필요. §0 배포 순서와 §0-1 인덱스명 확인 후 적용 가능 |
