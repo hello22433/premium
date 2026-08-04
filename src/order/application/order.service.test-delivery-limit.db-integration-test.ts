@@ -3,7 +3,7 @@ import * as dotenv from 'dotenv';
 import * as mysql from 'mysql2/promise';
 import * as path from 'path';
 import { BadRequestException } from '@nestjs/common';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, IsNull, Repository } from 'typeorm';
 import { SnakeNamingStrategy } from 'typeorm-naming-strategies';
 import {
   addTransactionalDataSource,
@@ -312,6 +312,48 @@ describe('OrderService.testDelivery DB concurrency', () => {
 
       // 선점(+1)은 그대로 남는다. WAIT 은 발송 여부 불명이라 잔류 정리가 자동 회수하지 않고
       // ops_escalated_at 경보로 운영이 확인한다(자동 회수하면 이미 도달한 건을 재발송할 수 있다).
+      const refreshedMapping = await mappingRepository.findOneByOrFail({ id: fixture.mapping.id });
+      expect(refreshedMapping.testDeliveryCount).toBe(1);
+    });
+
+    /**
+     * 보상 차감은 "이 요청이 실제로 이력을 지웠을 때"만 해야 한다.
+     * 발송 실패 처리 사이에 다른 인스턴스의 잔류 정리가 같은 행을 지우며 한도를 이미 회수했는데
+     * 여기서 또 -1 하면 남의 선점분까지 깎여 2회 제한을 넘겨 발송할 수 있다.
+     */
+    it('이력이 이미 정리·회수된 뒤라면 보상 차감을 하지 않는다 (이중 회수 방지)', async () => {
+      // 이미 성공한 테스트 발송 1건이 한도를 쓰고 있는 상태에서 시작한다.
+      const fixture = await seedTestDeliveryOrder(dataSource, 1);
+      const service = createService(dataSource);
+
+      // 발송 실패 직전에 다른 인스턴스의 잔류 정리가 이 건을 삭제·회수한 상황을 만든다.
+      (service as any).deliveryBatchService.oneSend = jest.fn(async () => {
+        const inFlight = await testOrderDeliveryRepository.findOneOrFail({
+          where: { orderProductMappingId: fixture.mapping.id, deletedAt: IsNull() },
+        });
+        await testOrderDeliveryRepository.softDelete(inFlight.id);
+        await mappingRepository
+          .createQueryBuilder()
+          .update()
+          .set({ testDeliveryCount: () => 'GREATEST(test_delivery_count - 1, 0)' })
+          .where('id = :id', { id: fixture.mapping.id })
+          .execute();
+        return false;
+      });
+
+      await expect(
+        service.testDelivery(
+          { id: fixture.customer.id, authority: IUserAuthority.CORPORATE_ADMIN } as any,
+          {
+            orderId: fixture.order.id,
+            orderProductMappingId: fixture.mapping.id,
+            deliveryTarget: '01011112222',
+          } as any,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      // 선점(+1) → 잔류 정리 회수(-1) 로 이미 상쇄됐다. 보상까지 타면 0 이 되어
+      // 앞서 성공한 1건의 선점이 사라지고 기업관리자가 총 3회 발송할 수 있게 된다.
       const refreshedMapping = await mappingRepository.findOneByOrFail({ id: fixture.mapping.id });
       expect(refreshedMapping.testDeliveryCount).toBe(1);
     });

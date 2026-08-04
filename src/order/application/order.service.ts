@@ -5936,12 +5936,29 @@ export class OrderService {
     orderProductMappingId: number,
     limitClaimed: boolean,
   ): Promise<void> {
+    // 살아있는 행을 이 요청이 실제로 지웠을 때만 보상한다.
+    // 발송 실패를 처리하는 사이 다른 인스턴스의 잔류 정리가 같은 행을 지우며 한도까지 회수했을 수 있는데,
+    // 여기서 또 -1 하면 그 회수분과 겹쳐 앞선 성공 건의 선점까지 깎여 2회 제한을 넘겨 발송할 수 있다.
     if (testOrderDeliveryId !== null) {
-      await this.testOrderDeliveryRepository.softDelete(testOrderDeliveryId);
-    }
+      const removed = await this.testOrderDeliveryRepository
+        .createQueryBuilder()
+        .softDelete()
+        .where('id = :id', { id: testOrderDeliveryId })
+        .andWhere('deleted_at IS NULL')
+        .execute();
 
-    // 선점하지 않았으면(관리자 무제한 경로) 되돌릴 것도 없다. 여기서 차감하면 남의 한도를 깎는다.
-    if (!limitClaimed) {
+      // 선점하지 않았으면(관리자 무제한 경로) 되돌릴 것도 없다. 여기서 차감하면 남의 한도를 깎는다.
+      if (!limitClaimed) {
+        return;
+      }
+
+      if ((removed.affected ?? 0) !== 1) {
+        this.logger.warn(
+          `테스트 발송 이력이 이미 정리됨 (testOrderDeliveryId: ${testOrderDeliveryId}) — 한도 회수는 정리 쪽에서 수행돼 보상 생략`,
+        );
+        return;
+      }
+    } else if (!limitClaimed) {
       return;
     }
 
