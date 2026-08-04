@@ -31,11 +31,15 @@ SHOW INDEX FROM ssg_issue_log;
 
 ## 0-2. 규모 확인
 
-UNIQUE 인덱스 생성은 테이블을 재구성한다. 행 수에 따라 잠금 시간이 달라지므로 적용 창을 정할 때 확인한다.
-
 ```sql
 SELECT COUNT(*) AS rows_total FROM ssg_issue_log;
 ```
+
+InnoDB 에서 보조 UNIQUE 인덱스 추가는 **테이블을 재구성하지 않는다**(MySQL 8 online DDL: in-place, no table rebuild, 동시 DML 허용). 인덱스 DROP 도 마찬가지다. 따라서 이 마이그레이션은 `ALGORITHM=INPLACE, LOCK=NONE` 으로 수행한다.
+
+마이그레이션이 두 절을 명시하는 이유는 속도가 아니라 **안전장치**다. 어떤 이유로든 in-place 가 불가능하면 MySQL 이 조용히 COPY 알고리즘으로 떨어져 쓰기를 막는 대신, ALTER 가 즉시 실패한다. 실패하면 그 원인을 확인한 뒤 두 절을 빼고 점검 창에서 재시도한다.
+
+행 수는 소요 시간 추정용으로만 확인한다.
 
 ## 1. 중복 검사
 
@@ -109,6 +113,9 @@ SELECT id, order_delivery_id, bar_code, personal_code,
 
 ## 4. 실행 기록
 
-| 일자 | 대상 DB | §1 bar_code | §1 personal_code | 조치 |
-|---|---|---|---|---|
-| 2026-08-04 | `epopkon` | 0행 | 0행 | 정리 불필요. §0 배포 순서와 §0-1 인덱스명 확인 후 적용 가능 |
+| 일자 | 대상 | 행 수 | §1 bar_code | §1 personal_code | §0-1 인덱스명 | 판정 |
+|---|---|---|---|---|---|---|
+| 2026-08-04 | 개발 | 0 | 0행 | 0행 | `idx_*` 2개 존재, `uq_*` 없음 | 적용 가능 |
+| 2026-08-04 | 배포 | 47,558 | 0행 | 0행 | `idx_*` 2개 존재, `uq_*` 없음 | 적용 가능 (앱 배포 후) |
+
+엔진은 MySQL 8 (`SHOW INDEX` 에 `Visible` / `Expression` 컬럼 존재). 개발 DB 는 행이 0 이라 마이그레이션 문법만 확인 가능하고 데이터 무결성 검증은 되지 않는다. 실 제약 동작은 `src/delivery/application/ssg-insert-state.unique-collision.db-integration-test.ts` 가 전용 테이블에서 검증한다.
