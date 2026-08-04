@@ -15,6 +15,7 @@ import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.st
 import { IProductType } from '../../product/interface/product.type';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { DeliveryCutoverGuardService } from '../../delivery/application/delivery-cutover-guard.service';
+import { DeliveryFailureSotReader } from './delivery.failure.sot.reader';
 
 /**
  * resendFailedDelivery 단위 테스트 — self-deadlock fix(배치 동시성 모델 전환).
@@ -105,6 +106,10 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
         { provide: DeliveryBatchService, useValue: deliveryBatchService },
         { provide: PartnerCompanyExternService, useValue: partnerCompanyExternService },
         { provide: SsgInsertStateService, useValue: ssgInsertStateService },
+        {
+          provide: DeliveryFailureSotReader,
+          useValue: { loadMigrated: jest.fn().mockResolvedValue(new Map()) },
+        },
       ],
     }).compile();
 
