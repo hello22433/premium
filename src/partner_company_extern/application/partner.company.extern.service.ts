@@ -19,6 +19,7 @@ import {
   SsgCheckNotFoundError,
   SsgIssueAlreadyConfirmedError,
   SsgIssueAttemptAlreadyActiveError,
+  SsgIssueLogKeyCollisionError,
   SsgIssueRejectedError,
   SsgProcessingError,
   SsgTryError,
@@ -743,71 +744,73 @@ export class PartnerCompanyExternService {
           // 후보 0건(최초 clean 발송) → 새 PIN. 외부 SSG API 추가호출 없음(hot-path 보존).
         }
 
-        // 2~4단계를 Mutex로 직렬화: PIN 생성~중복확인~INSERT 간 경쟁 조건 방지
+        // 2~4단계를 Mutex로 직렬화: PIN 생성~중복확인~INSERT 간 경쟁 조건 방지.
+        // (Mutex 는 프로세스 로컬이라 다중 노드 안전 권위가 아니다. 후보 PIN 유일성의 권위는
+        //  ssg_issue_log 의 uq_ssg_issue_log_bar_code / _personal_code UNIQUE 제약이다.
+        //  docs/plans/2026-08-04-ssg-issue-log-unique-typed-collision.md)
         context = await this.withSsgMutex(async () => {
-          // 2) 새 PIN 생성 (최초 발송 또는 INSERT 실패 시) + 2중 중복 확인
-          if (!orderDelivery.barCode || !orderDelivery.personalCode) {
-            const maxRetries = 5;
-            let pinGenerated = false;
-            for (let attempt = 0; attempt < maxRetries; attempt++) {
-              const { barCode, personalCode } = this.ssgIssue.generateSsgIssue();
+          // 기존 PIN 재사용 확정(needsInsert=false) → 새 PIN 생성도 markAttempted 도 하지 않는다.
+          // 유효기간은 SSG DB 실제 값과 어긋나지 않도록 그대로 보존한다.
+          if (!needsInsert) {
+            return '';
+          }
 
-              // 1차 중복 확인: 로컬 ssg_issue_log (빠름)
-              const localDuplicate = await this.ssgIssueLogRepository.findOne({
-                where: [{ barCode }, { personalCode }],
-              });
-              if (localDuplicate) {
+          // 후보 루프. 후보 1회 = 생성 → 로컬 조회 → getTry → trId/유효기간 → 본문 → markAttempted.
+          // ssg_issue_log 유일성 충돌만 다음 후보로 넘어가고, 그 외 오류는 즉시 전파한다.
+          // maxRetries 는 전체 후보 수 상한이다. 생성 루프와 충돌 재시도를 중첩하면
+          // 충돌마다 생성이 다시 5회 돌아 최대 25 후보가 만들어지므로 단일 루프로 유지한다.
+          const maxRetries = 5;
+          for (let attempt = 0; attempt < maxRetries; attempt++) {
+            // 2) 새 PIN 생성 + 2중 중복 확인
+            const { barCode, personalCode } = this.ssgIssue.generateSsgIssue();
+
+            // 1차 중복 확인: 로컬 ssg_issue_log (빠름). SELECT 이므로 비원자적 — 최종 판정은 UNIQUE 제약.
+            const localDuplicate = await this.ssgIssueLogRepository.findOne({
+              where: [{ barCode }, { personalCode }],
+            });
+            if (localDuplicate) {
+              this.logger.warn(
+                `[SSG] 로컬 블랙리스트 중복 감지 - barCode: ${barCode}, personalCode: ${personalCode}, 재생성 시도 (${attempt + 1}/${maxRetries})`,
+              );
+              continue;
+            }
+
+            // 2차 중복 확인: SSG cust_info (GetSsgTry). 제출 이력 = 중복.
+            // personalCode 단독(전 행사 합산) 조회라 cust_info_result(GetSsgStatus)보다 중복번호 검출이 정확.
+            try {
+              const tryOut = await this.ssgIssue.getTry({ vno: personalCode });
+              const tryYn = tryOut?.response?.value?.[0]?.tryYn?.[0];
+              if (tryYn === 'Y') {
+                // 제출 이력 존재 = 중복
                 this.logger.warn(
-                  `[SSG] 로컬 블랙리스트 중복 감지 - barCode: ${barCode}, personalCode: ${personalCode}, 재생성 시도 (${attempt + 1}/${maxRetries})`,
+                  `[SSG] cust_info 중복 감지 - personalCode: ${personalCode}, 재생성 시도 (${attempt + 1}/${maxRetries})`,
                 );
                 continue;
               }
-
-              // 2차 중복 확인: SSG cust_info (GetSsgTry). 제출 이력 = 중복.
-              // personalCode 단독(전 행사 합산) 조회라 cust_info_result(GetSsgStatus)보다 중복번호 검출이 정확.
-              try {
-                const tryOut = await this.ssgIssue.getTry({ vno: personalCode });
-                const tryYn = tryOut?.response?.value?.[0]?.tryYn?.[0];
-                if (tryYn === 'Y') {
-                  // 제출 이력 존재 = 중복
-                  this.logger.warn(
-                    `[SSG] cust_info 중복 감지 - personalCode: ${personalCode}, 재생성 시도 (${attempt + 1}/${maxRetries})`,
-                  );
-                  continue;
-                }
-                // tryYn === 'N' = 미사용 → 사용 가능
-                orderDelivery.barCode = barCode;
-                orderDelivery.personalCode = personalCode;
-                pinGenerated = true;
-                this.logger.log(`[SSG] PIN 생성 완료 - barCode: ${barCode}, personalCode: ${personalCode}`);
-                break;
-              } catch (e) {
-                // getTry 실패(검증 거절/네트워크/파싱) → 중복 여부 불명 → 안전을 위해 중단
-                this.logger.error(
-                  `[SSG] PIN 중복 확인(GetSsgTry) 오류 - personalCode: ${personalCode}, 안전을 위해 중단: ${e instanceof Error ? e.message : e}`,
-                );
-                throw e;
-              }
+              // tryYn === 'N' = 미사용 → 사용 가능
+            } catch (e) {
+              // getTry 실패(검증 거절/네트워크/파싱) → 중복 여부 불명 → 안전을 위해 중단
+              this.logger.error(
+                `[SSG] PIN 중복 확인(GetSsgTry) 오류 - personalCode: ${personalCode}, 안전을 위해 중단: ${e instanceof Error ? e.message : e}`,
+              );
+              throw e;
             }
-            if (!pinGenerated) {
-              throw new Error(`SSG PIN 생성 ${maxRetries}회 시도 후에도 중복 발생`);
-            }
-          }
 
-          // 3) 유효기간 및 트랜잭션 ID 설정
-          // needsInsert=false(PIN이 이미 SSG DB에 등록된 경우)일 때는 기존 유효기간 보존
-          // → SSG DB의 실제 유효기간과 안내 유효기간 불일치 방지
-          if (needsInsert) {
+            orderDelivery.barCode = barCode;
+            orderDelivery.personalCode = personalCode;
+            this.logger.log(`[SSG] PIN 생성 완료 - barCode: ${barCode}, personalCode: ${personalCode}`);
+
+            // 3) 유효기간 및 트랜잭션 ID 설정 — 후보마다 새로 산출한다.
             orderDelivery.ssgTransactionId = SsgTransactionId.makeSsgTrade();
             orderDelivery.expireAt = addDays(new Date(), orderDelivery.orderProductMapping.product.expireDay - 1);
             const encourageDay = orderDelivery.orderProductMapping.encourageDay;
             if (encourageDay) {
               orderDelivery.encourageAt = subDays(orderDelivery.expireAt, encourageDay);
             }
-          }
 
-          // 4) SSG DB INSERT (필요한 경우에만)
-          if (needsInsert) {
+            // 4) SSG DB INSERT
+            // 본문(smsSsgTemplate)은 personalCode/barCode/expireAt 을 직접 담으므로 후보마다 재산출해야 한다.
+            // 재사용하면 옛 후보의 PIN 이 적힌 본문을 SSG 로 보내게 된다.
             let text = orderDelivery.orderProductMapping.sendContent ?? '';
 
             if (orderDelivery.orderProductMapping.sendTailText) {
@@ -823,9 +826,9 @@ export class PartnerCompanyExternService {
             // plans/ssg-balance-refactor.md PR2.
             // markAttempted 결과가 TRANSITIONED 가 아니면 외부 INSERT 호출 금지 (state/log 없는 INSERT 위험).
             const attemptPayload: SsgAttemptPayload = {
-              barCode: orderDelivery.barCode!,
-              personalCode: orderDelivery.personalCode!,
-              ssgTransactionId: orderDelivery.ssgTransactionId!,
+              barCode: orderDelivery.barCode,
+              personalCode: orderDelivery.personalCode,
+              ssgTransactionId: orderDelivery.ssgTransactionId,
               eventNo: ssgEvent.no,
               eventSeq: ssgEvent.order,
               ssgEventId: ssgEvent.id,
@@ -833,7 +836,24 @@ export class PartnerCompanyExternService {
               encourageAt: orderDelivery.encourageAt ?? null,
               couponNum: orderDelivery.couponNum ?? null,
             };
-            const markResult = await this.ssgInsertStateService.markAttempted(orderDelivery.id, attemptPayload);
+            let markResult: MarkAttemptedResult;
+            try {
+              markResult = await this.ssgInsertStateService.markAttempted(orderDelivery.id, attemptPayload);
+            } catch (e) {
+              if (e instanceof SsgIssueLogKeyCollisionError) {
+                // 다른 발송 건이 이 후보를 선점했다. markAttempted 의 REQUIRES_NEW 가 통째로 롤백되어
+                // state 도 충돌 이전 값이므로, 후보만 폐기하고 다음 후보로 진행한다.
+                // 충돌은 ssgIssue.issue() 이전에 발생하므로 벤더 호출은 0 이다.
+                this.logger.warn(
+                  `[SSG] 후보 PIN 선점됨(${e.collidedKey}) - barCode: ${barCode}, personalCode: ${personalCode}, 재생성 시도 (${attempt + 1}/${maxRetries})`,
+                );
+                orderDelivery.barCode = null;
+                orderDelivery.personalCode = null;
+                orderDelivery.ssgTransactionId = null;
+                continue;
+              }
+              throw e;
+            }
             if (markResult === MarkAttemptedResult.SKIPPED_ACTIVE) {
               // 이미 ATTEMPTED 진행 중. 실패 확정이 아니므로 markFailed 대상 아님. orphan resolver가 확정해야 함.
               throw new SsgIssueAttemptAlreadyActiveError(orderDelivery.id);
@@ -849,12 +869,12 @@ export class PartnerCompanyExternService {
                 eventNo: ssgEvent.no,
                 eventSeq: ssgEvent.order,
                 eventKey: ssgEvent.code,
-                vno: orderDelivery.personalCode!,
-                pinNo: orderDelivery.barCode!,
+                vno: orderDelivery.personalCode,
+                pinNo: orderDelivery.barCode,
                 userName: ssgIssueUserName,
                 userAmount: String(orderDelivery.orderProductMapping.product.price),
                 msgContent: textForSsg,
-                trId: orderDelivery.ssgTransactionId!,
+                trId: orderDelivery.ssgTransactionId,
                 callBack: callBackNumber,
               });
             } catch (e) {
@@ -868,9 +888,9 @@ export class PartnerCompanyExternService {
 
             // INSERT 성공 → durable state CONFIRMED 마킹 (PIN 정보 best-effort 저장).
             await this.ssgInsertStateService.markConfirmed(orderDelivery.id, {
-              barCode: orderDelivery.barCode!,
-              personalCode: orderDelivery.personalCode!,
-              ssgTransactionId: orderDelivery.ssgTransactionId!,
+              barCode: orderDelivery.barCode,
+              personalCode: orderDelivery.personalCode,
+              ssgTransactionId: orderDelivery.ssgTransactionId,
               couponNum: orderDelivery.couponNum ?? null,
               expireAt: orderDelivery.expireAt ?? null,
               encourageAt: orderDelivery.encourageAt ?? null,
@@ -880,7 +900,7 @@ export class PartnerCompanyExternService {
             return JSON.stringify(response);
           }
 
-          return '';
+          throw new Error(`SSG PIN 생성 ${maxRetries}회 시도 후에도 중복 발생`);
         });
 
         // 신규 INSERT 로 전달된 ssgEvent 를 실제 차감·사용한 경우만 신규발급으로 표시(재사용은 기본 false 유지).

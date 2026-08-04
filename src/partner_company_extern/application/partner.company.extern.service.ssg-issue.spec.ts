@@ -26,6 +26,7 @@ import {
   SsgCheckNotFoundError,
   SsgIssueAlreadyConfirmedError,
   SsgIssueAttemptAlreadyActiveError,
+  SsgIssueLogKeyCollisionError,
   SsgIssueRejectedError,
   SsgIssueUnknownError,
   SsgProcessingError,
@@ -197,6 +198,105 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
         }),
       );
       expect(ssgInsertStateService.markFailed).not.toHaveBeenCalled();
+    });
+
+    describe('ssg_issue_log 후보 충돌 → 다음 후보 재시도', () => {
+      // 후보마다 다른 PIN 을 뽑도록 generateSsgIssue 를 순차 응답으로 바꾼다.
+      const sequentialPins = (count: number) => {
+        const pins = Array.from({ length: count }, (_, i) => ({
+          barCode: `8000000${i + 1}`,
+          personalCode: `0131234567${i + 1}`,
+        }));
+        ssgIssue.generateSsgIssue.mockReset();
+        pins.forEach((pin) => ssgIssue.generateSsgIssue.mockReturnValueOnce(pin));
+        return pins;
+      };
+
+      it('1차 후보 충돌 → 2차 후보로 SSG INSERT 성공, 충돌 후보에 대한 벤더 호출 0', async () => {
+        const orderDelivery = buildOrderDelivery();
+        const ssgEvent = buildSsgEvent();
+        const pins = sequentialPins(2);
+        ssgIssue.check.mockRejectedValue(new SsgCheckNotFoundError('미등록'));
+        ssgInsertStateService.markAttempted
+          .mockRejectedValueOnce(new SsgIssueLogKeyCollisionError(orderDelivery.id, 'bar_code'))
+          .mockResolvedValueOnce(MarkAttemptedResult.TRANSITIONED);
+        ssgIssue.issue.mockResolvedValue({ response: { result: [{ code: ['1000'], reason: ['ok'] }] } });
+
+        await sut.issue(orderDelivery, ssgEvent);
+
+        expect(ssgInsertStateService.markAttempted).toHaveBeenCalledTimes(2);
+        // 벤더 호출은 살아남은 후보에 대해 정확히 1회
+        expect(ssgIssue.issue).toHaveBeenCalledTimes(1);
+        expect(ssgIssue.issue.mock.calls[0][0]).toEqual(
+          expect.objectContaining({ pinNo: pins[1].barCode, vno: pins[1].personalCode }),
+        );
+        expect(orderDelivery.barCode).toBe(pins[1].barCode);
+        expect(ssgInsertStateService.markConfirmed).toHaveBeenCalledWith(
+          orderDelivery.id,
+          expect.objectContaining({ barCode: pins[1].barCode, personalCode: pins[1].personalCode }),
+        );
+      });
+
+      it('후보 전환 시 trId 와 SSG 본문이 새 후보 기준으로 재산출된다', async () => {
+        const orderDelivery = buildOrderDelivery();
+        const ssgEvent = buildSsgEvent();
+        const pins = sequentialPins(2);
+        ssgIssue.check.mockRejectedValue(new SsgCheckNotFoundError('미등록'));
+        ssgInsertStateService.markAttempted
+          .mockRejectedValueOnce(new SsgIssueLogKeyCollisionError(orderDelivery.id, 'personal_code'))
+          .mockResolvedValueOnce(MarkAttemptedResult.TRANSITIONED);
+        ssgIssue.issue.mockResolvedValue({ response: { result: [{ code: ['1000'], reason: ['ok'] }] } });
+
+        await sut.issue(orderDelivery, ssgEvent);
+
+        const firstPayload = ssgInsertStateService.markAttempted.mock.calls[0][1];
+        const secondPayload = ssgInsertStateService.markAttempted.mock.calls[1][1];
+        expect(firstPayload.barCode).toBe(pins[0].barCode);
+        expect(secondPayload.barCode).toBe(pins[1].barCode);
+        // 후보마다 새 trId 를 발급해야 한다 (stale 재사용 금지)
+        expect(secondPayload.ssgTransactionId).not.toBe(firstPayload.ssgTransactionId);
+        expect(orderDelivery.ssgTransactionId).toBe(secondPayload.ssgTransactionId);
+
+        // 본문은 personalCode/barCode 를 직접 담으므로 살아남은 후보 값이어야 한다.
+        const sentBody = ssgIssue.issue.mock.calls[0][0].msgContent as string;
+        expect(sentBody).toContain(pins[1].personalCode);
+        expect(sentBody).toContain(pins[1].barCode);
+        expect(sentBody).not.toContain(pins[0].personalCode);
+        expect(sentBody).not.toContain(pins[0].barCode);
+        expect(ssgIssue.issue.mock.calls[0][0].trId).toBe(secondPayload.ssgTransactionId);
+      });
+
+      it('후보 5회 모두 충돌 → 발급 실패로 종결, 벤더 호출 0', async () => {
+        const orderDelivery = buildOrderDelivery();
+        const ssgEvent = buildSsgEvent();
+        sequentialPins(6);
+        ssgIssue.check.mockRejectedValue(new SsgCheckNotFoundError('미등록'));
+        ssgInsertStateService.markAttempted.mockRejectedValue(
+          new SsgIssueLogKeyCollisionError(orderDelivery.id, 'bar_code'),
+        );
+
+        await expect(sut.issue(orderDelivery, ssgEvent)).rejects.toThrow('SSG PIN 생성 5회 시도 후에도 중복 발생');
+
+        // 생성 루프와 충돌 재시도가 중첩되면 25회가 된다. 전체 상한이 5 여야 한다.
+        expect(ssgInsertStateService.markAttempted).toHaveBeenCalledTimes(5);
+        expect(ssgIssue.generateSsgIssue).toHaveBeenCalledTimes(5);
+        expect(ssgIssue.issue).not.toHaveBeenCalled();
+        expect(ssgInsertStateService.markConfirmed).not.toHaveBeenCalled();
+      });
+
+      it('충돌이 아닌 markAttempted 오류는 재시도 없이 그대로 전파', async () => {
+        const orderDelivery = buildOrderDelivery();
+        const ssgEvent = buildSsgEvent();
+        sequentialPins(2);
+        ssgIssue.check.mockRejectedValue(new SsgCheckNotFoundError('미등록'));
+        const original = new Error('Lock wait timeout exceeded');
+        ssgInsertStateService.markAttempted.mockRejectedValue(original);
+
+        await expect(sut.issue(orderDelivery, ssgEvent)).rejects.toBe(original);
+
+        expect(ssgInsertStateService.markAttempted).toHaveBeenCalledTimes(1);
+        expect(ssgIssue.issue).not.toHaveBeenCalled();
+      });
     });
 
     it('SKIPPED_ACTIVE → SsgIssueAttemptAlreadyActiveError throw, ssgIssue.issue() 호출 안 됨', async () => {

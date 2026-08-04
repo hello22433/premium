@@ -10,6 +10,10 @@ import { Column, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
  * - REQUIRES_NEW 트랜잭션으로 기록하여 메인 트랜잭션 롤백 시에도 유지
  * - PIN 생성 시 이 테이블을 먼저 조회하여 로컬 중복 검사 (1차)
  * - SSG check API로 SSG DB 중복 검사 (2차)
+ * - bar_code / personal_code 는 UNIQUE. 위 두 조회는 비원자적(check-to-insert 창)이므로
+ *   PIN 후보의 생애 유일성 권위는 이 제약뿐이다. 위반은 SsgIssueLogKeyCollisionError 로 승격되어
+ *   발급 경로가 다음 후보로 진행한다.
+ *   docs/plans/2026-08-04-ssg-issue-log-unique-typed-collision.md
  *
  * expireAt/encourageAt/couponNum: ATTEMPTED state 복원용 (plans/ssg-balance-refactor.md PR1).
  * orphan resolver가 SSG check 후 등록된 PIN을 우리 DB에 복원할 때 사용.
@@ -19,11 +23,11 @@ export class SsgIssueLogEntity {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Index('idx_ssg_issue_log_bar_code')
+  @Index('uq_ssg_issue_log_bar_code', { unique: true })
   @Column({ type: 'varchar', length: 32, name: 'bar_code', comment: 'SSG INSERT 시도한 barCode' })
   barCode: string;
 
-  @Index('idx_ssg_issue_log_personal_code')
+  @Index('uq_ssg_issue_log_personal_code', { unique: true })
   @Column({ type: 'varchar', length: 32, name: 'personal_code', comment: 'SSG INSERT 시도한 personalCode' })
   personalCode: string;
 
