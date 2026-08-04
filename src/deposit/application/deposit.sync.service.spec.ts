@@ -211,9 +211,14 @@ describe('DepositSyncService', () => {
     });
   });
 
-  describe('조회 구간 결정', () => {
+  describe('조회 구간 결정 (원본 총계 대조)', () => {
+    const daysBetween = (from?: string, to?: string) =>
+      Math.round(
+        (new Date(`${to}T00:00:00+09:00`).getTime() - new Date(`${from}T00:00:00+09:00`).getTime()) / 86_400_000,
+      );
+
     it('미러가 비어 있으면 백필 시작일부터 받아온다', async () => {
-      const { sut, fetchPage } = buildSut({
+      const { sut } = buildSut({
         pages: [[item()]],
         mirrorCount: 0,
         config: { DEPOSIT_SYNC_BACKFILL_FROM: '2020-01-01' },
@@ -222,36 +227,59 @@ describe('DepositSyncService', () => {
       const result = await sut.syncRecent();
 
       expect(result?.from).toBe('2020-01-01');
-      expect(fetchPage.mock.calls[0][0]).toBe('2020-01-01');
     });
 
-    it('미러에 데이터가 있으면 최근 N일만 다시 받아온다', async () => {
+    /**
+     * 회귀: 백필이 중간에 실패하면 미러가 "비어 있지 않은" 상태로 남는다. 그때 판정 기준이
+     * `mirrorCount === 0` 이면 다음 주기부터 최근 N일만 받게 되고, 실패 지점 ~ N일 전 구간이
+     * 영구히 비면서 아무도 감지하지 못한다. 총계를 대조해 계속 백필해야 한다.
+     */
+    it('미러에 데이터가 있어도 원본보다 적으면 백필을 이어서 한다 (백필 중단 자가 치유)', async () => {
+      const { sut } = buildSut({
+        pages: [Array.from({ length: 500 }, (_, i) => item({ dedupKey: `k${i}` }))],
+        mirrorCount: 120, // 앞선 백필이 120건까지만 커밋되고 실패한 상황
+        config: { DEPOSIT_SYNC_BACKFILL_FROM: '2020-01-01' },
+      });
+
+      const result = await sut.syncRecent();
+
+      expect(result?.from).toBe('2020-01-01');
+    });
+
+    it('미러와 원본 건수가 같으면 최근 N일만 다시 받아온다', async () => {
       const { sut } = buildSut({
         pages: [[item()]],
-        mirrorCount: 100,
+        mirrorCount: 1,
         config: { DEPOSIT_SYNC_RESYNC_DAYS: '7' },
       });
 
       const result = await sut.syncRecent();
 
-      const from = new Date(`${result?.from}T00:00:00+09:00`);
-      const to = new Date(`${result?.to}T00:00:00+09:00`);
-      const days = Math.round((to.getTime() - from.getTime()) / 86_400_000);
-      expect(days).toBe(7);
+      expect(daysBetween(result?.from, result?.to)).toBe(7);
+    });
+
+    it('원본에서 행이 지워져 미러가 더 많아도 백필하지 않는다 (채울 게 없다)', async () => {
+      const { sut } = buildSut({
+        pages: [[item()]],
+        mirrorCount: 50,
+        config: { DEPOSIT_SYNC_RESYNC_DAYS: '7' },
+      });
+
+      const result = await sut.syncRecent();
+
+      expect(daysBetween(result?.from, result?.to)).toBe(7);
     });
 
     it('RESYNC_DAYS 가 이상한 값이면 기본값으로 되돌린다', async () => {
       const { sut } = buildSut({
         pages: [[item()]],
-        mirrorCount: 100,
+        mirrorCount: 1,
         config: { DEPOSIT_SYNC_RESYNC_DAYS: 'abc' },
       });
 
       const result = await sut.syncRecent();
 
-      const from = new Date(`${result?.from}T00:00:00+09:00`);
-      const to = new Date(`${result?.to}T00:00:00+09:00`);
-      expect(Math.round((to.getTime() - from.getTime()) / 86_400_000)).toBe(30);
+      expect(daysBetween(result?.from, result?.to)).toBe(30);
     });
   });
 
@@ -314,25 +342,41 @@ describe('DepositSyncService', () => {
       expect(status.source).toBeNull();
     });
 
-    it('차단 상태를 그대로 전달한다', async () => {
-      const { sut } = buildSut({ pages: [[item()]] });
-      (sut as any).bankDepositRepository.createQueryBuilder = jest.fn(() => ({
+    const stubStatus = (sut: any, sourceStatus: unknown) => {
+      sut.bankDepositRepository.createQueryBuilder = jest.fn(() => ({
         select: jest.fn().mockReturnThis(),
         getRawOne: jest.fn(async () => ({ lastSyncedAt: null })),
       }));
-      (sut as any).depositSourceHttp.fetchStatus = jest.fn(async () => ({
-        lastScrapedAt: '2026-08-03T10:35:51.995+09:00',
+      sut.depositSourceHttp.fetchStatus = jest.fn(async () => sourceStatus);
+    };
+
+    it('차단 상태를 그대로 전달한다', async () => {
+      const { sut } = buildSut({ pages: [[item()]] });
+      stubStatus(sut, {
+        lastScrapedAt: '2026-08-04T05:47:00.123456Z',
         gateTripped: true,
         gateReason: '기기 재등록 필요',
-      }));
+        pollingEnabled: true,
+      });
 
       const status = await sut.getSyncStatus();
 
       expect(status.source).toEqual({
         gateTripped: true,
         gateReason: '기기 재등록 필요',
-        lastScrapedAt: '2026-08-03T10:35:51.995+09:00',
+        lastScrapedAt: '2026-08-04T05:47:00.123456Z',
+        pollingEnabled: true,
       });
+    });
+
+    // pollingEnabled 미지원 응답에서 false 로 접으면 "폴링이 꺼져 있다"는 잘못된 경고가 뜬다.
+    it('상대가 pollingEnabled 를 안 주면 false 가 아니라 null 로 둔다 (모름 ≠ 꺼짐)', async () => {
+      const { sut } = buildSut({ pages: [[item()]] });
+      stubStatus(sut, { lastScrapedAt: null, gateTripped: false, gateReason: null });
+
+      const status = await sut.getSyncStatus();
+
+      expect(status.source?.pollingEnabled).toBeNull();
     });
   });
 });

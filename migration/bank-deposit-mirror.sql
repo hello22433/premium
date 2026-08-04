@@ -24,7 +24,12 @@
 --   조용히 UNMATCHED 로 되돌아간다. 그래서 upsert 의 갱신 컬럼 목록을 코드에서
 --   명시적으로 열거한다(deposit.sync.service.ts).
 
-CREATE TABLE IF NOT EXISTS `bank_deposit` (
+-- ⚠️ 일부러 `IF NOT EXISTS` 를 쓰지 않는다.
+--    구 설계의 `bank_deposit`(erp_macro 가 직접 write 하던 것)이 남아 있는데 이 스크립트가
+--    조용히 성공해 버리면, 앱은 스키마가 다른 테이블을 상대로 돌고(컬럼 불일치), 게다가 그
+--    테이블에 행이 남아 있으면 미러가 "이미 차 있다"고 오판해 백필이 어긋난다.
+--    이미 있으면 여기서 오류로 멈추는 것이 맞다 — 위 정리 절차를 먼저 수행하라는 신호다.
+CREATE TABLE `bank_deposit` (
   `id`                INT          NOT NULL AUTO_INCREMENT,
 
   -- ===== 원본 미러 (erp_macro 정본) =====

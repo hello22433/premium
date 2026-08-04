@@ -99,8 +99,17 @@ export class DepositSourceStatusViewDto {
   @ApiProperty({ description: '차단 사유', nullable: true })
   gateReason: string | null;
 
-  @ApiProperty({ description: 'erp_macro 가 마지막으로 스크래핑에 성공한 시각', nullable: true })
+  @ApiProperty({
+    description: 'erp_macro 의 폴링이 마지막으로 성공 완료된 시각 (개별 행의 스크래핑 시각이 아님)',
+    nullable: true,
+  })
   lastScrapedAt: string | null;
+
+  @ApiProperty({
+    description: '상대 폴링 스위치 상태. lastScrapedAt=null 이 "꺼둠"인지 "아직 미실행"인지 구분용. 미지원이면 null',
+    nullable: true,
+  })
+  pollingEnabled: boolean | null;
 }
 
 export class DepositGetSyncStatusResDto {

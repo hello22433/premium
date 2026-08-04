@@ -173,6 +173,35 @@ const fakeConfig = (values: Record<string, string> = {}) => ({
     );
     check('원본 컬럼(voucher_no)은 갱신된다', matched.voucherNo === '2026/07/29-2', matched.voucherNo);
 
+    // 5-b) ⭐ 원본이 값을 되돌리면(회계반영 취소·거래처 detach) 미러도 null 로 따라가는가.
+    //      erp_macro 회신 §2-B 의 확인 요청. "null 이면 기존값 유지(coalesce)" 라면 미러가
+    //      옛 거래처를 붙들고 있어 원본과 어긋난다. 덮어써야 거울이 유지된다.
+    const reverted = [
+      item({ dedupKey: 'aaaa1111', voucherNo: null, erpPartnerName: null, erpPartnerCode: null }),
+      item({ dedupKey: 'bbbb2222', depositor: '한빛문구', amount: 12000 }),
+    ];
+    await new DepositSyncService(repository, fakeSource(reverted) as any, fakeConfig() as any).syncRange(
+      '2026-07-01',
+      '2026-07-31',
+    );
+    const afterRevert = await repository.findOneByOrFail({ dedupKey: 'aaaa1111' });
+
+    check(
+      '⭐ 원본이 voucher_no 를 되돌리면 미러도 null 이 된다',
+      afterRevert.voucherNo === null,
+      afterRevert.voucherNo,
+    );
+    check(
+      '⭐ 원본이 거래처를 떼면 미러도 null 이 된다',
+      afterRevert.erpPartnerName === null && afterRevert.erpPartnerCode === null,
+      { name: afterRevert.erpPartnerName, code: afterRevert.erpPartnerCode },
+    );
+    check(
+      '되돌림 동기화에도 운영자 매칭은 여전히 보존된다',
+      afterRevert.matchedUserId === 7 && afterRevert.matchStatus === DepositMatchStatus.MAPPED,
+      { userId: afterRevert.matchedUserId, status: afterRevert.matchStatus },
+    );
+
     // 6) 계좌 집계
     const accounts = await listService.getAccountList();
     check('계좌 집계', accounts.accounts.length === 1 && accounts.accounts[0].count === 2, accounts.accounts);

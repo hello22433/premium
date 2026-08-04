@@ -8,8 +8,11 @@ import { DepositSyncService } from './deposit.sync.service';
  * 기본은 꺼져 있다(DEPOSIT_SYNC_ENABLED=false). erp_macro 조회 API 와 회선이 준비되기 전에
  * 켜지면 5분마다 실패 로그만 쌓이므로, 준비가 끝난 환경에서만 켠다.
  *
- * 분(分)의 45초 지점을 쓰는 이유: 이 레포의 다른 5분 배치들이 :00/:25/:30/:58 에 몰려 있어
- * 겹치지 않게 비운 자리다.
+ * 초(秒) 오프셋 35 를 쓰는 이유: 이 레포의 다른 `*​/5` 배치가 이미
+ * :00 :15 :25 :30 :45 :50 :55 :58 을 점유하고 있다(delivery 5개, external_api 2개,
+ * customer_service 1개). 남은 자리는 :05 :10 :35 :40 이며 그중 하나를 쓴다.
+ * upsert 가 멱등이라 겹쳐도 데이터는 안전하지만, 같은 순간에 배치가 몰리면
+ * DB 커넥션 풀을 함께 잡아 서로의 지연을 키운다.
  */
 @Injectable()
 export class DepositSyncSchedule {
@@ -17,7 +20,7 @@ export class DepositSyncSchedule {
 
   constructor(private depositSyncService: DepositSyncService) {}
 
-  @Cron('45 */5 * * * *', { timeZone: 'Asia/Seoul' })
+  @Cron('35 */5 * * * *', { timeZone: 'Asia/Seoul' })
   async syncDeposits(): Promise<void> {
     if (!this.depositSyncService.isEnabled()) {
       return;

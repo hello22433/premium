@@ -58,11 +58,21 @@ export interface DepositSourcePage {
  * MAX(synced_at) 만으로 "동기화가 멈췄는지"까지만 판단한다.
  */
 export interface DepositSourceStatus {
-  /** 마지막으로 스크래핑에 성공한 시각 (ISO 8601). 한 번도 없으면 null */
+  /**
+   * 마지막으로 **폴링이 성공적으로 완료된** 시각 (ISO 8601). 기동 후 아직 성공 전이면 null.
+   * ⚠️ 개별 행의 scrapedAt 이 아니다 — 그 값은 신규 입금이 없는 날엔 스크래퍼가 멀쩡해도
+   * 움직이지 않아 "죽었다"는 오탐을 만든다.
+   */
   lastScrapedAt: string | null;
-  /** 스크래퍼 차단기 작동 여부. true 면 수집이 멈춰 있다 */
+  /** 스크래퍼 차단기 작동 여부. true 면 수집이 멈춰 있다(수동 리셋 전까지 유지) */
   gateTripped: boolean;
   gateReason: string | null;
+  /**
+   * 상대의 폴링 스위치 자체가 켜져 있는지.
+   * lastScrapedAt=null 이 "꺼둔 것"인지 "아직 첫 성공 전"인지 구분하는 데 쓴다.
+   * (구버전 응답에는 없을 수 있어 optional)
+   */
+  pollingEnabled?: boolean;
 }
 
 /** 재시도해도 소용없는 실패(인증·파라미터). 즉시 중단하고 사람이 봐야 한다. */

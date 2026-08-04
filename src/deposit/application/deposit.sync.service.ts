@@ -7,8 +7,10 @@ import { BankDepositEntity } from '../../entity/bank.deposit.entity';
 import { DepositSourceHttp } from '../infra/deposit.source.http';
 import { DepositSourceItem, DepositSourcePermanentError } from '../interface/deposit.source';
 
-/** 한 요청에 받아올 건수. 계약상 상한 1000. */
+/** 한 요청에 받아올 건수. */
 const DEFAULT_PAGE_SIZE = 500;
+/** 계약상 상한. 이보다 크게 요청하면 상대가 깎아서 돌려주고, 그게 조용한 조기 종료가 된다. */
+const MAX_PAGE_SIZE = 1000;
 /** 매 주기 다시 받아올 최근 구간(일). 회계전표가 뒤늦게 반영되는 경우까지 덮는다. */
 const DEFAULT_RESYNC_DAYS = 30;
 /** 미러가 비어 있을 때 백필 시작일. 실데이터는 2025-06 부터라 그보다 앞이면 충분하다. */
@@ -47,7 +49,18 @@ export class DepositSyncService {
 
   /**
    * 주기 동기화 진입점.
-   * 미러가 비어 있으면 전체 백필, 아니면 최근 N일 재동기화.
+   *
+   * 조회 구간을 **매 주기 원본 총계와 대조해서** 정한다. 미러가 원본보다 적으면 덜 받은
+   * 것이므로 전체 백필, 같으면 최근 N일만 재동기화한다.
+   *
+   * ⚠️ 여기를 "미러가 비어 있으면 백필"로 두면 안 된다. 그 조건은 **한 번만 참**이라,
+   * 첫 백필이 중간 페이지에서 실패하면(네트워크 등) 이미 커밋된 앞부분 때문에 다음
+   * 주기부터는 최근 N일만 받게 되고, 실패 지점 ~ N일 전 구간이 **영구히 비면서
+   * 아무도 감지하지 못한다.** 정렬이 오름차순이라 먼저 커밋되는 쪽이 과거 데이터라
+   * 구멍은 항상 "중간"에 생기고, 돈 화면에서는 "그 기간에 입금이 없었다"로 읽힌다.
+   *
+   * 총계 대조는 size=1 요청 한 번이라 비용이 사실상 없고, 백필 갭뿐 아니라 중간
+   * 누락까지 함께 메우는 자가 치유가 된다.
    */
   async syncRecent(): Promise<{ fetched: number; from: string; to: string } | null> {
     if (this.running) {
@@ -59,15 +72,23 @@ export class DepositSyncService {
     try {
       const now = new Date();
       const to = format(now, DATE_FORMAT);
-      const mirrorCount = await this.bankDepositRepository.count();
+      const backfillFrom = this.configService.get<string>('DEPOSIT_SYNC_BACKFILL_FROM', DEFAULT_BACKFILL_FROM);
 
-      const from =
-        mirrorCount === 0
-          ? this.configService.get<string>('DEPOSIT_SYNC_BACKFILL_FROM', DEFAULT_BACKFILL_FROM)
-          : format(subDays(now, this.resyncDays()), DATE_FORMAT);
+      const [mirrorCount, sourceTotal] = await Promise.all([
+        this.bankDepositRepository.count(),
+        this.fetchSourceTotal(backfillFrom, to),
+      ]);
 
-      if (mirrorCount === 0) {
-        this.logger.log(`미러가 비어 있어 전체 백필을 수행합니다. from=${from}`);
+      // 원본이 미러보다 많으면 아직 못 받은 게 있다. (원본에서 행이 지워지면 반대가 되는데,
+      // 그때는 백필해도 채울 게 없으므로 최근 구간만 도는 것이 맞다)
+      const needsBackfill = mirrorCount < sourceTotal;
+      const from = needsBackfill ? backfillFrom : format(subDays(now, this.resyncDays()), DATE_FORMAT);
+
+      if (needsBackfill) {
+        this.logger.log(
+          `미러가 원본보다 ${sourceTotal - mirrorCount}건 적어 전체 백필을 수행합니다. ` +
+            `(미러 ${mirrorCount} / 원본 ${sourceTotal}, from=${from})`,
+        );
       }
 
       const fetched = await this.syncRange(from, to);
@@ -77,12 +98,18 @@ export class DepositSyncService {
     }
   }
 
+  /** 총계만 필요하므로 1건짜리 페이지를 받아 totalElements 만 읽는다. */
+  private async fetchSourceTotal(from: string, to: string): Promise<number> {
+    const page = await this.depositSourceHttp.fetchPage(from, to, 0, 1);
+    return page.totalElements;
+  }
+
   /**
    * 지정 구간을 페이지 단위로 받아 미러에 upsert 한다.
    * @returns 수신 건수(중복 포함)
    */
   async syncRange(from: string, to: string): Promise<number> {
-    const size = Number(this.configService.get('DEPOSIT_SYNC_PAGE_SIZE', DEFAULT_PAGE_SIZE));
+    const size = this.pageSize();
     const syncedAt = new Date();
 
     // ⚠️ 상대는 Spring Pageable 이라 페이지가 0 부터 시작한다. 1 부터 보내면 첫 페이지가
@@ -188,7 +215,12 @@ export class DepositSyncService {
   async getSyncStatus(): Promise<{
     enabled: boolean;
     lastSyncedAt: Date | null;
-    source: { gateTripped: boolean; gateReason: string | null; lastScrapedAt: string | null } | null;
+    source: {
+      gateTripped: boolean;
+      gateReason: string | null;
+      lastScrapedAt: string | null;
+      pollingEnabled: boolean | null;
+    } | null;
   }> {
     const latest = await this.bankDepositRepository
       .createQueryBuilder('deposit')
@@ -213,6 +245,8 @@ export class DepositSyncService {
         gateTripped: status.gateTripped,
         gateReason: status.gateReason,
         lastScrapedAt: status.lastScrapedAt,
+        // 구버전 응답에는 없는 필드다. 없으면 "모름"이지 "꺼짐"이 아니므로 null 로 둔다.
+        pollingEnabled: status.pollingEnabled ?? null,
       };
     } catch (error) {
       this.logger.warn(`수집 상태 조회 실패: ${(error as Error).message}`);
@@ -223,6 +257,22 @@ export class DepositSyncService {
   private resyncDays(): number {
     const configured = Number(this.configService.get('DEPOSIT_SYNC_RESYNC_DAYS', DEFAULT_RESYNC_DAYS));
     return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_RESYNC_DAYS;
+  }
+
+  /**
+   * 페이지 크기를 계약 상한(1000) 안으로 강제한다.
+   *
+   * 종료 조건이 "받은 개수 < 요청 개수"라, 상대가 요청 size 를 자기 상한으로 깎으면
+   * 첫 페이지에서 조건이 참이 되어 **1페이지만 받고 정상 종료로 보인다**(에러 없음).
+   * 빈 env 는 Number('')=0 이 되어 반대로 종료 조건이 영원히 거짓이 된다.
+   * 둘 다 조용히 틀리는 방향이라 입구에서 막는다.
+   */
+  private pageSize(): number {
+    const configured = Number(this.configService.get('DEPOSIT_SYNC_PAGE_SIZE', DEFAULT_PAGE_SIZE));
+    if (!Number.isFinite(configured) || configured < 1) {
+      return DEFAULT_PAGE_SIZE;
+    }
+    return Math.min(Math.floor(configured), MAX_PAGE_SIZE);
   }
 
   /** 설정 누락으로 인한 영구 실패는 스케줄러가 매번 시끄럽게 떠들 필요가 없도록 구분해 둔다. */

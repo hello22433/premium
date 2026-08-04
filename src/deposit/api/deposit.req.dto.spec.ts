@@ -35,15 +35,33 @@ describe('DepositGetListReqQueryDto', () => {
       expect(await errorsOf({ startAt: value, endAt: value })).toHaveLength(0);
     });
 
-    it.each(['2026-7-1', '20260701', '2026-07-01T00:00:00', 'yesterday'])(
-      'yyyy-MM-dd 가 아닌 값(%s)은 거부한다',
-      async (value) => {
-        expect(await errorsOf({ startAt: value })).toContain('startAt');
-      },
-    );
+    it.each(['2026-7-1', '20260701', 'yesterday', ''])('yyyy-MM-dd 가 아닌 값(%s)은 거부한다', async (value) => {
+      expect(await errorsOf({ startAt: value })).toContain('startAt');
+    });
 
     it('endAt 도 같은 형식 규칙을 적용한다', async () => {
       expect(await errorsOf({ endAt: '2026/07/01' })).toContain('endAt');
+    });
+
+    /**
+     * 이 레포의 지배적 관례는 `yyyy-MM-ddTHH:mm:ss` 이고 정산관리 하위 화면들이 기간 필터에
+     * T00:00:00 / T23:59:59 를 붙여 보낸다. 화면을 복붙했다고 400 이 나면 안 되므로 둘 다 받는다.
+     * 대상 컬럼이 DATE 라 시각을 잘라도 경계일 포함 의미가 그대로 유지된다.
+     */
+    it.each([
+      ['2026-07-01T00:00:00', '2026-07-01'],
+      ['2026-07-31T23:59:59', '2026-07-31'],
+      ['2026-07-01T00:00:00.000', '2026-07-01'],
+    ])('시각이 붙어 와도(%s) 날짜만 취해 통과시킨다', async (input, expected) => {
+      const dto = build({ startAt: input, endAt: input });
+
+      expect(await validate(dto)).toHaveLength(0);
+      expect(dto.startAt).toBe(expected);
+      expect(dto.endAt).toBe(expected);
+    });
+
+    it('시각을 잘라낸 뒤에도 형식이 틀리면 거부한다', async () => {
+      expect(await errorsOf({ startAt: 'abcT00:00:00' })).toContain('startAt');
     });
   });
 
