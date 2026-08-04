@@ -46,6 +46,9 @@ import { DateFormatStr } from '../../common/domain/date.format.str';
 import { PhoneUtil } from '../../common/utils/phone.util';
 import { CouponViewLogEntity } from '../../entity/coupon.view.log.entity';
 import { isCrawlerUserAgent } from '../../common/utils/crawler-ua.util';
+import { MessageAttemptService } from '../../delivery/application/message-attempt.service';
+import { MessageAttemptChannel, MessageAttemptType } from '../../delivery/interface/message.attempt.status';
+import { DeliveryExclusiveOp } from '../../delivery/interface/delivery.workflow.status';
 
 import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
@@ -106,6 +109,7 @@ export class OrderReceiveService {
     private orderFromService: OrderFromService,
     @InjectRepository(CouponViewLogEntity)
     private couponViewLogRepository: Repository<CouponViewLogEntity>,
+    private messageAttemptService: MessageAttemptService,
   ) {}
 
   private readonly logger = new Logger(OrderReceiveService.name);
@@ -466,14 +470,28 @@ export class OrderReceiveService {
           getBillingUserId(orderDelivery.orderProductMapping.order),
         ));
       const title = orderDelivery.orderProductMapping.sendTitle ?? '';
-      await this.smsSend.send({
-        msgType: 'M',
-        to: decryptedPhone,
-        from: fromPhoneNumber,
-        subject: title,
-        text: smsText,
-        filePath: filePathList,
-      });
+      // 발송 추적(§5.3). 이 경로는 초이스 선택 후의 **실발송**이므로 상관키(EXT_COL2)를 실어
+      // message_attempt 를 남긴다. 추적이 없으면 결과 조회·504 자동 재발송·실패내역 workflow
+      // 렌더가 이 건을 통째로 못 본다(§10 2단계 추적 커버리지).
+      await this.messageAttemptService.trackSend(
+        {
+          orderDeliveryId: orderDelivery.id,
+          channel: MessageAttemptChannel.MMS,
+          attemptType: MessageAttemptType.INITIAL,
+          slotOp: DeliveryExclusiveOp.MESSAGE_SEND,
+          sendReason: 'CHOICE_POST_SEND',
+        },
+        (attemptId) =>
+          this.smsSend.send({
+            msgType: 'M',
+            to: decryptedPhone,
+            from: fromPhoneNumber,
+            subject: title,
+            text: smsText,
+            filePath: filePathList,
+            attemptId,
+          }),
+      );
       success = true;
     } catch (e) {
       console.error('초이스 쿠폰 선택 후 SMS 발송 실패', orderDelivery.id, e);
@@ -1224,12 +1242,23 @@ export class OrderReceiveService {
 
     try {
       // 1차: 알림톡 발송 시도 (기존 등록 템플릿 사용)
+      // 이메일 쿠폰의 문자 수령도 실발송이므로 추적한다(§5.3·§10 2단계 추적 커버리지).
       const alimTalkText = AlimTalkTemplate(orderDelivery);
-      const { report } = await this.deliveryAlimTalk.send({
-        to: getBody.phoneNumber,
-        text: alimTalkText,
-        encryptKey: refreshedSendEncryptKey,
-      });
+      const { report } = await this.messageAttemptService.trackAlimTalk(
+        {
+          orderDeliveryId: orderDelivery.id,
+          attemptType: MessageAttemptType.INITIAL,
+          slotOp: DeliveryExclusiveOp.MESSAGE_SEND,
+          sendReason: 'EMAIL_COUPON_RECEIVE',
+        },
+        () =>
+          this.deliveryAlimTalk.send({
+            to: getBody.phoneNumber,
+            text: alimTalkText,
+            encryptKey: refreshedSendEncryptKey,
+          }),
+        (result) => result.report.code === 'A000',
+      );
 
       if (report.code !== 'A000') {
         throw new Error('AlimTalk Send Error');
@@ -1268,14 +1297,26 @@ export class OrderReceiveService {
       }
 
       try {
-        await this.smsSend.send({
-          msgType: 'M',
-          to: getBody.phoneNumber,
-          from: mmsFromPhoneNumber,
-          subject: title,
-          text: mmsText,
-          filePath: filePathList,
-        });
+        // 폴백도 추적한다. 알림톡 시도를 부모로 잡아 CHANNEL_FALLBACK 체인이 성립한다.
+        await this.messageAttemptService.trackSend(
+          {
+            orderDeliveryId: orderDelivery.id,
+            channel: MessageAttemptChannel.MMS,
+            attemptType: MessageAttemptType.CHANNEL_FALLBACK,
+            slotOp: DeliveryExclusiveOp.MESSAGE_SEND,
+            sendReason: 'EMAIL_COUPON_RECEIVE_FALLBACK',
+          },
+          (attemptId) =>
+            this.smsSend.send({
+              msgType: 'M',
+              to: getBody.phoneNumber,
+              from: mmsFromPhoneNumber,
+              subject: title,
+              text: mmsText,
+              filePath: filePathList,
+              attemptId,
+            }),
+        );
       } catch (mmsError) {
         // 알림톡, MMS 모두 실패
         status = IOrderDeliveryStatus.FAIL;
