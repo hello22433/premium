@@ -1,5 +1,6 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Request } from 'express';
 import { DepositService } from '../application/deposit.service';
 import { DepositSyncService } from '../application/deposit.sync.service';
 import { DepositGetListReqQueryDto } from './deposit.req.dto';
@@ -41,9 +42,16 @@ export class DepositController {
   async getList(
     @User() user: ILoginUserInfo,
     @Query() getQuery: DepositGetListReqQueryDto,
+    @Req() request: Request,
   ): Promise<DepositGetListResDto> {
     await this.authService.authorityValidator(user, UserAuthSubEnum.DEPOSIT_HISTORY);
-    return this.depositService.getList(getQuery);
+    // 입금처(예금주 실명) 검색은 감사 대상이라 요청 맥락을 함께 넘긴다.
+    // req.ip 는 main.ts 의 trust proxy 설정을 거친 값이라 XFF 를 직접 읽지 않는다.
+    return this.depositService.getList(getQuery, {
+      user,
+      ipAddress: request.ip ?? '',
+      userAgent: request.headers['user-agent'],
+    });
   }
 
   @ApiOperation({

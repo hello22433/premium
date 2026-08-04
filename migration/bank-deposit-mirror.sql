@@ -38,16 +38,24 @@ CREATE TABLE `bank_deposit` (
   `tx_type`           VARCHAR(10)  NOT NULL COMMENT '[원본] ECOUNT 구분 원문: 입금/출금',
   `account_no`        VARCHAR(50)  NOT NULL COMMENT '[원본] 계좌번호(마스킹형). 계좌 식별은 이 컬럼으로',
   `account_name`      VARCHAR(100) NULL     COMMENT '[원본] ECOUNT 계좌명. 은행명/회사명/용도가 섞여 있어 식별자로 쓰지 말 것',
-  `erp_partner_code`  VARCHAR(50)  NULL     COMMENT '[원본] ECOUNT 거래처코드',
-  `erp_partner_name`  VARCHAR(191) NULL     COMMENT '[원본] ECOUNT 거래처명',
-  `depositor`         VARCHAR(191) NOT NULL COMMENT '[원본] 입금처 - (가상) 접두 제거본',
-  `depositor_raw`     VARCHAR(191) NULL     COMMENT '[원본] 입금처 원문',
+  -- PII 4종. erp_macro 가 자기 DB 에 암호화 저장하는 값이라 미러도 같은 수준으로 보관한다.
+  -- 저장 스킴 = encryptDeliveryTarget(AES-256-CBC, 고정 IV → 결정론적). 평문보다 길어지므로 512.
+  -- 결정론적이라 같은 평문은 항상 같은 암호문이며, 그 덕에 DISTINCT/전체일치 조회가 성립한다.
+  `erp_partner_code`  VARCHAR(512) NULL     COMMENT '[원본][암호화] ECOUNT 거래처코드',
+  `erp_partner_name`  VARCHAR(512) NULL     COMMENT '[원본][암호화] ECOUNT 거래처명',
+  `depositor`         VARCHAR(512) NOT NULL COMMENT '[원본][암호화] 입금처 - (가상) 접두 제거본',
+  `depositor_raw`     VARCHAR(512) NULL     COMMENT '[원본][암호화] 입금처 원문',
   `amount`            BIGINT       NOT NULL COMMENT '[원본] 금액(원). INT 상한을 넘을 수 있어 BIGINT',
   `balance`           BIGINT       NOT NULL COMMENT '[원본] 거래후 잔액(원)',
   `voucher_no`        VARCHAR(50)  NULL     COMMENT '[원본] 회계전표번호. 숫자가 아닐 수 있음(강제회계반영 등) — 파싱 금지',
 
   -- ===== 프리미엄 소유 (동기화가 덮지 않는다) =====
-  `matched_user_id`   INT          NULL     COMMENT '[프리미엄] FK) user.id. 매핑으로 연결된 고객(미매핑이면 NULL). FK 제약 없는 논리 참조',
+  -- 귀속 단위는 고객(user)이 아니라 **정산코드**다. 예치금 지갑이 정산코드 단위이고
+  -- (wallet_account.owner_type='SETTLEMENT_CODE', owner_id=user.settlement_code),
+  -- 정산코드 하나를 여러 user 가 공유하므로 user 로 잡으면 "어느 user 를 골라도 돈은 같은
+  -- 지갑으로 가는" 의미 없는 자유도가 생기고, settlement_code 가 없는 user 에 매칭하면
+  -- 매칭은 통과하고 충전 단계에서 실패하는 지연 실패가 된다.
+  `matched_settlement_code` VARCHAR(50) NULL COMMENT '[프리미엄] wallet_account.owner_id(=user.settlement_code). 미매핑이면 NULL. FK 제약 없는 논리 참조',
   `match_status`      VARCHAR(20)  NOT NULL DEFAULT 'UNMATCHED' COMMENT '[프리미엄] UNMATCHED/MAPPED/AMBIGUOUS/CREDITED',
 
   -- ===== 동기화 메타 =====
@@ -64,7 +72,9 @@ CREATE TABLE `bank_deposit` (
   UNIQUE KEY `uk_bank_deposit_dedup` (`dedup_key`),
   -- 목록 기본 정렬/필터가 (tx_date DESC, id DESC) 라 tx_date 선두 인덱스가 정렬을 돕는다.
   KEY `idx_bank_deposit_tx_date` (`tx_date`),
-  KEY `idx_bank_deposit_depositor` (`depositor`),
+  -- 암호문 인덱스. 부분검색(LIKE)에는 못 쓰지만, 결정론적 암호화라 DISTINCT 로 고유 입금처를
+  -- 뽑고 전체일치(IN)로 되짚는 검색 경로가 이 인덱스를 탄다. 길이 제한상 접두 191바이트만.
+  KEY `idx_bank_deposit_depositor` (`depositor`(191)),
   KEY `idx_bank_deposit_match_status` (`match_status`),
   KEY `idx_bank_deposit_account_no` (`account_no`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='ECOUNT 입출금 거래내역 미러(erp_macro API 로 동기화)';

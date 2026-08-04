@@ -75,7 +75,15 @@ describe('DepositSyncService', () => {
       get: jest.fn((key: string, fallback?: unknown) => options.config?.[key] ?? fallback),
     };
 
-    return { sut: new DepositSyncService(repository, sourceHttp, config), insertCalls, fetchPage, repository };
+    // 결정론적이고 되돌릴 수 있는 가짜 암호화 — 실제 스킴과 성질이 같다.
+    const cryptoCipher: any = { encryptDeliveryTarget: jest.fn((plain: string) => `enc(${plain})`) };
+
+    return {
+      sut: new DepositSyncService(repository, sourceHttp, config, cryptoCipher),
+      insertCalls,
+      fetchPage,
+      repository,
+    };
   };
 
   describe('upsert 컬럼 소유권', () => {
@@ -146,15 +154,50 @@ describe('DepositSyncService', () => {
       expect(insertCalls[0].rows[0].erpPartnerCode).toBeNull();
     });
 
-    it('상대가 나중에 두 필드를 노출하면 코드 변경 없이 그대로 저장된다', async () => {
+    /**
+     * 상대(erp_macro)가 자기 DB 에 암호화 보관하는 값이라 미러도 같은 수준을 유지한다.
+     * 평문이 그대로 들어가면 원본보다 보호 수준이 낮은 사본이 생긴다.
+     */
+    it('PII 4종을 암호화해 저장한다', async () => {
       const { sut, insertCalls } = buildSut({
-        pages: [[item({ depositorRaw: '(가상)  두성종이', erpPartnerCode: 'P-001' })]],
+        pages: [
+          [
+            item({
+              depositor: '두성종이',
+              depositorRaw: '(가상)  두성종이',
+              erpPartnerName: '두성종이(주)',
+              erpPartnerCode: 'P-001',
+            }),
+          ],
+        ],
       });
 
       await sut.syncRange('2026-07-01', '2026-07-31');
 
-      expect(insertCalls[0].rows[0].depositorRaw).toBe('(가상)  두성종이');
-      expect(insertCalls[0].rows[0].erpPartnerCode).toBe('P-001');
+      const stored = insertCalls[0].rows[0];
+      expect(stored.depositor).toBe('enc(두성종이)');
+      expect(stored.depositorRaw).toBe('enc((가상)  두성종이)');
+      expect(stored.erpPartnerName).toBe('enc(두성종이(주))');
+      expect(stored.erpPartnerCode).toBe('enc(P-001)');
+    });
+
+    it('PII 가 아닌 값(계좌번호·금액)은 암호화하지 않는다', async () => {
+      const { sut, insertCalls } = buildSut({ pages: [[item()]] });
+
+      await sut.syncRange('2026-07-01', '2026-07-31');
+
+      const stored = insertCalls[0].rows[0];
+      expect(stored.accountNo).toBe('280***01757104');
+      expect(stored.amount).toBe('350000');
+    });
+
+    // 결정론적 스킴이라 빈 문자열을 암호화하면 "빈값"이 특정 암호문으로 고정돼 오히려 식별된다.
+    it('빈 문자열은 암호화하지 않고 null 로 둔다', async () => {
+      const { sut, insertCalls } = buildSut({ pages: [[item({ depositorRaw: '' })]] });
+
+      await sut.syncRange('2026-07-01', '2026-07-31');
+
+      expect(insertCalls[0].rows[0].depositorRaw).toBeNull();
     });
 
     it('한 번의 동기화 안에서는 모든 행이 같은 syncedAt 을 갖는다', async () => {

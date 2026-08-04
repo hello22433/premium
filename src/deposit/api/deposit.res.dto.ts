@@ -49,14 +49,14 @@ export class DepositViewDto {
   @ApiProperty({ description: '매칭 상태', enum: DepositMatchStatus })
   matchStatus: string;
 
-  @ApiProperty({ description: '매칭된 고객 user.id', nullable: true })
-  matchedUserId: number | null;
+  @ApiProperty({
+    description: '매칭된 정산코드 (예치금 지갑의 주인 단위. 미매칭이면 null)',
+    nullable: true,
+  })
+  matchedSettlementCode: string | null;
 
-  @ApiProperty({ description: '매칭된 고객사명 (미매칭이면 null)', nullable: true })
+  @ApiProperty({ description: '정산코드의 홈 회사명 (미매칭이면 null)', nullable: true })
   matchedBusinessName: string | null;
-
-  @ApiProperty({ description: '매칭된 담당자명 (미매칭이면 null)', nullable: true })
-  matchedPersonName: string | null;
 
   @ApiProperty({ description: '스크래핑 시각' })
   scrapedAt: Date;

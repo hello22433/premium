@@ -1,5 +1,4 @@
 import { BadRequestException } from '@nestjs/common';
-import { In } from 'typeorm';
 import { DepositService } from './deposit.service';
 import { DepositGetListReqQueryDto } from '../api/deposit.req.dto';
 import { DepositMatchStatus } from '../interface/deposit.match.status';
@@ -11,13 +10,23 @@ import { BankDepositEntity } from '../../entity/bank.deposit.entity';
  *
  * 이 화면의 결함은 대부분 "표시가 조용히 틀리는" 종류라 눈으로는 안 잡힌다. 그래서
  * 값이 왜곡될 수 있는 지점만 골라 고정한다.
+ *  · PII 4종은 DB 에 암호문으로 있다 → 응답에 암호문이 새어 나가면 안 된다
+ *  · 암호문에는 LIKE 를 못 건다 → 입금처 부분검색이 다른 경로로 성립해야 한다
  *  · BIGINT(amount/balance)는 드라이버가 string 으로 준다 → number 로 변환되는지
  *  · tx_date 는 'yyyy-MM-dd' 문자열 그대로 나가야 한다(Date 로 감싸면 하루 밀림)
  *  · tx_date 동률이 대량이라 id 타이브레이커가 없으면 페이지 경계에서 행이 샌다
- *  · tx_type 은 DB 한글 ↔ API 영문 번역이 한 곳에서만 일어나야 한다
- *  · matched_user_id 가 전부 NULL 인 현재 데이터에서 불필요한 고객 조회가 없어야 한다
+ *  · 귀속 단위는 고객이 아니라 정산코드다
  */
 describe('DepositService.getList', () => {
+  /** 테스트용 가짜 암호화 — 결정론적이고 되돌릴 수 있어 실제 스킴과 성질이 같다. */
+  const enc = (plain: string) => `enc(${plain})`;
+  const cryptoCipher = {
+    encryptDeliveryTarget: jest.fn((plain: string) => enc(plain)),
+    safeDecryptDeliveryTarget: jest.fn((cipher: string | null) =>
+      cipher === null || cipher === undefined ? null : cipher.replace(/^enc\((.*)\)$/, '$1'),
+    ),
+  };
+
   const buildQbSpy = (rows: Partial<BankDepositEntity>[] = [], totalCount = rows.length) => {
     const andWhereCalls: [string, Record<string, unknown>][] = [];
     const orderByCalls: [string, string][] = [];
@@ -34,16 +43,28 @@ describe('DepositService.getList', () => {
         orderByCalls.push([column, direction]);
         return qb;
       }),
+      select: jest.fn(() => qb),
+      addSelect: jest.fn(() => qb),
       take: jest.fn(() => qb),
       skip: jest.fn(() => qb),
       getManyAndCount: jest.fn(async () => [rows, totalCount]),
+      // 입금처 검색이 쓰는 DISTINCT 조회. 기본은 페이지에 등장한 암호문들.
+      getRawMany: jest.fn(async () => rows.map((row) => ({ depositor: row.depositor }))),
     };
     return { qb, andWhereCalls, orderByCalls };
   };
 
-  const makeSut = (qb: any, userRepository: any = { find: jest.fn(async () => []) }) => {
+  const makeSut = (qb: any, walletQb?: any) => {
     const bankDepositRepository = { createQueryBuilder: jest.fn(() => qb) } as any;
-    return { sut: new DepositService(bankDepositRepository, userRepository), userRepository };
+    const walletAccountRepository = {
+      createQueryBuilder: jest.fn(() => walletQb ?? { getRawMany: jest.fn(async () => []) }),
+    } as any;
+    const activityLogService = { createLog: jest.fn(async () => 1) } as any;
+    return {
+      sut: new DepositService(bankDepositRepository, walletAccountRepository, cryptoCipher as any, activityLogService),
+      walletAccountRepository,
+      activityLogService,
+    };
   };
 
   const query = (overrides: Partial<DepositGetListReqQueryDto> = {}): DepositGetListReqQueryDto =>
@@ -58,16 +79,43 @@ describe('DepositService.getList', () => {
     accountName: '(주)모바일이앤엠애드',
     erpPartnerCode: null,
     erpPartnerName: null,
-    depositor: '두성종이',
-    depositorRaw: '(가상)  두성종이',
+    depositor: enc('두성종이'),
+    depositorRaw: enc('(가상)  두성종이'),
     amount: '350000',
     balance: '45717465',
     voucherNo: '2026/07/29-2',
-    matchedUserId: null,
+    matchedSettlementCode: null,
     matchStatus: DepositMatchStatus.UNMATCHED,
     sourceScrapedAt: new Date('2026-08-03T01:35:51.995Z'),
     syncedAt: new Date('2026-08-03T02:00:00.000Z'),
     ...overrides,
+  });
+
+  beforeEach(() => jest.clearAllMocks());
+
+  describe('PII 복호화', () => {
+    it('암호문이 응답에 새어 나가지 않고 평문으로 나간다', async () => {
+      const { qb } = buildQbSpy([
+        row({ depositor: enc('두성종이'), depositorRaw: enc('(가상)  두성종이'), erpPartnerName: enc('두성종이(주)') }),
+      ]);
+      const { sut } = makeSut(qb);
+
+      const result = await sut.getList(query());
+
+      expect(result.list[0].depositor).toBe('두성종이');
+      expect(result.list[0].depositorRaw).toBe('(가상)  두성종이');
+      expect(result.list[0].erpPartnerName).toBe('두성종이(주)');
+    });
+
+    it('null 인 PII 는 null 그대로 둔다', async () => {
+      const { qb } = buildQbSpy([row({ depositorRaw: null, erpPartnerCode: null })]);
+      const { sut } = makeSut(qb);
+
+      const result = await sut.getList(query());
+
+      expect(result.list[0].depositorRaw).toBeNull();
+      expect(result.list[0].erpPartnerCode).toBeNull();
+    });
   });
 
   describe('값 변환', () => {
@@ -145,13 +193,12 @@ describe('DepositService.getList', () => {
       expect(andWhereCalls).toContainEqual(['deposit.txType = :txType', { txType: '출금' }]);
     });
 
-    it('입금처는 부분일치, 계좌번호는 전체일치로 조회한다', async () => {
+    it('계좌번호는 전체일치로 조회한다 (마스킹형이라 암호화 대상 아님)', async () => {
       const { qb, andWhereCalls } = buildQbSpy();
       const { sut } = makeSut(qb);
 
-      await sut.getList(query({ depositor: '두성', accountNo: '280***01757104' }));
+      await sut.getList(query({ accountNo: '280***01757104' }));
 
-      expect(andWhereCalls).toContainEqual(['deposit.depositor LIKE :depositor', { depositor: '%두성%' }]);
       expect(andWhereCalls).toContainEqual(['deposit.accountNo = :accountNo', { accountNo: '280***01757104' }]);
     });
 
@@ -175,6 +222,106 @@ describe('DepositService.getList', () => {
     });
   });
 
+  /**
+   * 암호문에는 LIKE 를 걸 수 없다. 저장 스킴이 결정론적이라 고유 암호문을 복호화해 평문으로
+   * 부분일치를 판정하고, 살아남은 암호문으로 되짚는 경로가 성립해야 한다.
+   */
+  describe('입금처 부분검색 (암호화 컬럼)', () => {
+    it('평문 부분일치로 걸러 낸 암호문들을 IN 으로 조회한다', async () => {
+      const { qb, andWhereCalls } = buildQbSpy([row({ depositor: enc('두성종이') })]);
+      qb.getRawMany.mockResolvedValue([
+        { depositor: enc('두성종이') },
+        { depositor: enc('두성상사') },
+        { depositor: enc('한빛문구') },
+      ]);
+      const { sut } = makeSut(qb);
+
+      await sut.getList(query({ depositor: '두성' }));
+
+      expect(andWhereCalls).toContainEqual([
+        'deposit.depositor IN (:...depositorCiphers)',
+        { depositorCiphers: [enc('두성종이'), enc('두성상사')] },
+      ]);
+    });
+
+    it('암호문에 LIKE 를 걸지 않는다', async () => {
+      const { qb, andWhereCalls } = buildQbSpy([row()]);
+      const { sut } = makeSut(qb);
+
+      await sut.getList(query({ depositor: '두성' }));
+
+      expect(andWhereCalls.some(([clause]) => clause.includes('LIKE'))).toBe(false);
+    });
+
+    it('일치하는 입금처가 없으면 빈 결과를 돌려준다 (IN () 는 SQL 오류)', async () => {
+      const { qb } = buildQbSpy([row()]);
+      qb.getRawMany.mockResolvedValue([{ depositor: enc('한빛문구') }]);
+      const { sut } = makeSut(qb);
+
+      const result = await sut.getList(query({ depositor: '없는이름' }));
+
+      expect(result).toEqual({ list: [], totalCount: 0, totalPage: 0, currentPage: 1 });
+      expect(qb.getManyAndCount).not.toHaveBeenCalled();
+    });
+
+    it('대소문자를 구분하지 않는다', async () => {
+      const { qb, andWhereCalls } = buildQbSpy([row()]);
+      qb.getRawMany.mockResolvedValue([{ depositor: enc('KB68416088') }]);
+      const { sut } = makeSut(qb);
+
+      await sut.getList(query({ depositor: 'kb684' }));
+
+      expect(andWhereCalls).toContainEqual([
+        'deposit.depositor IN (:...depositorCiphers)',
+        { depositorCiphers: [enc('KB68416088')] },
+      ]);
+    });
+  });
+
+  describe('감사 로그', () => {
+    const auditContext = {
+      user: { id: 3, email: 'admin@test.local', authority: 'SUPER_ADMIN' } as any,
+      ipAddress: '10.0.0.1',
+      userAgent: 'jest',
+    };
+
+    it('입금처를 검색하면 PII_SEARCH 를 남기고 검색어는 마스킹한다', async () => {
+      const { qb } = buildQbSpy([row()]);
+      const { sut, activityLogService } = makeSut(qb);
+
+      await sut.getList(query({ depositor: '두성' }), auditContext);
+
+      expect(activityLogService.createLog).toHaveBeenCalledTimes(1);
+      const logged = activityLogService.createLog.mock.calls[0][0];
+      expect(logged).toMatchObject({
+        userId: 3,
+        actionType: 'PII_SEARCH',
+        requestUrl: '/deposit/list',
+        ipAddress: '10.0.0.1',
+      });
+      expect(logged.requestParams.maskedKeyword).not.toBe('두성');
+    });
+
+    it('검색 없이 목록만 보면 PII_SEARCH 를 남기지 않는다', async () => {
+      const { qb } = buildQbSpy([row()]);
+      const { sut, activityLogService } = makeSut(qb);
+
+      await sut.getList(query(), auditContext);
+
+      expect(activityLogService.createLog).not.toHaveBeenCalled();
+    });
+
+    it('감사 로그 적재가 실패해도 조회는 성공한다', async () => {
+      const { qb } = buildQbSpy([row()]);
+      const { sut, activityLogService } = makeSut(qb);
+      activityLogService.createLog.mockRejectedValue(new Error('로그 DB 장애'));
+
+      const result = await sut.getList(query({ depositor: '두성' }), auditContext);
+
+      expect(result.list).toHaveLength(1);
+    });
+  });
+
   describe('페이징', () => {
     it('page/take 로 skip 을 계산하고 전체 페이지 수를 올림한다', async () => {
       const { qb } = buildQbSpy([row()], 25);
@@ -188,50 +335,60 @@ describe('DepositService.getList', () => {
     });
   });
 
-  describe('고객명 조인', () => {
-    it('matched_user_id 가 전부 NULL 이면 고객 조회를 아예 하지 않는다', async () => {
-      const { qb } = buildQbSpy([row({ matchedUserId: null })]);
-      const { sut, userRepository } = makeSut(qb);
+  /** 귀속 단위는 고객(user)이 아니라 정산코드다 — 예치금 지갑이 정산코드 단위이기 때문. */
+  describe('정산코드 귀속', () => {
+    const buildWalletQb = (rows: { settlementCode: string; businessName: string | null }[]) => {
+      const captured: { codes: string[] } = { codes: [] };
+      const walletQb: any = {
+        leftJoin: jest.fn(() => walletQb),
+        select: jest.fn(() => walletQb),
+        addSelect: jest.fn(() => walletQb),
+        where: jest.fn(() => walletQb),
+        andWhere: jest.fn((_clause: string, params: any) => {
+          if (params?.codes) captured.codes = params.codes;
+          return walletQb;
+        }),
+        getRawMany: jest.fn(async () => rows),
+      };
+      return { walletQb, captured };
+    };
+
+    it('매칭이 없으면 지갑 조회를 아예 하지 않는다', async () => {
+      const { qb } = buildQbSpy([row({ matchedSettlementCode: null })]);
+      const { sut, walletAccountRepository } = makeSut(qb);
 
       const result = await sut.getList(query());
 
-      expect(userRepository.find).not.toHaveBeenCalled();
+      expect(walletAccountRepository.createQueryBuilder).not.toHaveBeenCalled();
+      expect(result.list[0].matchedSettlementCode).toBeNull();
       expect(result.list[0].matchedBusinessName).toBeNull();
-      expect(result.list[0].matchedPersonName).toBeNull();
     });
 
-    it('매칭된 행이 있으면 중복 없는 id 목록으로 한 번만 조회해 고객명을 채운다', async () => {
+    it('매칭된 정산코드가 있으면 중복 없이 한 번만 조회해 홈 회사명을 채운다', async () => {
       const { qb } = buildQbSpy([
-        row({ id: 1, matchedUserId: 7 }),
-        row({ id: 2, matchedUserId: 7 }),
-        row({ id: 3, matchedUserId: null }),
+        row({ id: 1, matchedSettlementCode: 'company-7' }),
+        row({ id: 2, matchedSettlementCode: 'company-7' }),
+        row({ id: 3, matchedSettlementCode: null }),
       ]);
-      let findArg: any;
-      const userRepository = {
-        find: jest.fn(async (arg: any) => {
-          findArg = arg;
-          return [{ id: 7, personName: '홍길동', company: { businessName: '두성종이' } }];
-        }),
-      };
-      const { sut } = makeSut(qb, userRepository);
+      const { walletQb, captured } = buildWalletQb([{ settlementCode: 'company-7', businessName: '두성종이' }]);
+      const { sut, walletAccountRepository } = makeSut(qb, walletQb);
 
       const result = await sut.getList(query());
 
-      expect(userRepository.find).toHaveBeenCalledTimes(1);
-      expect(findArg.where.id).toEqual(In([7]));
+      expect(walletAccountRepository.createQueryBuilder).toHaveBeenCalledTimes(1);
+      expect(captured.codes).toEqual(['company-7']);
       expect(result.list[0].matchedBusinessName).toBe('두성종이');
-      expect(result.list[0].matchedPersonName).toBe('홍길동');
       expect(result.list[2].matchedBusinessName).toBeNull();
     });
 
-    it('매칭 id 가 가리키는 고객이 사라졌어도 목록은 깨지지 않는다 (FK 제약 없는 논리 참조)', async () => {
-      const { qb } = buildQbSpy([row({ matchedUserId: 999 })]);
-      const userRepository = { find: jest.fn(async () => []) };
-      const { sut } = makeSut(qb, userRepository);
+    it('정산코드가 가리키는 지갑이 없어도 목록은 깨지지 않는다 (FK 제약 없는 논리 참조)', async () => {
+      const { qb } = buildQbSpy([row({ matchedSettlementCode: 'company-999' })]);
+      const { walletQb } = buildWalletQb([]);
+      const { sut } = makeSut(qb, walletQb);
 
       const result = await sut.getList(query());
 
-      expect(result.list[0].matchedUserId).toBe(999);
+      expect(result.list[0].matchedSettlementCode).toBe('company-999');
       expect(result.list[0].matchedBusinessName).toBeNull();
     });
   });
@@ -249,7 +406,7 @@ describe('DepositService.getAccountList', () => {
         { accountNo: '131***40301018', accountName: '기업은행', count: '881' },
       ]),
     };
-    const sut = new DepositService({ createQueryBuilder: jest.fn(() => qb) } as any, {} as any);
+    const sut = new DepositService({ createQueryBuilder: jest.fn(() => qb) } as any, {} as any, {} as any, {} as any);
 
     const result = await sut.getAccountList();
 

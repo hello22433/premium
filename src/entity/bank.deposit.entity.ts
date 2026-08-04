@@ -61,16 +61,22 @@ export class BankDepositEntity {
   })
   accountName: string | null;
 
-  @Column({ type: 'varchar', length: 50, nullable: true, comment: 'ECOUNT 거래처코드' })
+  // ===== PII 4종 — 암호화 저장 =====
+  // erp_macro 가 자기 DB 에 암호화 보관하는 값이라 미러도 같은 수준을 유지한다.
+  // 저장/조회는 서비스 계층에서 CryptoCipher.encryptDeliveryTarget / safeDecryptDeliveryTarget
+  // 으로 명시 처리한다(이 레포 관례 — delivery_send_history.target 과 동일. transformer 미사용).
+  // ⚠️ 이 프로퍼티들에 담긴 값은 **암호문**이다. 응답으로 내보내기 전에 반드시 복호화할 것.
+
+  @Column({ type: 'varchar', length: 512, nullable: true, comment: 'ECOUNT 거래처코드 (암호화 저장)' })
   erpPartnerCode: string | null;
 
-  @Column({ type: 'varchar', length: 191, nullable: true, comment: 'ECOUNT 거래처명' })
+  @Column({ type: 'varchar', length: 512, nullable: true, comment: 'ECOUNT 거래처명 (암호화 저장)' })
   erpPartnerName: string | null;
 
-  @Column({ type: 'varchar', length: 191, comment: '입금처 - (가상) 접두 제거본' })
+  @Column({ type: 'varchar', length: 512, comment: '입금처 - (가상) 접두 제거본 (암호화 저장)' })
   depositor: string;
 
-  @Column({ type: 'varchar', length: 191, nullable: true, comment: '입금처 원문' })
+  @Column({ type: 'varchar', length: 512, nullable: true, comment: '입금처 원문 (암호화 저장)' })
   depositorRaw: string | null;
 
   /** BIGINT 는 드라이버가 string 으로 돌려준다(JS number 정밀도 보호). 응답 변환은 서비스에서. */
@@ -90,8 +96,15 @@ export class BankDepositEntity {
 
   // ===== 프리미엄 소유 (동기화가 덮지 않는다) =====
 
-  @Column({ type: 'int', nullable: true, comment: 'FK) user.id. FK 제약 없는 논리 참조' })
-  matchedUserId: number | null;
+  /**
+   * 귀속 단위는 고객(user)이 아니라 **정산코드**다.
+   * 예치금 지갑이 정산코드 단위이고(wallet_account.ownerType='SETTLEMENT_CODE',
+   * ownerId=user.settlementCode), 정산코드 하나를 여러 user 가 공유한다. user 로 잡으면
+   * 어느 user 를 골라도 돈은 같은 지갑으로 가는 무의미한 자유도가 생기고, settlementCode 가
+   * 없는 user 에 매칭하면 매칭은 통과하고 충전 단계에서 실패하는 지연 실패가 된다.
+   */
+  @Column({ type: 'varchar', length: 50, nullable: true, comment: 'wallet_account.owner_id. FK 제약 없는 논리 참조' })
+  matchedSettlementCode: string | null;
 
   @Column({ type: 'varchar', length: 20, default: DepositMatchStatus.UNMATCHED })
   matchStatus: string;

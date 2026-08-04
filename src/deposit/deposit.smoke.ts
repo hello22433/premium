@@ -18,6 +18,7 @@ import * as path from 'path';
 import { DataSource } from 'typeorm';
 import { SnakeNamingStrategy } from 'typeorm-naming-strategies';
 import { BankDepositEntity } from '../entity/bank.deposit.entity';
+import { CryptoCipher } from '../common/infra/crypto.cipher';
 import { DepositService } from './application/deposit.service';
 import { DepositSyncService } from './application/deposit.sync.service';
 import { DepositMatchStatus } from './interface/deposit.match.status';
@@ -121,15 +122,18 @@ const fakeConfig = (values: Record<string, string> = {}) => ({
     check('마이그레이션 DDL 적용', true, `${statements.length}개 statement`);
 
     const repository = dataSource.getRepository(BankDepositEntity);
-    const userRepository = { find: async () => [] } as any;
-    const listService = new DepositService(repository, userRepository);
+    // 실제 CryptoCipher 를 쓴다 — 암호화 저장 → 복호화 조회 왕복이 실제 키로 성립하는지 본다.
+    const cryptoCipher = new CryptoCipher({ getOrThrow: (k: string) => env[k] } as any);
+    const walletRepository = { createQueryBuilder: () => ({ getRawMany: async () => [] }) } as any;
+    const activityLog = { createLog: async () => 1 } as any;
+    const listService = new DepositService(repository, walletRepository, cryptoCipher, activityLog);
 
     // 3) 최초 동기화 — 2건 수신
     const first = [
       item({ dedupKey: 'aaaa1111' }),
       item({ dedupKey: 'bbbb2222', depositor: '한빛문구', amount: 12000 }),
     ];
-    const syncService = new DepositSyncService(repository, fakeSource(first) as any, fakeConfig() as any);
+    const syncService = new DepositSyncService(repository, fakeSource(first) as any, fakeConfig() as any, cryptoCipher);
     await syncService.syncRange('2026-07-01', '2026-07-31');
 
     const afterFirst = await listService.getList({ page: 1, take: 10 } as any);
@@ -138,6 +142,26 @@ const fakeConfig = (values: Record<string, string> = {}) => ({
       '엔티티↔DDL 정합 (전 컬럼 왕복)',
       afterFirst.list[0].depositor.length > 0 && typeof afterFirst.list[0].amount === 'number',
       { depositor: afterFirst.list[0].depositor, amount: afterFirst.list[0].amount },
+    );
+
+    // ⭐ PII 는 DB 에 암호문으로 있고 응답에서만 평문이어야 한다.
+    const [rawRow] = await dataSource.query(
+      "SELECT depositor, depositor_raw FROM bank_deposit WHERE dedup_key = 'bbbb2222'",
+    );
+    check(
+      '⭐ DB 에는 암호문으로 저장된다 (평문 노출 없음)',
+      rawRow.depositor !== '한빛문구' && !String(rawRow.depositor).includes('한빛'),
+      { stored: String(rawRow.depositor).slice(0, 24) + '…' },
+    );
+    check(
+      '⭐ 응답에서는 복호화된 평문이 나온다',
+      afterFirst.list.some((r) => r.depositor === '한빛문구'),
+      afterFirst.list.map((r) => r.depositor),
+    );
+    check(
+      '입금처 부분검색이 암호화 컬럼 위에서 동작한다',
+      (await listService.getList({ page: 1, take: 10, depositor: '한빛' } as any)).totalCount === 1,
+      (await listService.getList({ page: 1, take: 10, depositor: '한빛' } as any)).totalCount,
     );
     check(
       "tx_date 가 'yyyy-MM-dd' 문자열",
@@ -151,21 +175,28 @@ const fakeConfig = (values: Record<string, string> = {}) => ({
     );
 
     // 4) 운영자가 한 건을 고객에 매칭했다고 가정 (앞으로 프리미엄이 하게 될 일)
-    await repository.update({ dedupKey: 'aaaa1111' }, { matchedUserId: 7, matchStatus: DepositMatchStatus.MAPPED });
+    await repository.update(
+      { dedupKey: 'aaaa1111' },
+      { matchedSettlementCode: 'company-7', matchStatus: DepositMatchStatus.MAPPED },
+    );
 
     // 5) 다음 주기 동기화 — 같은 건이 다시 오고, 회계전표가 뒤늦게 채워짐
     const second = [
       item({ dedupKey: 'aaaa1111', voucherNo: '2026/07/29-2' }),
       item({ dedupKey: 'bbbb2222', depositor: '한빛문구', amount: 12000 }),
     ];
-    const secondSync = new DepositSyncService(repository, fakeSource(second) as any, fakeConfig() as any);
+    const secondSync = new DepositSyncService(repository, fakeSource(second) as any, fakeConfig() as any, cryptoCipher);
     await secondSync.syncRange('2026-07-01', '2026-07-31');
 
     const matched = await repository.findOneByOrFail({ dedupKey: 'aaaa1111' });
 
     // ===== 이 스크립트의 핵심 =====
     check('재동기화해도 행이 늘지 않는다 (dedup_key 멱등)', (await repository.count()) === 2, await repository.count());
-    check('⭐ 운영자가 지정한 matched_user_id 가 보존된다', matched.matchedUserId === 7, matched.matchedUserId);
+    check(
+      '⭐ 운영자가 지정한 matched_settlement_code 가 보존된다',
+      matched.matchedSettlementCode === 'company-7',
+      matched.matchedSettlementCode,
+    );
     check(
       '⭐ 운영자가 지정한 match_status 가 보존된다',
       matched.matchStatus === DepositMatchStatus.MAPPED,
@@ -180,7 +211,7 @@ const fakeConfig = (values: Record<string, string> = {}) => ({
       item({ dedupKey: 'aaaa1111', voucherNo: null, erpPartnerName: null, erpPartnerCode: null }),
       item({ dedupKey: 'bbbb2222', depositor: '한빛문구', amount: 12000 }),
     ];
-    await new DepositSyncService(repository, fakeSource(reverted) as any, fakeConfig() as any).syncRange(
+    await new DepositSyncService(repository, fakeSource(reverted) as any, fakeConfig() as any, cryptoCipher).syncRange(
       '2026-07-01',
       '2026-07-31',
     );
@@ -198,8 +229,8 @@ const fakeConfig = (values: Record<string, string> = {}) => ({
     );
     check(
       '되돌림 동기화에도 운영자 매칭은 여전히 보존된다',
-      afterRevert.matchedUserId === 7 && afterRevert.matchStatus === DepositMatchStatus.MAPPED,
-      { userId: afterRevert.matchedUserId, status: afterRevert.matchStatus },
+      afterRevert.matchedSettlementCode === 'company-7' && afterRevert.matchStatus === DepositMatchStatus.MAPPED,
+      { code: afterRevert.matchedSettlementCode, status: afterRevert.matchStatus },
     );
 
     // 6) 계좌 집계

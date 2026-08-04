@@ -2,6 +2,9 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { DepositSyncService } from './deposit.sync.service';
 
+/** 이 시간을 넘겨 진행 중으로 남아 있으면 죽은 실행으로 보고 다음 주기가 진입한다. */
+const MAX_BATCH_RUNTIME_MS = 10 * 60 * 1000;
+
 /**
  * 입금내역 미러 동기화 스케줄.
  *
@@ -17,6 +20,12 @@ import { DepositSyncService } from './deposit.sync.service';
 @Injectable()
 export class DepositSyncSchedule {
   private logger = new Logger('DEPOSIT_SYNC');
+  /**
+   * 진행 중 여부를 boolean 이 아니라 **시작 시각**으로 들고 있는다(delivery.batch.schedule 관례).
+   * 프라미스가 끝내 정착하지 않는 경우(행이 걸린 소켓 등) boolean 플래그는 영원히 잠긴 채로
+   * 남지만, 시각을 두면 상한을 넘긴 뒤 stale 로 판단해 다음 주기가 진입할 수 있다.
+   */
+  private syncStartedAt: number | null = null;
 
   constructor(private depositSyncService: DepositSyncService) {}
 
@@ -26,6 +35,12 @@ export class DepositSyncSchedule {
       return;
     }
 
+    if (this.isStillRunning()) {
+      this.logger.log('[BATCH] 이전 입금내역 동기화 진행 중 — skip');
+      return;
+    }
+
+    this.syncStartedAt = Date.now();
     try {
       await this.depositSyncService.syncRecent();
     } catch (error) {
@@ -36,6 +51,22 @@ export class DepositSyncSchedule {
       } else {
         this.logger.warn(`동기화 일시 실패 — 다음 주기에 재시도합니다: ${(error as Error).message}`);
       }
+    } finally {
+      this.syncStartedAt = null;
     }
+  }
+
+  private isStillRunning(): boolean {
+    if (this.syncStartedAt === null) {
+      return false;
+    }
+    const elapsed = Date.now() - this.syncStartedAt;
+    if (elapsed > MAX_BATCH_RUNTIME_MS) {
+      this.logger.warn(
+        `[BATCH] 입금내역 동기화 max runtime(${MAX_BATCH_RUNTIME_MS / 1000}s) 초과 — stale 플래그 해제 후 진입`,
+      );
+      return false;
+    }
+    return true;
   }
 }

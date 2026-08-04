@@ -4,6 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { format, subDays } from 'date-fns';
 import { BankDepositEntity } from '../../entity/bank.deposit.entity';
+import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { DepositSourceHttp } from '../infra/deposit.source.http';
 import { DepositSourceItem, DepositSourcePermanentError } from '../interface/deposit.source';
 
@@ -41,7 +42,19 @@ export class DepositSyncService {
     private bankDepositRepository: Repository<BankDepositEntity>,
     private depositSourceHttp: DepositSourceHttp,
     private configService: ConfigService,
+    private cryptoCipher: CryptoCipher,
   ) {}
+
+  /**
+   * PII 저장 암호화. null/빈값은 그대로 둔다(빈 문자열을 암호화하면 의미 없는 암호문이 생기고,
+   * 결정론적 스킴이라 "빈값"이 특정 암호문으로 고정돼 오히려 식별 가능해진다).
+   */
+  private encrypt(value: string | null | undefined): string | null {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+    return this.cryptoCipher.encryptDeliveryTarget(value);
+  }
 
   isEnabled(): boolean {
     return this.configService.get('DEPOSIT_SYNC_ENABLED') === 'true';
@@ -150,8 +163,11 @@ export class DepositSyncService {
    *
    * ⚠️ 갱신 컬럼을 명시적으로 열거하는 것이 이 메서드의 핵심이다.
    * 엔티티 전체를 save() 하거나 갱신 컬럼을 생략하면, 운영자가 방금 지정한
-   * matched_user_id / match_status 가 다음 동기화에서 조용히 UNMATCHED 로 되돌아간다.
+   * matched_settlement_code / match_status 가 다음 동기화에서 조용히 UNMATCHED 로 되돌아간다.
    * (같은 부류의 사고가 이 레포에서 이미 있었다 — save() 가 남이 쓴 상태를 stale 로 덮은 건)
+   *
+   * 원본이 값을 비우는 경우(회계반영 취소·거래처 detach)도 그대로 null 로 덮어써야 미러가
+   * 거울로 유지된다. coalesce 하면 프리미엄만 옛 거래처를 붙들고 있게 된다.
    */
   private async upsert(items: DepositSourceItem[], syncedAt: Date): Promise<void> {
     const rows = items.map((item) => ({
@@ -160,12 +176,12 @@ export class DepositSyncService {
       txType: item.txType,
       accountNo: item.accountNo,
       accountName: item.accountName,
-      erpPartnerName: item.erpPartnerName,
-      depositor: item.depositor,
-      // 아래 둘은 현재 상대 응답에 없다(노출 요청 중). 없으면 null 로 두고,
-      // 추가되는 날 코드 변경 없이 자동으로 채워진다.
-      depositorRaw: item.depositorRaw ?? null,
-      erpPartnerCode: item.erpPartnerCode ?? null,
+      // PII 4종은 암호화해서 넣는다. 상대(erp_macro)가 자기 DB 에 암호화 보관하는 값이라
+      // 미러도 같은 수준을 유지한다. 응답에서 다시 복호화하는 쪽은 DepositService 다.
+      depositor: this.encrypt(item.depositor) as string,
+      depositorRaw: this.encrypt(item.depositorRaw),
+      erpPartnerCode: this.encrypt(item.erpPartnerCode),
+      erpPartnerName: this.encrypt(item.erpPartnerName),
       // BIGINT 컬럼이라 문자열로 넘긴다(JS number 정밀도에 기대지 않는다).
       amount: String(item.amount),
       balance: String(item.balance),
