@@ -13,6 +13,7 @@ import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliverySsgInsertStateEntity } from '../../entity/order.delivery.ssg.insert.state.entity';
 import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
 import { MarkAttemptedResult, SsgInsertState } from '../interface/ssg.insert.state';
+import { SsgIssueLogKeyCollisionError } from '../../partner_company_extern/infra/ssg.issue';
 import { SsgAttemptPayload, SsgConfirmInfo, SsgInsertStateService } from './ssg-insert-state.service';
 
 /**
@@ -187,6 +188,76 @@ describe('SsgInsertStateService', () => {
 
       expect(result).toBe(MarkAttemptedResult.SKIPPED_TERMINAL);
       expect(issueLogRepository.insert).not.toHaveBeenCalled();
+    });
+
+    describe('ssg_issue_log 후보 유일성 충돌 분류', () => {
+      // driverError 형태를 흉내낸다. TypeORM 은 QueryFailedError.driverError 에 원본을 싣는다.
+      const dupError = (sqlMessage: string) => {
+        const err = new Error(sqlMessage) as Error & { driverError?: unknown };
+        err.driverError = { code: 'ER_DUP_ENTRY', errno: 1062, sqlMessage };
+        return err;
+      };
+
+      const arrangeTransitioned = () => {
+        const chain = makeInsertChain(async () => ({ raw: { affectedRows: 1 } }));
+        (stateRepository.createQueryBuilder as jest.Mock).mockReturnValue(chain);
+      };
+
+      it.each([
+        // MySQL 8 은 테이블명을 붙이고 MariaDB 10 은 붙이지 않는다. 둘 다 인식해야 한다.
+        ["Duplicate entry '80000001' for key 'ssg_issue_log.uq_ssg_issue_log_bar_code'", 'bar_code'],
+        ["Duplicate entry '80000001' for key 'uq_ssg_issue_log_bar_code'", 'bar_code'],
+        ["Duplicate entry '01312345678' for key 'ssg_issue_log.uq_ssg_issue_log_personal_code'", 'personal_code'],
+        ["Duplicate entry '01312345678' for key 'uq_ssg_issue_log_personal_code'", 'personal_code'],
+      ])('%s → SsgIssueLogKeyCollisionError(%s)', async (sqlMessage, collidedKey) => {
+        arrangeTransitioned();
+        (issueLogRepository.insert as jest.Mock).mockRejectedValue(dupError(sqlMessage));
+
+        await expect(sut.markAttempted(123, samplePayload)).rejects.toMatchObject({
+          name: 'SsgIssueLogKeyCollisionError',
+          orderDeliveryId: 123,
+          collidedKey,
+        });
+      });
+
+      it('다른 인덱스의 ER_DUP_ENTRY 는 typed 변환하지 않고 원본 그대로 전파', async () => {
+        arrangeTransitioned();
+        const original = dupError("Duplicate entry '1' for key 'uq_some_other_table_key'");
+        (issueLogRepository.insert as jest.Mock).mockRejectedValue(original);
+
+        await expect(sut.markAttempted(123, samplePayload)).rejects.toBe(original);
+      });
+
+      it('ER_DUP_ENTRY 가 아닌 DB 오류는 원본 그대로 전파', async () => {
+        arrangeTransitioned();
+        const original = new Error('Lock wait timeout exceeded') as Error & { driverError?: unknown };
+        original.driverError = { code: 'ER_LOCK_WAIT_TIMEOUT', errno: 1205 };
+        (issueLogRepository.insert as jest.Mock).mockRejectedValue(original);
+
+        await expect(sut.markAttempted(123, samplePayload)).rejects.toBe(original);
+      });
+
+      it('errno 1062 라도 code 가 ER_DUP_ENTRY 가 아니면 전파 (errno 단독 판정 금지)', async () => {
+        arrangeTransitioned();
+        const original = new Error("Duplicate entry for key 'uq_ssg_issue_log_bar_code'") as Error & {
+          driverError?: unknown;
+        };
+        original.driverError = { errno: 1062, sqlMessage: "for key 'uq_ssg_issue_log_bar_code'" };
+        (issueLogRepository.insert as jest.Mock).mockRejectedValue(original);
+
+        await expect(sut.markAttempted(123, samplePayload)).rejects.toBe(original);
+      });
+
+      it('driverError 없이 최상위에 code/message 만 있어도 분류한다', async () => {
+        arrangeTransitioned();
+        const flat = new Error("Duplicate entry '80000001' for key 'uq_ssg_issue_log_bar_code'") as Error & {
+          code?: string;
+        };
+        flat.code = 'ER_DUP_ENTRY';
+        (issueLogRepository.insert as jest.Mock).mockRejectedValue(flat);
+
+        await expect(sut.markAttempted(123, samplePayload)).rejects.toBeInstanceOf(SsgIssueLogKeyCollisionError);
+      });
     });
   });
 
