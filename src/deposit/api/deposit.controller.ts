@@ -1,8 +1,9 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { DepositService } from '../application/deposit.service';
+import { DepositSyncService } from '../application/deposit.sync.service';
 import { DepositGetListReqQueryDto } from './deposit.req.dto';
-import { DepositGetAccountListResDto, DepositGetListResDto } from './deposit.res.dto';
+import { DepositGetAccountListResDto, DepositGetListResDto, DepositGetSyncStatusResDto } from './deposit.res.dto';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import { AuthService } from '../../auth/application/auth.service';
 import { User } from '../../auth/api/user.decorator';
@@ -22,6 +23,7 @@ import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
 export class DepositController {
   constructor(
     private depositService: DepositService,
+    private depositSyncService: DepositSyncService,
     private authService: AuthService,
   ) {}
 
@@ -56,5 +58,21 @@ export class DepositController {
   async getAccountList(@User() user: ILoginUserInfo): Promise<DepositGetAccountListResDto> {
     await this.authService.authorityValidator(user, UserAuthSubEnum.DEPOSIT_HISTORY);
     return this.depositService.getAccountList();
+  }
+
+  @ApiOperation({
+    summary: '입금내역 수집 상태 조회 API',
+    description:
+      '목록이 안 늘어날 때 "입금이 없는 것"인지 "수집이 멈춘 것"인지 구분하기 위한 신호.<br>' +
+      'lastSyncedAt 은 항상 응답하고, source(스크래핑 서버 상태)는 닿지 못하면 null 이다.',
+  })
+  @ApiOkResponse({
+    type: DepositGetSyncStatusResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  @Get('/deposit/sync-status')
+  async getSyncStatus(@User() user: ILoginUserInfo): Promise<DepositGetSyncStatusResDto> {
+    await this.authService.authorityValidator(user, UserAuthSubEnum.DEPOSIT_HISTORY);
+    return this.depositSyncService.getSyncStatus();
   }
 }

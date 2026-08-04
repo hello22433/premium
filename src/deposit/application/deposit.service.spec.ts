@@ -65,7 +65,9 @@ describe('DepositService.getList', () => {
     voucherNo: '2026/07/29-2',
     matchedUserId: null,
     matchStatus: DepositMatchStatus.UNMATCHED,
-    scrapedAt: new Date('2026-08-03T01:35:51.995Z'),
+    sourceScrapedAt: new Date('2026-08-03T01:35:51.995Z'),
+    sourceUpdatedAt: new Date('2026-08-03T01:35:52.479Z'),
+    syncedAt: new Date('2026-08-03T02:00:00.000Z'),
     ...overrides,
   });
 

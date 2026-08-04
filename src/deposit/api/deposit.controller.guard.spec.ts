@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { DepositController } from './deposit.controller';
 import { DepositService } from '../application/deposit.service';
+import { DepositSyncService } from '../application/deposit.sync.service';
 import { AuthService } from '../../auth/application/auth.service';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
 import { IUserAuthority } from '../../user/interface/user.authority';
@@ -27,6 +28,10 @@ describe('DepositController 인가 가드 (HTTP)', () => {
     getAccountList: jest.fn().mockResolvedValue({ accounts: [] }),
   };
 
+  const depositSyncService = {
+    getSyncStatus: jest.fn().mockResolvedValue({ enabled: false, lastSyncedAt: null, source: null }),
+  };
+
   const authService = {
     authorityValidator: jest.fn().mockResolvedValue(undefined),
   };
@@ -41,6 +46,7 @@ describe('DepositController 인가 가드 (HTTP)', () => {
       controllers: [DepositController],
       providers: [
         { provide: DepositService, useValue: depositService },
+        { provide: DepositSyncService, useValue: depositSyncService },
         { provide: AuthService, useValue: authService },
         AuthUserSuperAndOperationAdminGuard,
         { provide: 'ILoginTokenValidator', useValue: tokenValidator },
@@ -62,7 +68,7 @@ describe('DepositController 인가 가드 (HTTP)', () => {
 
   const auth = (role: IUserAuthority) => `Bearer ${role}`;
 
-  const guardedEndpoints: string[] = ['/deposit/list', '/deposit/accounts'];
+  const guardedEndpoints: string[] = ['/deposit/list', '/deposit/accounts', '/deposit/sync-status'];
 
   it.each(guardedEndpoints)('토큰이 없으면 401 (%s)', async (path) => {
     await request(app.getHttpServer()).get(path).expect(401);
@@ -101,5 +107,14 @@ describe('DepositController 인가 가드 (HTTP)', () => {
       .expect(200);
 
     expect(depositService.getAccountList).toHaveBeenCalledTimes(1);
+  });
+
+  it('권한이 있으면 수집상태 핸들러가 실행된다', async () => {
+    await request(app.getHttpServer())
+      .get('/deposit/sync-status')
+      .set('Authorization', auth(IUserAuthority.SUPER_ADMIN))
+      .expect(200);
+
+    expect(depositSyncService.getSyncStatus).toHaveBeenCalledTimes(1);
   });
 });

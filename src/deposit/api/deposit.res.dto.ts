@@ -91,3 +91,32 @@ export class DepositGetAccountListResDto {
   @ApiProperty({ type: [DepositAccountViewDto], description: '계좌 목록 (건수 내림차순)' })
   accounts: DepositAccountViewDto[];
 }
+
+export class DepositSourceStatusViewDto {
+  @ApiProperty({ description: 'erp_macro 수집이 차단된 상태인지' })
+  gateTripped: boolean;
+
+  @ApiProperty({ description: '차단 사유', nullable: true })
+  gateReason: string | null;
+
+  @ApiProperty({ description: 'erp_macro 가 마지막으로 스크래핑에 성공한 시각', nullable: true })
+  lastScrapedAt: string | null;
+}
+
+export class DepositGetSyncStatusResDto {
+  @ApiProperty({ description: '동기화 배치 활성 여부' })
+  enabled: boolean;
+
+  @ApiProperty({
+    description: '프리미엄이 마지막으로 데이터를 받아온 시각. 오래됐다면 동기화가 멈춘 것',
+    nullable: true,
+  })
+  lastSyncedAt: Date | null;
+
+  @ApiProperty({
+    type: DepositSourceStatusViewDto,
+    description: 'erp_macro 쪽 수집 상태. 스크래핑 서버에 닿지 못하면 null (화면은 계속 동작)',
+    nullable: true,
+  })
+  source: DepositSourceStatusViewDto | null;
+}

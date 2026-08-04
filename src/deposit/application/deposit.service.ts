@@ -18,8 +18,8 @@ type MatchedUserView = { businessName: string | null; personName: string | null 
 /**
  * 입금내역 조회 서비스.
  *
- * ⚠️ 읽기 전용이다. bank_deposit 의 write 소유자는 erp_macro 이며, 이 서비스는
- * SELECT 외의 어떤 쿼리도 실행하지 않는다. (BankDepositEntity 주석 참고)
+ * 읽는 대상은 프리미엄이 소유한 미러 테이블이다. 그 테이블을 채우는 쪽은
+ * DepositSyncService(erp_macro 조회 API 를 주기적으로 호출)이며, 이 서비스는 SELECT 만 한다.
  */
 @Injectable()
 export class DepositService {
@@ -96,7 +96,7 @@ export class DepositService {
         matchedUserId: deposit.matchedUserId,
         matchedBusinessName: matchedUser?.businessName ?? null,
         matchedPersonName: matchedUser?.personName ?? null,
-        scrapedAt: deposit.scrapedAt,
+        scrapedAt: deposit.sourceScrapedAt,
       };
     });
 
