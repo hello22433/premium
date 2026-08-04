@@ -266,6 +266,44 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
         expect(ssgIssue.issue.mock.calls[0][0].trId).toBe(secondPayload.ssgTransactionId);
       });
 
+      it('encourageDay 가 없으면 이전 시도가 남긴 encourageAt 을 null 로 지운다', async () => {
+        // 실패/고아 시도가 남긴 stale 알림일. expireAt 은 무조건 재산출되므로 함께 무효화해야 한다.
+        const stale = new Date('2020-01-01T00:00:00Z');
+        const orderDelivery = buildOrderDelivery({ encourageAt: stale });
+        const ssgEvent = buildSsgEvent();
+        sequentialPins(1);
+        ssgIssue.check.mockRejectedValue(new SsgCheckNotFoundError('미등록'));
+        ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
+        ssgIssue.issue.mockResolvedValue({ response: { result: [{ code: ['1000'], reason: ['ok'] }] } });
+
+        await sut.issue(orderDelivery, ssgEvent);
+
+        expect(orderDelivery.encourageAt).toBeNull();
+        expect(ssgInsertStateService.markAttempted.mock.calls[0][1].encourageAt).toBeNull();
+        expect(ssgInsertStateService.markConfirmed).toHaveBeenCalledWith(
+          orderDelivery.id,
+          expect.objectContaining({ encourageAt: null }),
+        );
+      });
+
+      it('encourageDay 가 있으면 새 expireAt 기준으로 encourageAt 을 재산출한다', async () => {
+        const stale = new Date('2020-01-01T00:00:00Z');
+        const orderDelivery = buildOrderDelivery({ encourageAt: stale });
+        orderDelivery.orderProductMapping.encourageDay = 3;
+        const ssgEvent = buildSsgEvent();
+        sequentialPins(1);
+        ssgIssue.check.mockRejectedValue(new SsgCheckNotFoundError('미등록'));
+        ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
+        ssgIssue.issue.mockResolvedValue({ response: { result: [{ code: ['1000'], reason: ['ok'] }] } });
+
+        await sut.issue(orderDelivery, ssgEvent);
+
+        const expireAt = orderDelivery.expireAt!;
+        const encourageAt = orderDelivery.encourageAt!;
+        expect(encourageAt).not.toEqual(stale);
+        expect(expireAt.getTime() - encourageAt.getTime()).toBe(3 * 24 * 60 * 60 * 1000);
+      });
+
       it('후보 5회 모두 충돌 → 발급 실패로 종결, 벤더 호출 0', async () => {
         const orderDelivery = buildOrderDelivery();
         const ssgEvent = buildSsgEvent();

@@ -48,7 +48,8 @@ SSG PIN 후보의 중복 검사가 **비원자적**이다.
 |---|---|
 | `barCode`, `personalCode` | `:749` 생성 게이트가 `if (!orderDelivery.barCode \|\| !orderDelivery.personalCode)` 이므로 무효화하지 않으면 같은 후보를 재사용한다. 선례: `:645-646` |
 | `ssgTransactionId` | `:801` — 후보마다 새 trId |
-| `expireAt`, `encourageAt` | `:802-806` — `attemptPayload` 와 SSG 본문에 실린다 |
+| `expireAt` | `:802` — 무조건 재산출. `attemptPayload` 와 SSG 본문에 실린다 |
+| `encourageAt` | `:806-809` 은 `encourageDay` 가 있을 때만 대입했다. `expireAt` 이 무조건 재산출되므로, 이전 시도(실패/고아/충돌 후보)가 남긴 값이 남으면 **옛 `expireAt` 기준 알림일이 새 후보에 붙는다.** `encourageDay` 가 없으면 명시적으로 `null` 로 지운다 |
 | `textForSsg` | **`sms.ssg.template.ts:47-50` 이 `personalCode` / `barCode` / `expireAt` 를 본문에 직접 박는다.** 재산출하지 않으면 옛 PIN이 적힌 본문을 SSG로 보낸다 |
 
 이 재산출은 **`needsInsert === true` 경로에만** 적용된다. 기존 PIN 재사용 경로(`needsInsert === false`)는 `markAttempted` 를 호출하지 않으므로 충돌 자체가 발생하지 않는다.

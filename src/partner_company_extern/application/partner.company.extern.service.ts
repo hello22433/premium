@@ -804,9 +804,10 @@ export class PartnerCompanyExternService {
             orderDelivery.ssgTransactionId = SsgTransactionId.makeSsgTrade();
             orderDelivery.expireAt = addDays(new Date(), orderDelivery.orderProductMapping.product.expireDay - 1);
             const encourageDay = orderDelivery.orderProductMapping.encourageDay;
-            if (encourageDay) {
-              orderDelivery.encourageAt = subDays(orderDelivery.expireAt, encourageDay);
-            }
+            // encourageDay 가 없으면 명시적으로 null 이다. expireAt 은 무조건 재산출되므로,
+            // 이전 시도(실패/고아/충돌 후보)가 남긴 encourageAt 을 그대로 두면 옛 expireAt 기준
+            // 알림일이 새 후보에 붙는다.
+            orderDelivery.encourageAt = encourageDay ? subDays(orderDelivery.expireAt, encourageDay) : null;
 
             // 4) SSG DB INSERT
             // 본문(smsSsgTemplate)은 personalCode/barCode/expireAt 을 직접 담으므로 후보마다 재산출해야 한다.
