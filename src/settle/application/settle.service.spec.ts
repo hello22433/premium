@@ -1,5 +1,30 @@
 import { BadRequestException } from '@nestjs/common';
+import { Brackets } from 'typeorm';
 import { SettleService } from './settle.service';
+
+const mockExcelRowCommit = jest.fn();
+const mockExcelAddRow = jest.fn().mockReturnValue({ commit: mockExcelRowCommit });
+const mockExcelSheetCommit = jest.fn().mockResolvedValue(undefined);
+const mockExcelWorkbookCommit = jest.fn().mockResolvedValue(undefined);
+
+jest.mock('exceljs', () => ({
+  stream: {
+    xlsx: {
+      WorkbookWriter: jest.fn().mockImplementation(() => ({
+        addWorksheet: jest.fn().mockReturnValue({
+          columns: [],
+          addRow: mockExcelAddRow,
+          commit: mockExcelSheetCommit,
+        }),
+        commit: mockExcelWorkbookCommit,
+      })),
+    },
+  },
+}));
+
+jest.mock('../../util/file.util', () => ({
+  createExportTempPath: jest.fn().mockReturnValue('partner-settle-test.xlsx'),
+}));
 
 jest.mock('typeorm-transactional', () => ({
   Transactional: () => (_target: any, _key: string, descriptor: PropertyDescriptor) => descriptor,
@@ -14,6 +39,8 @@ function makeService(overrides: Record<string, any> = {}): any {
     orderRepository: { createQueryBuilder: jest.fn(), manager: {} },
     userRepository: { findOne: jest.fn(), createQueryBuilder: jest.fn() },
     orderDeliveryRepository: { find: jest.fn().mockResolvedValue([]) },
+    activityLogService: { verifyPassword: jest.fn().mockResolvedValue(undefined), createLog: jest.fn() },
+    cryptoCipher: { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01012345678') },
     walletManagedPredicate: { isWalletManaged: jest.fn().mockResolvedValue(false) },
     settleConfirmationWalletService: { confirmSettlement: jest.fn() },
     legacyWalletCreditSyncService: { syncCredit: jest.fn() },
@@ -33,9 +60,28 @@ function makeSelectQb(overrides: Record<string, any> = {}): any {
     where: jest.fn().mockReturnThis(),
     andWhere: jest.fn().mockReturnThis(),
     orderBy: jest.fn().mockReturnThis(),
+    addOrderBy: jest.fn().mockReturnThis(),
     skip: jest.fn().mockReturnThis(),
     take: jest.fn().mockReturnThis(),
     getCount: jest.fn().mockResolvedValue(0),
+    getMany: jest.fn().mockResolvedValue([]),
+    ...overrides,
+  };
+}
+
+function makeExcelQb(overrides: Record<string, any> = {}): any {
+  return {
+    innerJoin: jest.fn().mockReturnThis(),
+    leftJoin: jest.fn().mockReturnThis(),
+    innerJoinAndSelect: jest.fn().mockReturnThis(),
+    leftJoinAndSelect: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    andWhere: jest.fn().mockReturnThis(),
+    select: jest.fn().mockReturnThis(),
+    orderBy: jest.fn().mockReturnThis(),
+    addOrderBy: jest.fn().mockReturnThis(),
+    whereInIds: jest.fn().mockReturnThis(),
+    getRawMany: jest.fn().mockResolvedValue([]),
     getMany: jest.fn().mockResolvedValue([]),
     ...overrides,
   };
@@ -45,10 +91,13 @@ function makeOrderDelivery(
   partnerSettleFee: number | null,
   partnerSettlePriceAdjustment: string | null,
   snapshotPrice = 1000,
+  overrides: Record<string, any> = {},
 ) {
   return {
     id: 1,
     sendRequestAt: new Date('2026-06-19T09:00:00+09:00'),
+    actualSendAt: new Date('2026-06-20T10:30:00+09:00'),
+    failedAt: null,
     couponStatus: 'USED',
     orderProductMapping: {
       snapshotProductPrice: snapshotPrice,
@@ -76,10 +125,95 @@ function makeOrderDelivery(
         },
       },
     },
+    ...overrides,
   };
 }
 
+function makeExcelOrderDelivery(id: number, actualSendAt: string | null, overrides: Record<string, any> = {}) {
+  return {
+    id,
+    actualSendAt: actualSendAt ? new Date(actualSendAt) : null,
+    failedAt: null,
+    tradeAt: null,
+    discardedAt: null,
+    expireAt: new Date('2026-07-20T23:59:59+09:00'),
+    deliveryTarget: 'encrypted-phone',
+    couponStatus: 'USED',
+    barCode: `BAR-${id}`,
+    transactionId: `TR-${id}`,
+    galaxiaBalance: 0,
+    choiceSelectProduct: null,
+    orderProductMapping: {
+      snapshotProductPrice: 1000,
+      fromPhoneNumber: '0212345678',
+      sendTitle: '발송명',
+      order: {
+        id: 42,
+        eventName: '이벤트',
+        code: 'ORD-42',
+        user: { company: { businessName: '고객사' } },
+        clientUser: null,
+      },
+      product: {
+        code: `EP-${id}`,
+        name: `상품-${id}`,
+        price: 1500,
+        expireDay: 30,
+        brand: { nameKorean: '브랜드' },
+        partnerCompany: {
+          businessName: id === 101 ? '갤럭시아' : '일반협력사',
+          settleMethod: 'CARD',
+          validityStartsNextDay: false,
+        },
+      },
+    },
+    ...overrides,
+  };
+}
+
+function expectNoGalaxiaPartnerFilter(qb: { andWhere: jest.Mock }) {
+  const allArgs = qb.andWhere.mock.calls.flat();
+  expect(allArgs.some((arg: unknown) => arg instanceof Brackets)).toBe(false);
+  expect(JSON.stringify(allArgs)).not.toContain('galaxiaType');
+  expect(JSON.stringify(allArgs)).not.toContain('partnerCompany.type');
+}
+
 describe('SettleService — getPartnerCompanyList (#54 fix)', () => {
+  beforeEach(() => {
+    mockExcelAddRow.mockClear();
+    mockExcelRowCommit.mockClear();
+    mockExcelSheetCommit.mockClear();
+    mockExcelWorkbookCommit.mockClear();
+  });
+
+  it('검색 기간은 주문 등록일이 아니라 실제 발송일 기준으로 적용하고 갤럭시아도 제외하지 않는다', async () => {
+    const qb = makeSelectQb({
+      getCount: jest.fn().mockResolvedValue(1),
+      getMany: jest.fn().mockResolvedValue([makeOrderDelivery(10, 'DISCOUNT', 1000)]),
+    });
+    const svc = makeService({ orderDeliveryRepository: { createQueryBuilder: jest.fn().mockReturnValue(qb) } });
+
+    const result = await svc.getPartnerCompanyList({
+      startAt: '2026-06-20T00:00:00',
+      endAt: '2026-06-20T23:59:59',
+      page: 1,
+      take: 10,
+    });
+
+    expect(qb.andWhere).toHaveBeenCalledWith('orderDelivery.actualSendAt IS NOT NULL');
+    expect(qb.andWhere).toHaveBeenCalledWith('orderDelivery.actualSendAt >= :actualSendAtStartAt', {
+      actualSendAtStartAt: '2026-06-20 00:00:00',
+    });
+    expect(qb.andWhere).toHaveBeenCalledWith('orderDelivery.actualSendAt <= :actualSendAtEndAt', {
+      actualSendAtEndAt: '2026-06-20 23:59:59',
+    });
+    expect(qb.orderBy).toHaveBeenCalledWith('orderDelivery.actualSendAt', 'DESC');
+    expect(qb.addOrderBy).toHaveBeenCalledWith('orderDelivery.id', 'DESC');
+    expectNoGalaxiaPartnerFilter(qb);
+    expect(result.list[0].id).toBe(1);
+    expect(result.list[0].registeredAt).toBe('2026-06-20T10:30:00');
+  });
+
   it('스냅샷 컬럼이 있으면 현재 상품가/할인조건 무시하고 스냅샷 기준으로 계산한다', async () => {
     const qb = makeSelectQb({
       getCount: jest.fn().mockResolvedValue(1),
@@ -153,6 +287,63 @@ describe('SettleService — getPartnerCompanyList (#54 fix)', () => {
 
     expect(result.list[0]).toMatchObject({ fee: 0, feePrice: 0, settlePrice: 1000 });
     expect(result.list[0]).not.toMatchObject({ fee: 20 });
+  });
+
+  it('엑셀 다운로드도 발송내역 id와 실제 발송일 기준으로 필터링하고 갤럭시아를 제외하지 않는다', async () => {
+    const idQb = makeExcelQb({
+      getRawMany: jest.fn().mockResolvedValue([{ id: 101 }, { id: 202 }]),
+    });
+    const graphQb = makeExcelQb({
+      getMany: jest
+        .fn()
+        .mockResolvedValue([
+          makeExcelOrderDelivery(101, '2026-06-20T10:30:00+09:00'),
+          makeExcelOrderDelivery(202, '2026-06-20T11:30:00+09:00'),
+        ]),
+    });
+    const orderDeliveryRepository = {
+      createQueryBuilder: jest.fn().mockReturnValueOnce(idQb).mockReturnValueOnce(graphQb),
+    };
+    const activityLogService = { verifyPassword: jest.fn().mockResolvedValue(undefined), createLog: jest.fn() };
+    const svc = makeService({ orderDeliveryRepository, activityLogService });
+
+    const result = await svc.partnerCompanyExcelDownload(
+      { id: 7, email: 'admin@example.com' },
+      {
+        password: 'pw',
+        startAt: '2026-06-20T00:00:00',
+        endAt: '2026-06-20T23:59:59',
+        downloadReason: '검증',
+      },
+    );
+
+    expect(idQb.select).toHaveBeenCalledWith('orderDelivery.id', 'id');
+    expect(idQb.orderBy).toHaveBeenCalledWith('orderDelivery.actualSendAt', 'DESC');
+    expect(idQb.addOrderBy).toHaveBeenCalledWith('orderDelivery.id', 'DESC');
+    expect(idQb.andWhere).toHaveBeenCalledWith('orderDelivery.actualSendAt IS NOT NULL');
+    expect(idQb.andWhere).toHaveBeenCalledWith('orderDelivery.actualSendAt >= :actualSendAtStartAt', {
+      actualSendAtStartAt: '2026-06-20 00:00:00',
+    });
+    expect(idQb.andWhere).toHaveBeenCalledWith('orderDelivery.actualSendAt <= :actualSendAtEndAt', {
+      actualSendAtEndAt: '2026-06-20 23:59:59',
+    });
+    expectNoGalaxiaPartnerFilter(idQb);
+    expect(graphQb.whereInIds).toHaveBeenCalledWith([101, 202]);
+    expect(mockExcelAddRow).toHaveBeenCalledTimes(2);
+    expect(mockExcelAddRow).toHaveBeenCalledWith(expect.objectContaining({ partnerCompanyName: '갤럭시아' }));
+    expect(mockExcelSheetCommit).toHaveBeenCalled();
+    expect(mockExcelWorkbookCommit).toHaveBeenCalled();
+    expect(activityLogService.createLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestUrl: '/settle/partner-company/excel-download',
+        recordCount: 2,
+        requestParams: expect.objectContaining({
+          startAt: '2026-06-20T00:00:00',
+          endAt: '2026-06-20T23:59:59',
+        }),
+      }),
+    );
+    expect(result.filePath).toBe('partner-settle-test.xlsx');
   });
 });
 
