@@ -85,28 +85,30 @@ export class DepositSyncService {
     const size = Number(this.configService.get('DEPOSIT_SYNC_PAGE_SIZE', DEFAULT_PAGE_SIZE));
     const syncedAt = new Date();
 
-    let page = 1;
+    // ⚠️ 상대는 Spring Pageable 이라 페이지가 0 부터 시작한다. 1 부터 보내면 첫 페이지가
+    // 통째로 빠지는데, 에러 없이 데이터만 사라지므로 눈에 띄지 않는다.
+    let page = 0;
     let fetched = 0;
 
-    while (page <= MAX_PAGES) {
+    while (page < MAX_PAGES) {
       const result = await this.depositSourceHttp.fetchPage(from, to, page, size);
 
-      if (result.items.length === 0) {
+      if (result.content.length === 0) {
         break;
       }
 
-      await this.upsert(result.items, syncedAt);
-      fetched += result.items.length;
+      await this.upsert(result.content, syncedAt);
+      fetched += result.content.length;
 
-      // 마지막 페이지 판정을 totalCount 산술이 아니라 "받은 개수 < 요청 개수" 로 한다.
-      // 동기화 도중 원본에 새 행이 들어와 totalCount 가 움직여도 순회가 끝난다.
-      if (result.items.length < size) {
+      // 마지막 페이지 판정을 totalElements 산술이 아니라 "받은 개수 < 요청 개수" 로 한다.
+      // 동기화 도중 원본에 새 행이 들어와 총계가 움직여도 순회가 끝난다.
+      if (result.content.length < size) {
         break;
       }
       page += 1;
     }
 
-    if (page > MAX_PAGES) {
+    if (page >= MAX_PAGES) {
       this.logger.error(
         `페이지 상한(${MAX_PAGES})에 도달해 중단했습니다. 구간을 좁혀 백필하세요. from=${from} to=${to}`,
       );
@@ -131,16 +133,17 @@ export class DepositSyncService {
       txType: item.txType,
       accountNo: item.accountNo,
       accountName: item.accountName,
-      erpPartnerCode: item.erpPartnerCode,
       erpPartnerName: item.erpPartnerName,
       depositor: item.depositor,
-      depositorRaw: item.depositorRaw,
+      // 아래 둘은 현재 상대 응답에 없다(노출 요청 중). 없으면 null 로 두고,
+      // 추가되는 날 코드 변경 없이 자동으로 채워진다.
+      depositorRaw: item.depositorRaw ?? null,
+      erpPartnerCode: item.erpPartnerCode ?? null,
       // BIGINT 컬럼이라 문자열로 넘긴다(JS number 정밀도에 기대지 않는다).
       amount: String(item.amount),
       balance: String(item.balance),
       voucherNo: item.voucherNo,
       sourceScrapedAt: new Date(item.scrapedAt),
-      sourceUpdatedAt: new Date(item.updatedAt),
       syncedAt,
     }));
 
@@ -163,7 +166,6 @@ export class DepositSyncService {
           'balance',
           'voucher_no',
           'source_scraped_at',
-          'source_updated_at',
           'synced_at',
         ],
         ['dedup_key'],

@@ -46,8 +46,9 @@ CREATE TABLE IF NOT EXISTS `bank_deposit` (
   `match_status`      VARCHAR(20)  NOT NULL DEFAULT 'UNMATCHED' COMMENT '[프리미엄] UNMATCHED/MAPPED/AMBIGUOUS/CREDITED',
 
   -- ===== 동기화 메타 =====
-  `source_scraped_at` DATETIME(6)  NOT NULL COMMENT '[원본] erp_macro 가 ECOUNT 를 긁은 시각',
-  `source_updated_at` DATETIME(6)  NOT NULL COMMENT '[원본] erp_macro 쪽 행 갱신 시각(회계전표 반영 추적용)',
+  -- 상대 API 의 scrapedAt 은 "처음 목격한 시각"이며 재스크래핑으로 갱신되지 않는다.
+  -- "원본이 마지막으로 바뀐 시각"에 해당하는 신호는 현재 API 에 없다.
+  `source_scraped_at` DATETIME(6)  NOT NULL COMMENT '[원본] erp_macro 가 이 거래를 처음 목격한 시각',
   `synced_at`         DATETIME(6)  NOT NULL COMMENT '[프리미엄] 이 행을 마지막으로 받아온 시각',
 
   `created_at`        DATETIME(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),

@@ -98,11 +98,13 @@ export class BankDepositEntity {
 
   // ===== 동기화 메타 =====
 
-  @Column({ type: 'datetime', precision: 6, comment: 'erp_macro 가 ECOUNT 를 긁은 시각' })
+  /**
+   * erp_macro 가 이 거래를 **처음 목격한** 시각. 재스크래핑으로 갱신되지 않는다
+   * (상대 BankDepositMirrorService 가 재목격 시 voucherNo/거래처만 refresh 한다).
+   * 따라서 "원본이 마지막으로 바뀐 시각"을 뜻하지 않는다 — 그 신호는 상대 API 에 없다.
+   */
+  @Column({ type: 'datetime', precision: 6, comment: 'erp_macro 가 이 거래를 처음 목격한 시각' })
   sourceScrapedAt: Date;
-
-  @Column({ type: 'datetime', precision: 6, comment: 'erp_macro 쪽 행 갱신 시각(회계전표 반영 추적용)' })
-  sourceUpdatedAt: Date;
 
   @Column({ type: 'datetime', precision: 6, comment: '이 행을 마지막으로 받아온 시각' })
   syncedAt: Date;

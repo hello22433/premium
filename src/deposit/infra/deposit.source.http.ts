@@ -48,8 +48,11 @@ export class DepositSourceHttp {
 
   /**
    * 거래내역 한 페이지 조회.
+   *
    * @param from 거래일자 시작 (yyyy-MM-dd, 포함)
    * @param to   거래일자 종료 (yyyy-MM-dd, 포함)
+   * @param page ⚠️ **0-based**. 상대가 Spring Pageable 이라 첫 페이지가 0 이다.
+   *             1 부터 보내면 첫 페이지를 통째로 건너뛴다(조용한 누락).
    */
   async fetchPage(from: string, to: string, page: number, size: number): Promise<DepositSourcePage> {
     const { baseUrl, apiKey, timeoutMs } = this.resolveConfig();
@@ -57,7 +60,17 @@ export class DepositSourceHttp {
     try {
       const response = await firstValueFrom(
         this.httpService.get<DepositSourcePage>(`${baseUrl}/api/deposits`, {
-          params: { from, to, page, size },
+          params: {
+            from,
+            to,
+            page,
+            size,
+            // 상대 기본 정렬은 최신순(DESC)이다. 페이지를 넘겨가며 읽는 도중 새 거래가 들어오면
+            // DESC 는 새 행이 맨 앞에 끼어들어 뒤 페이지가 밀리고, 아직 안 읽은 행이 이미 지나간
+            // 페이지로 이동해 영구 누락된다. 오름차순이면 새 행은 항상 끝에 붙으므로 순회가 안전하다.
+            // Spring 은 요청의 sort 가 @PageableDefault 를 덮으므로 여기서 명시한다.
+            sort: ['txDate,asc', 'id,asc'],
+          },
           headers: { 'X-API-KEY': apiKey },
           timeout: timeoutMs,
         }),
@@ -91,8 +104,10 @@ export class DepositSourceHttp {
    * items.map 에서 터지거나 최악의 경우 빈 배열로 읽혀 "입금이 없다"로 보인다.
    */
   private validatePage(data: DepositSourcePage): DepositSourcePage {
-    if (!data || !Array.isArray(data.items) || typeof data.totalCount !== 'number') {
-      throw new DepositSourceTransientError('erp_macro 응답 형태가 계약과 다릅니다.');
+    if (!data || !Array.isArray(data.content) || typeof data.totalElements !== 'number') {
+      throw new DepositSourceTransientError(
+        'erp_macro 응답 형태가 계약과 다릅니다 (content 배열 / totalElements 누락).',
+      );
     }
     return data;
   }

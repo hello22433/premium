@@ -45,31 +45,31 @@ const check = (label: string, ok: boolean, detail: unknown) => {
   if (!ok) failed += 1;
 };
 
+/** 상대 DepositView 가 실제로 돌려주는 필드만. depositorRaw/erpPartnerCode 는 없다. */
 const item = (overrides: Partial<DepositSourceItem> = {}): DepositSourceItem => ({
+  id: 4712,
   dedupKey: 'aaaa1111',
   txDate: '2026-07-29',
   txType: '입금',
   accountNo: '280***01757104',
   accountName: '(주)모바일이앤엠애드',
-  erpPartnerCode: null,
   erpPartnerName: null,
   depositor: '두성종이',
-  depositorRaw: '(가상)  두성종이',
   amount: 350000,
   balance: 45717465,
   voucherNo: null,
-  scrapedAt: '2026-08-03T10:35:51.995+09:00',
-  updatedAt: '2026-08-03T10:35:52.479+09:00',
+  scrapedAt: '2026-08-04T05:47:00.123456Z',
   ...overrides,
 });
 
-/** 계약대로 응답하는 가짜 erp_macro. 페이지가 한 장뿐인 단순 형태. */
+/** 가짜 erp_macro. Spring Page 봉투 + 0-based 페이지를 그대로 흉내낸다. */
 const fakeSource = (items: DepositSourceItem[]) => ({
   fetchPage: async (_from: string, _to: string, page: number, size: number) => ({
-    items: page === 1 ? items : [],
-    page,
+    content: page === 0 ? items : [],
+    number: page,
     size,
-    totalCount: items.length,
+    totalElements: items.length,
+    totalPages: 1,
   }),
   fetchStatus: async () => ({ lastScrapedAt: null, gateTripped: false, gateReason: null }),
 });

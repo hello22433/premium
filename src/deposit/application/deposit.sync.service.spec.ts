@@ -15,21 +15,23 @@ import {
  *    원본에 행이 추가될 때 끝나지 않거나 일부를 건너뛴다.
  */
 describe('DepositSyncService', () => {
+  /**
+   * 상대(erp_macro DepositView)가 실제로 돌려주는 필드만 담는다.
+   * depositorRaw / erpPartnerCode 는 현재 응답에 **없다** — 없는 상태가 기본이다.
+   */
   const item = (overrides: Partial<DepositSourceItem> = {}): DepositSourceItem => ({
+    id: 4712,
     dedupKey: 'f57b73d0',
     txDate: '2026-07-29',
     txType: '입금',
     accountNo: '280***01757104',
     accountName: '(주)모바일이앤엠애드',
-    erpPartnerCode: null,
     erpPartnerName: null,
     depositor: '두성종이',
-    depositorRaw: '(가상)  두성종이',
     amount: 350000,
     balance: 45717465,
     voucherNo: '2026/07/29-2',
-    scrapedAt: '2026-08-03T10:35:51.995+09:00',
-    updatedAt: '2026-08-03T10:35:52.479+09:00',
+    scrapedAt: '2026-08-04T05:47:00.123456Z',
     ...overrides,
   });
 
@@ -61,10 +63,11 @@ describe('DepositSyncService', () => {
       createQueryBuilder: jest.fn(() => insertQb),
     };
 
+    // 상대는 Spring Pageable — page 는 0-based 이고 봉투는 content/totalElements 다.
     const pages = options.pages ?? [[]];
-    const fetchPage = jest.fn(async (_from: string, _to: string, page: number) => {
-      const items = pages[page - 1] ?? [];
-      return { items, page, size: 500, totalCount: pages.flat().length };
+    const fetchPage = jest.fn(async (_from: string, _to: string, page: number, size: number) => {
+      const content = pages[page] ?? [];
+      return { content, number: page, size, totalElements: pages.flat().length, totalPages: pages.length };
     });
 
     const sourceHttp: any = { fetchPage, fetchStatus: jest.fn() };
@@ -93,7 +96,7 @@ describe('DepositSyncService', () => {
 
       expect(insertCalls[0].conflict).toEqual(['dedup_key']);
       expect(insertCalls[0].overwrite).toEqual(
-        expect.arrayContaining(['tx_date', 'amount', 'balance', 'voucher_no', 'source_updated_at', 'synced_at']),
+        expect.arrayContaining(['tx_date', 'amount', 'balance', 'voucher_no', 'source_scraped_at', 'synced_at']),
       );
     });
 
@@ -124,14 +127,34 @@ describe('DepositSyncService', () => {
       expect(insertCalls[0].rows[0].txDate).toBe('2026-07-29');
     });
 
-    it('오프셋이 붙은 시각 문자열을 Date 로 변환한다', async () => {
+    it('Java Instant(UTC Z) 문자열을 Date 로 변환한다', async () => {
       const { sut, insertCalls } = buildSut({
-        pages: [[item({ scrapedAt: '2026-08-03T10:35:51.995+09:00' })]],
+        pages: [[item({ scrapedAt: '2026-08-04T05:47:00.123456Z' })]],
       });
 
       await sut.syncRange('2026-07-01', '2026-07-31');
 
-      expect(insertCalls[0].rows[0].sourceScrapedAt).toEqual(new Date('2026-08-03T10:35:51.995+09:00'));
+      expect(insertCalls[0].rows[0].sourceScrapedAt).toEqual(new Date('2026-08-04T05:47:00.123456Z'));
+    });
+
+    it('응답에 없는 depositorRaw / erpPartnerCode 는 null 로 저장한다 (상대 미노출 필드)', async () => {
+      const { sut, insertCalls } = buildSut({ pages: [[item()]] });
+
+      await sut.syncRange('2026-07-01', '2026-07-31');
+
+      expect(insertCalls[0].rows[0].depositorRaw).toBeNull();
+      expect(insertCalls[0].rows[0].erpPartnerCode).toBeNull();
+    });
+
+    it('상대가 나중에 두 필드를 노출하면 코드 변경 없이 그대로 저장된다', async () => {
+      const { sut, insertCalls } = buildSut({
+        pages: [[item({ depositorRaw: '(가상)  두성종이', erpPartnerCode: 'P-001' })]],
+      });
+
+      await sut.syncRange('2026-07-01', '2026-07-31');
+
+      expect(insertCalls[0].rows[0].depositorRaw).toBe('(가상)  두성종이');
+      expect(insertCalls[0].rows[0].erpPartnerCode).toBe('P-001');
     });
 
     it('한 번의 동기화 안에서는 모든 행이 같은 syncedAt 을 갖는다', async () => {
@@ -147,6 +170,16 @@ describe('DepositSyncService', () => {
   });
 
   describe('페이지 순회', () => {
+    // 상대가 Spring Pageable 이라 첫 페이지가 0 이다. 1 부터 보내면 최신 한 페이지가
+    // 통째로 빠지는데 에러가 없어 눈에 띄지 않는다 — 실제로 한 번 틀렸던 지점이라 고정한다.
+    it('첫 요청의 페이지 번호는 0 이다 (Spring Pageable, 0-based)', async () => {
+      const { sut, fetchPage } = buildSut({ pages: [[item()]] });
+
+      await sut.syncRange('2026-07-01', '2026-07-31');
+
+      expect(fetchPage.mock.calls[0][2]).toBe(0);
+    });
+
     it('받은 개수가 요청 개수보다 적으면 마지막 페이지로 보고 멈춘다', async () => {
       const { sut, fetchPage } = buildSut({ pages: [[item({ dedupKey: 'a' })]] });
 
@@ -164,6 +197,7 @@ describe('DepositSyncService', () => {
 
       expect(fetched).toBe(501);
       expect(fetchPage).toHaveBeenCalledTimes(2);
+      expect(fetchPage.mock.calls.map((call) => call[2])).toEqual([0, 1]);
     });
 
     it('빈 페이지를 받으면 즉시 멈추고 쓰기를 하지 않는다', async () => {
