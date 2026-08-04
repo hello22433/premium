@@ -105,6 +105,9 @@ import { StaleExternalResponseEntity } from '../entity/stale.external.response.e
 import { PartnerDiscountScopeEntity } from '../entity/partner.discount.scope.entity';
 import { PartnerDiscountPolicyEpochEntity } from '../entity/partner.discount.policy.epoch.entity';
 import { PartnerDiscountHistoryEntity } from '../entity/partner.discount.history.entity';
+import { PartnerSettleLedgerEntity } from '../entity/partner.settle.ledger.entity';
+import { PartnerSettleTransitionObservationEntity } from '../entity/partner.settle.transition.observation.entity';
+import { PartnerProviderEventInboxEntity } from '../entity/partner.provider.event.inbox.entity';
 
 @Module({
   imports: [
@@ -217,6 +220,9 @@ import { PartnerDiscountHistoryEntity } from '../entity/partner.discount.history
           PartnerDiscountScopeEntity,
           PartnerDiscountPolicyEpochEntity,
           PartnerDiscountHistoryEntity,
+          PartnerSettleLedgerEntity,
+          PartnerSettleTransitionObservationEntity,
+          PartnerProviderEventInboxEntity,
         ],
         extra: {
           connectionLimit: +configService.get('DATABASE_CONNECTION_LIMIT', 50),
