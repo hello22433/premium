@@ -16,6 +16,10 @@ import { ClassificationEntity } from '../../entity/classification.entity';
 import { IUserDiscountMethod } from '../interface/user.discount.method';
 import { IUserDiscountCategory } from '../interface/user.discount.category';
 import { ICompareCondition } from '../interface/compare.condition';
+import { Transactional } from 'typeorm-transactional';
+import { PartnerDiscountHistoryService } from '../../partner_settle/application/partner.discount.history.service';
+import { normalizeScopeRange, PartnerDiscountScopeFields } from '../../partner_settle/domain/discount.scope.key';
+import { retryOnLockConflict } from '../../partner_settle/domain/lock.retry';
 
 @Injectable()
 export class UserDiscountService {
@@ -26,6 +30,7 @@ export class UserDiscountService {
     private userRepository: Repository<UserEntity>,
     @InjectRepository(ClassificationEntity)
     private classificationRepository: Repository<ClassificationEntity>,
+    private partnerDiscountHistoryService: PartnerDiscountHistoryService,
   ) {}
 
   /**
@@ -154,7 +159,19 @@ export class UserDiscountService {
     return { list: resultList, totalCount, totalPage, currentPage: page };
   }
 
+  /**
+   * 데드락 재시도는 트랜잭션 **밖**에서 감싼다 — 죽은 트랜잭션 안에서 다시 시도해도 이미 롤백된 뒤다.
+   */
   async create(loginUser: ILoginUserInfo, getBody: UserDiscountCreateReqDto) {
+    return retryOnLockConflict(() => this.createInTransaction(loginUser, getBody));
+  }
+
+  /**
+   * 협력사 정산조건(partner scope)은 원본 `user_discount` 쓰기와 `partner_discount_history` 기록이
+   * 한 트랜잭션이어야 한다. 한쪽만 성공하면 원장이 할인율을 0% 로 오계산하거나 삭제된 할인을 계속 적용한다.
+   */
+  @Transactional()
+  async createInTransaction(loginUser: ILoginUserInfo, getBody: UserDiscountCreateReqDto) {
     if (loginUser.authority === IUserAuthority.CORPORATE_ADMIN) {
       throw new ForbiddenException('할인 옵션 등록 권한이 없습니다.');
     }
@@ -180,10 +197,24 @@ export class UserDiscountService {
       throw new BadRequestException('할인율은 0~100 사이여야 합니다.');
     }
 
-    const user = await this.userRepository.findOneBy({ id: userId });
+    // user scope 와 partner scope 는 배타다. 둘 다 채워지면 협력사 정산조건 이력 대상에서 빠져
+    // 원장이 그 할인을 못 본다.
+    const isPartnerScope = partnerCompanyId !== null && partnerCompanyId !== undefined;
+    const hasUserId = userId !== null && userId !== undefined;
 
-    if (!user) {
-      throw new BadRequestException(`User does not exist`);
+    if (isPartnerScope && hasUserId) {
+      throw new BadRequestException('협력사 할인에는 userId를 함께 지정할 수 없습니다.');
+    }
+    if (!isPartnerScope && !hasUserId) {
+      throw new BadRequestException('userId 또는 partnerCompanyId 중 하나는 필수입니다.');
+    }
+
+    if (!isPartnerScope) {
+      const user = await this.userRepository.findOneBy({ id: userId });
+
+      if (!user) {
+        throw new BadRequestException(`User does not exist`);
+      }
     }
 
     // category별 필수값 검증
@@ -203,19 +234,31 @@ export class UserDiscountService {
       throw new BadRequestException('브랜드 할인 시 브랜드(primaryCategory)는 필수입니다.');
     }
 
-    const baseInsertData = {
-      userId,
-      partnerCompanyId,
-      method,
-      group,
-      category,
-      primaryCategory,
-      classificationId: classificationId ?? null,
-      priceAdjustment,
-      pricePercent,
-    };
+    const isBulk = method === IUserDiscountMethod.BULK;
+    // 일괄 할인은 구간을 갖지 않는다. 저장값·중복 검증·이력 scopeKey 가 같은 canonical range 를 써야
+    // "1000" 과 " 1000 " 이 원본에는 둘 다 남고 이력은 하나로 합쳐지는 어긋남이 생기지 않는다.
+    const resolvedRange = isBulk ? null : normalizeScopeRange(range);
+    const resolvedCompareCondition = isBulk ? ICompareCondition.ALL : compareCondition!;
 
-    if (method === IUserDiscountMethod.BULK) {
+    const scopeFields: PartnerDiscountScopeFields | null = isPartnerScope
+      ? {
+          partnerCompanyId: partnerCompanyId!,
+          category,
+          classificationId: classificationId ?? null,
+          method,
+          primaryCategory: primaryCategory ?? null,
+          group: group ?? null,
+          range: resolvedRange,
+          compareCondition: resolvedCompareCondition,
+        }
+      : null;
+
+    // BULK/SECTION 상호배제 검증을 잠금 밖에서 하면 동시 요청 2건이 모두 통과한다.
+    if (scopeFields) {
+      await this.partnerDiscountHistoryService.lockPolicy(scopeFields);
+    }
+
+    if (isBulk) {
       await this.validateBulkDiscount({
         userId,
         partnerCompanyId,
@@ -232,23 +275,34 @@ export class UserDiscountService {
         group: group ?? undefined,
         primaryCategory: primaryCategory ?? undefined,
         classificationId: classificationId ?? undefined,
-        compareCondition: compareCondition!,
-        range: range ?? undefined,
+        compareCondition: resolvedCompareCondition,
+        range: resolvedRange ?? undefined,
       });
     }
 
-    if (method === IUserDiscountMethod.BULK) {
-      await this.userDiscountRepository.insert({
-        ...baseInsertData,
-        range: null,
-        compareCondition: ICompareCondition.ALL,
-      });
-    } else {
-      await this.userDiscountRepository.insert({
-        ...baseInsertData,
-        range,
-        compareCondition,
-      });
+    await this.userDiscountRepository.insert({
+      userId: userId ?? null,
+      partnerCompanyId: partnerCompanyId ?? null,
+      method,
+      group,
+      category,
+      primaryCategory,
+      classificationId: classificationId ?? null,
+      priceAdjustment,
+      pricePercent,
+      range: resolvedRange,
+      compareCondition: resolvedCompareCondition,
+    });
+
+    if (scopeFields) {
+      const now = new Date();
+      await this.partnerDiscountHistoryService.recordCreate(
+        scopeFields,
+        { pricePercent, priceAdjustment },
+        loginUser.id,
+        now,
+      );
+      await this.partnerDiscountHistoryService.bumpEpoch(scopeFields.partnerCompanyId);
     }
   }
 
@@ -385,6 +439,11 @@ export class UserDiscountService {
   }
 
   async delete(loginUser: ILoginUserInfo, getBody: UserDiscountDeleteReqDto) {
+    return retryOnLockConflict(() => this.deleteInTransaction(loginUser, getBody));
+  }
+
+  @Transactional()
+  async deleteInTransaction(loginUser: ILoginUserInfo, getBody: UserDiscountDeleteReqDto) {
     if (loginUser.authority === IUserAuthority.CORPORATE_ADMIN) {
       throw new ForbiddenException('할인 옵션 삭제 권한이 없습니다.');
     }
@@ -399,6 +458,30 @@ export class UserDiscountService {
       throw new BadRequestException(`discount option not exist`);
     }
 
+    const scopeFields: PartnerDiscountScopeFields | null =
+      discount.partnerCompanyId !== null && discount.userId === null
+        ? {
+            partnerCompanyId: discount.partnerCompanyId,
+            category: discount.category,
+            classificationId: discount.classificationId,
+            method: discount.method,
+            primaryCategory: discount.primaryCategory,
+            group: discount.group,
+            range: discount.range,
+            compareCondition: discount.compareCondition,
+          }
+        : null;
+
+    if (scopeFields) {
+      await this.partnerDiscountHistoryService.lockPolicy(scopeFields);
+    }
+
     await this.userDiscountRepository.softDelete(id);
+
+    if (scopeFields) {
+      const now = new Date();
+      await this.partnerDiscountHistoryService.recordDelete(scopeFields, loginUser.id, now);
+      await this.partnerDiscountHistoryService.bumpEpoch(scopeFields.partnerCompanyId);
+    }
   }
 }

@@ -102,6 +102,9 @@ import { DualApprovalEntity } from '../entity/dual.approval.entity';
 import { DualApprovalAuditEntity } from '../entity/dual.approval.audit.entity';
 import { WorkflowResolutionEntity } from '../entity/workflow.resolution.entity';
 import { StaleExternalResponseEntity } from '../entity/stale.external.response.entity';
+import { PartnerDiscountScopeEntity } from '../entity/partner.discount.scope.entity';
+import { PartnerDiscountPolicyEpochEntity } from '../entity/partner.discount.policy.epoch.entity';
+import { PartnerDiscountHistoryEntity } from '../entity/partner.discount.history.entity';
 
 @Module({
   imports: [
@@ -211,6 +214,9 @@ import { StaleExternalResponseEntity } from '../entity/stale.external.response.e
           DualApprovalAuditEntity,
           WorkflowResolutionEntity,
           StaleExternalResponseEntity,
+          PartnerDiscountScopeEntity,
+          PartnerDiscountPolicyEpochEntity,
+          PartnerDiscountHistoryEntity,
         ],
         extra: {
           connectionLimit: +configService.get('DATABASE_CONNECTION_LIMIT', 50),

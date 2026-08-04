@@ -8,21 +8,32 @@ const product = (over: any = {}) =>
     expireDay: 30,
     imagePath: '/img/a.png',
     brand: { nameKorean: '브랜드A' },
+    category: 'MOBILE_COUPON',
+    classificationId: 3,
     ...over,
   }) as any;
 
 describe('buildLineProductSnapshot', () => {
-  it('LIVE product에서 5필드 박제', () => {
+  it('LIVE product에서 7필드 박제', () => {
     expect(buildLineProductSnapshot(product())).toEqual({
       snapshotProductPrice: 1000,
       snapshotProductName: '상품A',
       snapshotProductBrandName: '브랜드A',
       snapshotProductExpireDay: 30,
       snapshotProductImagePath: '/img/a.png',
+      snapshotProductCategory: 'MOBILE_COUPON',
+      snapshotProductClassificationId: 3,
     });
   });
   it('brand 없으면 브랜드명 빈문자', () => {
     expect(buildLineProductSnapshot(product({ brand: null })).snapshotProductBrandName).toBe('');
+  });
+  it('협력사 정산조건 매칭 입력(상품군·카테고리)을 주문 시점에 함께 박제한다', () => {
+    // 이 두 값이 없으면 정산 시점에 live product 를 다시 읽어야 하고, 상품이 바뀌면 과거 정산이 따라 움직인다.
+    const snapshot = buildLineProductSnapshot(product({ category: 'GIFT_CARD', classificationId: null }));
+
+    expect(snapshot.snapshotProductCategory).toBe('GIFT_CARD');
+    expect(snapshot.snapshotProductClassificationId).toBeNull();
   });
 });
 

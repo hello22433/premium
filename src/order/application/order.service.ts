@@ -4009,6 +4009,8 @@ export class OrderService {
             snapshotProductBrandName: m.snapshotProductBrandName,
             snapshotProductExpireDay: m.snapshotProductExpireDay,
             snapshotProductImagePath: m.snapshotProductImagePath,
+            snapshotProductCategory: m.snapshotProductCategory,
+            snapshotProductClassificationId: m.snapshotProductClassificationId,
           },
           partnerSettleSnapshot: {
             partnerSettleFee: m.partnerSettleFee,
