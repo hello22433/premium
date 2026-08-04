@@ -320,6 +320,11 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
         expect(ssgIssue.generateSsgIssue).toHaveBeenCalledTimes(5);
         expect(ssgIssue.issue).not.toHaveBeenCalled();
         expect(ssgInsertStateService.markConfirmed).not.toHaveBeenCalled();
+        // 소진 후 실패로 빠져나갈 때 선점당한 후보가 메모리에 남으면, 호출자가 orderDelivery 를
+        // 저장하면서 SSG 에 등록되지도 않은 PIN 을 배송건에 박아넣게 된다.
+        expect(orderDelivery.barCode).toBeNull();
+        expect(orderDelivery.personalCode).toBeNull();
+        expect(orderDelivery.ssgTransactionId).toBeNull();
       });
 
       it('충돌이 아닌 markAttempted 오류는 재시도 없이 그대로 전파', async () => {
