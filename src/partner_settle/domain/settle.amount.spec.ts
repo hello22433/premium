@@ -1,5 +1,8 @@
 import {
   calculatePartialReversal,
+  EMPTY_BREAKDOWN,
+  SettleAmountBreakdown,
+  sumBreakdowns,
   calculateSettleAmounts,
   LedgerAmountRangeError,
   LEDGER_AMOUNT_MAX,
@@ -111,20 +114,19 @@ describe('부분취소 배분 (§6.4 · 33차-H3)', () => {
     vatCalculationMode: 'NONE',
   });
 
-  const partial = (cancelBase: bigint, baseSum: bigint, settleSum: bigint) =>
+  const partial = (cancelBase: bigint, previous: SettleAmountBreakdown[] = []) =>
     calculatePartialReversal({
       original,
       cancelBaseAmount: cancelBase,
-      reversedBaseAmountSum: baseSum,
-      reversedSettleAmountSum: settleSum,
+      reversedTotals: sumBreakdowns(previous),
       pricePercent: '10',
       priceAdjustment: IPriceAdjustment.DISCOUNT,
       vatCalculationMode: 'NONE',
     });
 
   it('분할 취소 누적이 원본과 정확히 상쇄된다 (개별 절사 합 오차 없음)', () => {
-    const first = partial(1_000n, 0n, 0n);
-    const second = partial(2_335n, first.baseAmount, first.settleAmount);
+    const first = partial(1_000n);
+    const second = partial(2_335n, [first]);
 
     expect(first.baseAmount + second.baseAmount).toBe(-3_335n);
     expect(first.settleAmount + second.settleAmount).toBe(-3_002n);
@@ -132,14 +134,15 @@ describe('부분취소 배분 (§6.4 · 33차-H3)', () => {
   });
 
   it('마지막 취소는 base·settle 잔여를 정확히 소진한다', () => {
-    const first = partial(3_334n, 0n, 0n);
-    const last = partial(1n, first.baseAmount, first.settleAmount);
+    const first = partial(3_334n);
+    const last = partial(1n, [first]);
     expect(first.baseAmount + last.baseAmount).toBe(-3_335n);
     expect(first.settleAmount + last.settleAmount).toBe(-3_002n);
   });
 
   it('누적 절대값이 원본 baseAmount 를 넘으면 거부한다', () => {
-    expect(() => partial(1n, -3_335n, -3_002n)).toThrow(LedgerAmountRangeError);
+    const all = partial(3_335n);
+    expect(() => partial(1n, [all])).toThrow(LedgerAmountRangeError);
   });
 
   it('100% 할인 원본(settle 0)에서도 baseAmount 과다취소를 막는다', () => {
@@ -155,8 +158,7 @@ describe('부분취소 배분 (§6.4 · 33차-H3)', () => {
       calculatePartialReversal({
         original: fullDiscount,
         cancelBaseAmount: 1_000n,
-        reversedBaseAmountSum: 0n,
-        reversedSettleAmountSum: 0n,
+        reversedTotals: EMPTY_BREAKDOWN,
         pricePercent: '100',
         priceAdjustment: IPriceAdjustment.DISCOUNT,
         vatCalculationMode: 'NONE',
@@ -166,14 +168,84 @@ describe('부분취소 배분 (§6.4 · 33차-H3)', () => {
     const drained = calculatePartialReversal({
       original: fullDiscount,
       cancelBaseAmount: 100n,
-      reversedBaseAmountSum: 0n,
-      reversedSettleAmountSum: 0n,
+      reversedTotals: EMPTY_BREAKDOWN,
       pricePercent: '100',
       priceAdjustment: IPriceAdjustment.DISCOUNT,
       vatCalculationMode: 'NONE',
     });
     expect(drained.baseAmount).toBe(-100n);
     expect(drained.settleAmount).toBe(0n);
+  });
+
+  it('할인금액 스냅샷도 배분되어 전량 취소 시 0 으로 상쇄된다', () => {
+    // 원본 base=100 · discount=10 · fee=0 → settle=90. 50 + 50 으로 나눠 취소한다.
+    const withDiscount = calculateSettleAmounts({
+      baseAmount: 100n,
+      discountAmount: 10n,
+      pricePercent: '0',
+      priceAdjustment: IPriceAdjustment.DISCOUNT,
+      vatCalculationMode: 'NONE',
+    });
+    expect(withDiscount.settleAmount).toBe(90n);
+
+    const input = (cancelBase: bigint, previous: SettleAmountBreakdown[]) => ({
+      original: withDiscount,
+      cancelBaseAmount: cancelBase,
+      reversedTotals: sumBreakdowns(previous),
+      pricePercent: '0',
+      priceAdjustment: IPriceAdjustment.DISCOUNT,
+      vatCalculationMode: 'NONE' as const,
+    });
+
+    const first = calculatePartialReversal(input(50n, []));
+    const second = calculatePartialReversal(input(50n, [first]));
+
+    expect(first.discountAmount).toBe(-5n);
+    expect(withDiscount.discountAmount + first.discountAmount + second.discountAmount).toBe(0n);
+    expect(withDiscount.baseAmount + first.baseAmount + second.baseAmount).toBe(0n);
+    expect(withDiscount.settleAmount + first.settleAmount + second.settleAmount).toBe(0n);
+  });
+
+  it('마지막 취소 행도 giving − receiving + vat = feeTotal 항등식을 유지한다', () => {
+    // 절사·반올림 잔여가 마지막 행에 몰리는 케이스(할증 + VAT 별도).
+    const surcharge = calculateSettleAmounts({
+      baseAmount: 3_333n,
+      discountAmount: 7n,
+      pricePercent: '3.3',
+      priceAdjustment: IPriceAdjustment.ADDITIONAL,
+      vatCalculationMode: 'SEPARATE_ROUND',
+    });
+
+    const input = (cancelBase: bigint, previous: SettleAmountBreakdown[]) => ({
+      original: surcharge,
+      cancelBaseAmount: cancelBase,
+      reversedTotals: sumBreakdowns(previous),
+      pricePercent: '3.3',
+      priceAdjustment: IPriceAdjustment.ADDITIONAL,
+      vatCalculationMode: 'SEPARATE_ROUND' as const,
+    });
+
+    const first = calculatePartialReversal(input(1_111n, []));
+    const last = calculatePartialReversal(input(2_222n, [first]));
+
+    for (const row of [surcharge, first, last]) {
+      expect(row.givingCommissionAmount - row.receivingCommissionAmount + row.vatAmount).toBe(
+        row.feeTotalAmount,
+      );
+      expect(row.baseAmount - row.discountAmount - row.feeTotalAmount).toBe(row.settleAmount);
+    }
+
+    for (const key of [
+      'baseAmount',
+      'discountAmount',
+      'receivingCommissionAmount',
+      'givingCommissionAmount',
+      'vatAmount',
+      'feeTotalAmount',
+      'settleAmount',
+    ] as const) {
+      expect(surcharge[key] + first[key] + last[key]).toBe(0n);
+    }
   });
 });
 

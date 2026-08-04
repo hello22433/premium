@@ -54,6 +54,12 @@ CREATE TABLE `partner_provider_event_inbox` (
     (`id`, `provider`, `order_delivery_id`, `source_type`),
   KEY `idx_partner_provider_event_inbox_lane` (`provider`, `order_delivery_id`, `origin`, `id`),
   KEY `idx_partner_provider_event_inbox_status` (`processed_status`, `id`),
+  -- inbox 는 관측/orphan ingress 전용이다. 원장 전용 ADJUSTMENT·임의 값이 섞이면
+  -- producer 가 그 row 를 정상 관측으로 오인해 원장 경로에 밀어넣는다.
+  CONSTRAINT `chk_partner_provider_event_inbox_source_type`
+    CHECK (`source_type` IN ('ISSUANCE','EXCHANGE','USAGE')),
+  CONSTRAINT `chk_partner_provider_event_inbox_origin`
+    CHECK (`origin` IN ('POLL','PUSH','MANUAL','ORPHAN')),
   -- lane 과 상태의 상호배타. orphan row 가 관측 lane 복구 규칙에 섞이는 것을 DB 가 막는다.
   CONSTRAINT `chk_partner_provider_event_inbox_lane_status`
     CHECK (

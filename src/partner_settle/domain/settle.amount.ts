@@ -149,13 +149,12 @@ export function reverseAmounts(original: SettleAmountBreakdown): SettleAmountBre
 }
 
 export type PartialReversalInput = {
-  /** 원본 row 의 구성금액 (양수) */
+  /** 원본 row 의 구성금액 (부호 포함, 통상 양수) */
   original: SettleAmountBreakdown;
   /** 이번 취소분 baseAmount 절대값 */
   cancelBaseAmount: bigint;
-  /** 같은 원본에 대한 기존 역분개 누적 절대값 */
-  reversedBaseAmountSum: bigint;
-  reversedSettleAmountSum: bigint;
+  /** 같은 원본에 대한 기존 역분개 누적 — **부호 그대로**의 구성금액 합(`sumBreakdowns`) */
+  reversedTotals: SettleAmountBreakdown;
   pricePercent: string | number;
   priceAdjustment: IPriceAdjustment;
   vatCalculationMode: IPartnerSettleVatCalculationMode;
@@ -167,50 +166,90 @@ export type PartialReversalInput = {
  * `Σ|역분개 baseAmount| ≤ 원본 baseAmount` **와** `Σ|역분개 settleAmount| ≤ 원본 settleAmount` 를 둘 다
  * 강제한다. settle 상한만 보면 100% 할인 원본(base=100·settle=0)에서 base 과다취소가 통과한다.
  *
- * 원본을 소진하는 마지막 취소는 base·settle 잔여액을 **정확히** 소진한다 — 개별 절사 합이 원본과
- * 1원 어긋나 net 0 이 깨지는 것을 막는다.
+ * **할인금액도 함께 배분한다** — `discountAmount` 는 원본 스냅샷이지 base 로부터 재계산되는 값이
+ * 아니므로, 배분하지 않으면 부분취소를 다 해도 원본 할인금액이 상쇄되지 않고 남는다.
+ * 배분은 base 비율 절사이고, 마지막 취소가 잔여 전량을 가져간다.
+ *
+ * **잔여는 부호를 유지한 채 계산한다** — 항목별로 절대값을 취해 빼면 방향이 섞여
+ * `giving − receiving + vat = feeTotal` 항등식이 깨진다(할증은 receiving 양수·vat 음수).
+ * 원본과 직전 역분개들이 모두 항등식을 만족하므로, 부호 그대로의 합(`original + Σreversal`)도
+ * 항등식을 만족한다. 마지막 취소는 이 잔여 전량을 반전해 모든 구성금액을 정확히 소진한다.
  */
 export function calculatePartialReversal(input: PartialReversalInput): SettleAmountBreakdown {
-  const originalBase = abs(input.original.baseAmount);
-  const originalSettle = abs(input.original.settleAmount);
+  const original = input.original;
+  const remaining = addBreakdown(original, input.reversedTotals);
   const cancelBase = abs(input.cancelBaseAmount);
-
-  const remainingBase = originalBase - abs(input.reversedBaseAmountSum);
-  const remainingSettle = originalSettle - abs(input.reversedSettleAmountSum);
+  const baseSign = original.baseAmount < 0n ? -1n : 1n;
 
   if (cancelBase <= 0n) {
     throw new LedgerAmountRangeError('취소 baseAmount 는 0보다 커야 한다');
   }
-  if (cancelBase > remainingBase) {
+  if (cancelBase > abs(remaining.baseAmount)) {
     throw new LedgerAmountRangeError(
-      `역분개 누적이 원본 baseAmount 를 초과한다 (잔여 ${remainingBase}, 요청 ${cancelBase})`,
+      `역분개 누적이 원본 baseAmount 를 초과한다 (잔여 ${remaining.baseAmount}, 요청 ${cancelBase})`,
     );
   }
 
+  // 마지막 취소 — 잔여 전량을 그대로 반전한다(개별 절사 합 오차·항등식 붕괴 방지).
+  if (cancelBase === abs(remaining.baseAmount)) {
+    return reverseAmounts(remaining);
+  }
+
+  const discountShare =
+    original.baseAmount === 0n
+      ? 0n
+      : (abs(original.discountAmount) * cancelBase) / abs(original.baseAmount);
+
   const computed = calculateSettleAmounts({
-    baseAmount: cancelBase,
+    baseAmount: cancelBase * baseSign,
+    discountAmount: discountShare,
     pricePercent: input.pricePercent,
     priceAdjustment: input.priceAdjustment,
     vatCalculationMode: input.vatCalculationMode,
   });
 
-  // 마지막 취소는 잔여를 정확히 소진한다.
-  if (cancelBase === remainingBase) {
-    const drained: SettleAmountBreakdown = {
-      ...computed,
-      settleAmount: remainingSettle,
-      feeTotalAmount: cancelBase - remainingSettle,
-    };
-    return reverseAmounts(drained);
-  }
+  assertWithinRemaining('settleAmount', computed.settleAmount, remaining.settleAmount);
+  assertWithinRemaining('discountAmount', computed.discountAmount, remaining.discountAmount);
+  assertWithinRemaining('feeTotalAmount', computed.feeTotalAmount, remaining.feeTotalAmount);
 
-  if (computed.settleAmount > remainingSettle) {
-    throw new LedgerAmountRangeError(
-      `역분개 누적이 원본 settleAmount 를 초과한다 (잔여 ${remainingSettle}, 계산 ${computed.settleAmount})`,
-    );
-  }
   return reverseAmounts(computed);
 }
+
+function assertWithinRemaining(label: string, value: bigint, remaining: bigint): void {
+  if (abs(value) > abs(remaining)) {
+    throw new LedgerAmountRangeError(
+      `역분개 누적이 원본 ${label} 을 초과한다 (잔여 ${remaining}, 계산 ${value})`,
+    );
+  }
+}
+
+/** 원본 + 역분개 누적(음수) = 잔여. 부호를 유지해야 항등식이 보존된다. */
+function addBreakdown(a: SettleAmountBreakdown, b: SettleAmountBreakdown): SettleAmountBreakdown {
+  return {
+    baseAmount: a.baseAmount + b.baseAmount,
+    discountAmount: a.discountAmount + b.discountAmount,
+    receivingCommissionAmount: a.receivingCommissionAmount + b.receivingCommissionAmount,
+    givingCommissionAmount: a.givingCommissionAmount + b.givingCommissionAmount,
+    vatAmount: a.vatAmount + b.vatAmount,
+    feeTotalAmount: a.feeTotalAmount + b.feeTotalAmount,
+    settleAmount: a.settleAmount + b.settleAmount,
+  };
+}
+
+/** 기존 역분개 row 들의 **부호 그대로**의 합. 호출부가 원본의 역분개 전량을 접어 넣는다. */
+export function sumBreakdowns(rows: SettleAmountBreakdown[]): SettleAmountBreakdown {
+  return rows.reduce<SettleAmountBreakdown>((acc, row) => addBreakdown(acc, row), EMPTY_BREAKDOWN);
+}
+
+export const EMPTY_BREAKDOWN: SettleAmountBreakdown = {
+  baseAmount: 0n,
+  discountAmount: 0n,
+  receivingCommissionAmount: 0n,
+  givingCommissionAmount: 0n,
+  vatAmount: 0n,
+  feeTotalAmount: 0n,
+  settleAmount: 0n,
+};
 
 /** 집계 상한 검사 (57차-H3 ③). 초과 시 부분 write 없이 중단시키기 위해 호출부가 먼저 쓴다. */
 export function assertAggregateBound(label: string, value: bigint): void {
