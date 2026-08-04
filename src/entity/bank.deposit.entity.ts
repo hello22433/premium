@@ -8,6 +8,12 @@ import { DepositMatchStatus } from '../deposit/interface/deposit.match.status';
  * 프리미엄이 그 API 를 주기적으로 호출해 이 테이블에 미러링한다. 화면은 이 테이블을 읽는다.
  * (계약: docs/API계약-erp_macro-입금내역-조회.md, 스키마: migration/bank-deposit-mirror.sql)
  *
+ * `synchronize: false` 는 스키마 자동변경 잠금이다. 전역 스위치(DATABASE_SYNCHRONIZE)가
+ * 모든 환경에서 꺼져 있어 지금은 아무 일도 일어나지 않지만, 누군가 로컬에서 켜는 순간
+ * TypeORM 이 이 테이블을 자기 판단대로 ALTER 하게 된다. 이 테이블은 DDL 을 수기 SQL 로
+ * 관리하는(migration/bank-deposit-mirror.sql) 돈 데이터라, 유지 비용 0 인 잠금을 굳이 뗄 이유가 없다.
+ * (소유권이 프리미엄으로 넘어온 것과 이 잠금은 별개 문제다)
+ *
  * ⚠️ 컬럼 소유권이 두 갈래다.
  *   · [원본] erp_macro 가 정본 — 동기화가 매 주기 덮어쓴다.
  *   · [프리미엄] matchedUserId / matchStatus — 프리미엄만 쓴다. 동기화가 건드리면
@@ -17,7 +23,7 @@ import { DepositMatchStatus } from '../deposit/interface/deposit.match.status';
  * 금액(amount/balance)은 은행 거래 사실이지 고객 예치금·미수금이 아니다.
  * 고객 잔액의 정본은 wallet_account 이며 이 테이블과 무관하다.
  */
-@Entity('bank_deposit')
+@Entity('bank_deposit', { synchronize: false })
 @Unique('uk_bank_deposit_dedup', ['dedupKey'])
 @Index('idx_bank_deposit_tx_date', ['txDate'])
 @Index('idx_bank_deposit_depositor', ['depositor'])
