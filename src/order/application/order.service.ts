@@ -75,7 +75,11 @@ import {
   resolveDestructionCertificateGate,
   destructionCertificateBlockMessage,
 } from '../domain/destruction.certificate.gate';
-import { KIND_CERTAINTY, EffectiveDestroyAtKind, resolveOrderEffectiveDestroyAt } from '../domain/effective.destroy.date';
+import {
+  KIND_CERTAINTY,
+  EffectiveDestroyAtKind,
+  resolveOrderEffectiveDestroyAt,
+} from '../domain/effective.destroy.date';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { TestOrderDeliveryEntity } from '../../entity/test.order.delivery.entity';
 import { ProductEntity } from '../../entity/product.entity';
@@ -761,7 +765,6 @@ export class OrderService {
       );
     }
 
-
     if (status) {
       queryBuilder = queryBuilder.andWhere('order.status = :status', { status });
     }
@@ -1078,7 +1081,9 @@ export class OrderService {
         deliveryCancel: string;
       }>();
 
-    const failedRows = await (await this.buildOrderListQuery(user, { ...params, status: undefined, hasFailedDelivery: true }))
+    const failedRows = await (
+      await this.buildOrderListQuery(user, { ...params, status: undefined, hasFailedDelivery: true })
+    )
       .clone()
       .orderBy()
       .select('COUNT(DISTINCT order.id)', 'failed')
@@ -2224,7 +2229,8 @@ export class OrderService {
         break;
       }
       const destroyAt = resolved.at;
-      if (multipleKind === null || KIND_CERTAINTY[resolved.kind] < KIND_CERTAINTY[multipleKind]) multipleKind = resolved.kind;
+      if (multipleKind === null || KIND_CERTAINTY[resolved.kind] < KIND_CERTAINTY[multipleKind])
+        multipleKind = resolved.kind;
       if (multipleEffectiveDestroyAt === null || destroyAt > multipleEffectiveDestroyAt) {
         multipleEffectiveDestroyAt = destroyAt;
       }

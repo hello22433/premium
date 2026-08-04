@@ -55,9 +55,35 @@ describe('OrderService mapping scope', () => {
     return builder;
   };
 
+  const createScopeAwareOrderBuilder = (mapping: typeof baseMapping) => {
+    let inScope = true;
+    const builder: any = {
+      innerJoin: jest.fn().mockReturnThis(),
+      withDeleted: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn((clause: string, params: Record<string, unknown>) => {
+        if (clause.includes('order.userId = :userId')) {
+          const uid = params.userId;
+          const order = mapping.order;
+          inScope = order.userId === uid || order.operationUserId === uid || order.clientUserId === uid;
+        }
+        if (clause.includes('user.companyId = :companyId')) {
+          inScope = true;
+        }
+        return builder;
+      }),
+      getCount: jest.fn(() => Promise.resolve(inScope ? 1 : 0)),
+    };
+    return builder;
+  };
+
   const buildService = (mapping: typeof baseMapping, scopeType = ViewScopeType.SELF) => {
     const service = Object.create(OrderService.prototype) as any;
     const builder = createScopeAwareMappingBuilder(mapping);
+    const orderBuilder = createScopeAwareOrderBuilder(mapping);
+    service.orderRepository = {
+      createQueryBuilder: jest.fn().mockReturnValue(orderBuilder),
+    };
     service.orderProductMappingRepository = {
       createQueryBuilder: jest.fn().mockReturnValue(builder),
       findOne: jest.fn().mockResolvedValue(mapping),
@@ -85,6 +111,7 @@ describe('OrderService mapping scope', () => {
       'testDelivery',
       (service: any) =>
         service.testDelivery(outOfScopeUser, {
+          orderId: 1,
           orderProductMappingId: 77,
           deliveryTarget: '01012341234',
         }),

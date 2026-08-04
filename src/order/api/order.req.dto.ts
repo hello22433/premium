@@ -60,7 +60,8 @@ export class OrderGetListReqDto extends PagingReqDto {
   @IsEnum(IOrderStatus)
   status?: IOrderStatus;
   @ApiPropertyOptional({
-    description: '미해결 발송 실패 건 포함 주문만 조회한다. FAIL/FAIL_SMS 이면서 재발송되지 않은(resendAt IS NULL) 활성 발송건이 하나라도 있으면 해당한다.',
+    description:
+      '미해결 발송 실패 건 포함 주문만 조회한다. FAIL/FAIL_SMS 이면서 재발송되지 않은(resendAt IS NULL) 활성 발송건이 하나라도 있으면 해당한다.',
     default: false,
   })
   @IsOptional()
