@@ -5669,7 +5669,16 @@ export class OrderService {
     }
 
     // 크래시로 남은 미발송 이력을 먼저 정리한다. 한도 선점 전에 수행해야 회수한 횟수를 이번 요청이 쓴다.
-    await this.discardStaleTestDeliveries(orderProductMappingId);
+    // 정리는 부가 작업이라 실패해도 발송 요청 자체를 막지 않는다. 실패 시 트랜잭션이 통째로 롤백되므로
+    // 이력·한도가 함께 원복되고, 이 요청은 잔류가 없던 것처럼 평소 경로로 진행한다.
+    try {
+      await this.discardStaleTestDeliveries(orderProductMappingId);
+    } catch (error) {
+      this.logger.error(
+        `테스트 발송 잔류 정리 중 오류 (orderProductMappingId: ${orderProductMappingId})`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
 
     // 한도 용량 원자 선점: count < 2 인 경우에만 +1. affected=0 이면 한도 초과(동시 요청 포함)로 차단한다.
     // 락+검사 대신 조건부 UPDATE 로 선점해 동시 요청의 한도 초과를 구조적으로 막는다.
@@ -5694,6 +5703,8 @@ export class OrderService {
     // 준비 단계도 외부 I/O 라 실패할 수 있고, 그때 보상하지 않으면 발송 없이 한도만 소진된다.
     let testOrderDeliveryId: number | null = null;
     let isSent = false;
+    // 잔류 정리가 이미 이력·한도를 회수한 경우. 보상을 중복 적용하지 않기 위해 구분한다.
+    let isStaleClaim = false;
     try {
       const firstDelivery = await this.orderDeliveryRepository.findOne({
         where: { orderProductMappingId },
@@ -5749,12 +5760,27 @@ export class OrderService {
 
       // 발송 직전 WAIT 로 전환한다. 크래시로 잔류했을 때 TEMP(발송 전)와 WAIT(발송 여부 불명)를
       // 구분해야 잔류 정리가 미발송 건만 골라 되돌릴 수 있다.
-      await this.testOrderDeliveryRepository
+      //
+      // 이 전환은 발송 권한 선점도 겸한다. 이 요청이 오래 정지된 사이 다른 인스턴스의 잔류 정리가
+      // 이 이력을 이미 지웠을 수 있는데(TEMP + grace 경과), 그대로 발송하면 이력 없는 물리 발송이 된다.
+      // TEMP·미삭제인 행만 전환하고 affected 로 확인해, 내 이력이 아니면 발송 전에 중단한다.
+      const sendClaim = await this.testOrderDeliveryRepository
         .createQueryBuilder()
         .update()
         .set({ status: IOrderDeliveryStatus.WAIT })
         .where('id = :id', { id: testOrderDeliveryId })
+        .andWhere('status = :temp', { temp: IOrderDeliveryStatus.TEMP })
+        .andWhere('deleted_at IS NULL')
         .execute();
+      if ((sendClaim.affected ?? 0) !== 1) {
+        // 잔류 정리가 이미 이력 삭제와 한도 회수(-1)를 마친 상태다. 여기서 또 보상하면 다른 건의
+        // 한도까지 깎으므로, 이력만 정리(멱등)하고 한도는 건드리지 않은 채 중단한다.
+        this.logger.error(
+          `테스트 발송 WAIT 전환이 0행 (testOrderDeliveryId: ${testOrderDeliveryId}) — 잔류 정리로 이력이 이미 회수됨. 발송하지 않고 중단`,
+        );
+        isStaleClaim = true;
+        throw new BadRequestException('테스트 발송 요청이 만료되었습니다. 다시 시도해주세요.');
+      }
 
       // 전송 (TX 밖 — testOrderDeliveryId 로 테스트 발송임을 전달하여 PIN 재발급 스킵).
       const isSuccess = await this.deliveryBatchService.oneSend(orderDelivery, false, testOrderDeliveryId);
@@ -5787,7 +5813,24 @@ export class OrderService {
       }
       // 준비 단계 실패 시에는 아직 이력이 없을 수 있으므로 testOrderDeliveryId 는 null 일 수 있다.
       // 관리자 발송은 한도를 선점하지 않았으므로 보상 차감도 하지 않는다(하면 기업관리자 한도를 깎는다).
-      await this.rollbackTestDelivery(testOrderDeliveryId, orderProductMappingId, !canBypassTestDeliveryLimit);
+      // 잔류 정리가 이미 회수한 건(isStaleClaim)도 같은 이유로 보상 대상에서 제외한다.
+      const shouldCompensate = !canBypassTestDeliveryLimit && !isStaleClaim;
+      try {
+        await this.rollbackTestDelivery(testOrderDeliveryId, orderProductMappingId, shouldCompensate);
+      } catch (rollbackError) {
+        // 보상 실패가 원 발송 실패 사유를 덮지 않도록 로그만 남긴다.
+        // 보상은 한 트랜잭션이라 부분 반영은 없지만, 선점(+1)은 이 TX 밖에서 이미 커밋됐으므로 남는다.
+        // 이후 회수 여부는 이력 상태에 달렸다.
+        // - TEMP 로 남은 경우(WAIT 전환 전 실패): 잔류 정리가 삭제하며 한도를 회수한다.
+        // - WAIT 로 남은 경우(발송 시도 후 실패): 발송 여부 불명이라 자동 회수하지 않는다.
+        //   ops_escalated_at 경보로 운영이 확인한다.
+        // - 이력 자체가 없는 경우(testOrderDeliveryId === null): 회수 근거가 없어 자동 복구되지 않는다.
+        //   아래 로그가 유일한 추적 수단이다.
+        this.logger.error(
+          `테스트 발송 보상 처리 중 오류 (testOrderDeliveryId: ${testOrderDeliveryId}, orderProductMappingId: ${orderProductMappingId})`,
+          rollbackError instanceof Error ? rollbackError.stack : String(rollbackError),
+        );
+      }
       throw error;
     }
   }
@@ -5803,99 +5846,98 @@ export class OrderService {
    * 운영이 인지할 수 있도록 1회 경보·마킹한다(자동 확정은 미발송 건을 성공으로 만들 수 있어 하지 않는다).
    *
    * 진행 중인 정상 흐름을 잔류로 오인하지 않도록 grace 를 둔다.
+   *
+   * 이력 삭제와 한도 회수는 한 트랜잭션이어야 한다. 둘이 갈라지면 이력만 지워지고 한도는 남아,
+   * 원 요청이 WAIT 전환 0행을 보고 "이미 회수됐다"고 판단해 보상을 생략하면서 한도가 영구 누수된다.
+   * 발송 전에만 호출하므로(외부 I/O 앞) REQUIRES_NEW 로 열어도 발송 구간을 TX 안에 넣지 않는다.
    */
+  @Transactional({ propagation: Propagation.REQUIRES_NEW })
   private async discardStaleTestDeliveries(orderProductMappingId: number): Promise<void> {
     const graceSeconds = 600;
-    try {
-      // 한도를 선점한 건(limit_claimed = 1)만 대상으로 한다. affected 를 그대로 회수량으로 쓰므로
-      // 관리자 발송(선점 없음)이 섞이면 올리지도 않은 한도를 깎게 된다.
-      const stale = await this.testOrderDeliveryRepository
-        .createQueryBuilder()
-        .softDelete()
-        .where('order_product_mapping_id = :orderProductMappingId', { orderProductMappingId })
-        .andWhere('status = :temp', { temp: IOrderDeliveryStatus.TEMP })
-        .andWhere('deleted_at IS NULL')
-        .andWhere('limit_claimed = 1')
-        .andWhere(`created_at < NOW(6) - INTERVAL ${graceSeconds} SECOND`)
-        .execute();
+    // 한도를 선점한 건(limit_claimed = 1)만 대상으로 한다. affected 를 그대로 회수량으로 쓰므로
+    // 관리자 발송(선점 없음)이 섞이면 올리지도 않은 한도를 깎게 된다.
+    const stale = await this.testOrderDeliveryRepository
+      .createQueryBuilder()
+      .softDelete()
+      .where('order_product_mapping_id = :orderProductMappingId', { orderProductMappingId })
+      .andWhere('status = :temp', { temp: IOrderDeliveryStatus.TEMP })
+      .andWhere('deleted_at IS NULL')
+      .andWhere('limit_claimed = 1')
+      .andWhere(`created_at < NOW(6) - INTERVAL ${graceSeconds} SECOND`)
+      .execute();
 
-      const discarded = stale.affected ?? 0;
-      if (discarded > 0) {
-        // 발송되지 않은 건이므로 선점됐던 한도를 회수한다. 0 미만으로 내려가지 않도록 조건부 차감.
-        await this.orderProductMappingRepository
-          .createQueryBuilder()
-          .update()
-          .set({ testDeliveryCount: () => `GREATEST(test_delivery_count - ${discarded}, 0)` })
-          .where('id = :id', { id: orderProductMappingId })
-          .execute();
-
-        this.logger.warn(
-          `테스트 발송 미발송 잔류 ${discarded}건 정리·한도 회수 (orderProductMappingId: ${orderProductMappingId})`,
-        );
-      }
-
-      // 선점하지 않은(관리자) TEMP 잔류도 화면에 남지 않도록 정리한다. 한도는 올린 적이 없어 회수하지 않는다.
-      const discardedUnclaimed = await this.testOrderDeliveryRepository
-        .createQueryBuilder()
-        .softDelete()
-        .where('order_product_mapping_id = :orderProductMappingId', { orderProductMappingId })
-        .andWhere('status = :temp', { temp: IOrderDeliveryStatus.TEMP })
-        .andWhere('deleted_at IS NULL')
-        .andWhere('limit_claimed = 0')
-        .andWhere(`created_at < NOW(6) - INTERVAL ${graceSeconds} SECOND`)
-        .execute();
-
-      if ((discardedUnclaimed.affected ?? 0) > 0) {
-        this.logger.warn(
-          `테스트 발송 미발송 잔류(관리자, 한도 미선점) ${discardedUnclaimed.affected}건 정리 (orderProductMappingId: ${orderProductMappingId})`,
-        );
-      }
-
-      // 발송 여부 불명(WAIT) 잔류는 미경보 건만 1회 마킹한다. ops_escalated_at 이 중복 경보를 막는다.
-      const escalated = await this.testOrderDeliveryRepository
+    const discarded = stale.affected ?? 0;
+    if (discarded > 0) {
+      // 발송되지 않은 건이므로 선점됐던 한도를 회수한다. 0 미만으로 내려가지 않도록 조건부 차감.
+      await this.orderProductMappingRepository
         .createQueryBuilder()
         .update()
-        .set({ opsEscalatedAt: () => 'NOW()' })
-        .where('order_product_mapping_id = :orderProductMappingId', { orderProductMappingId })
-        .andWhere('status = :wait', { wait: IOrderDeliveryStatus.WAIT })
-        .andWhere('deleted_at IS NULL')
-        .andWhere('ops_escalated_at IS NULL')
-        .andWhere(`created_at < NOW(6) - INTERVAL ${graceSeconds} SECOND`)
+        .set({ testDeliveryCount: () => `GREATEST(test_delivery_count - ${discarded}, 0)` })
+        .where('id = :id', { id: orderProductMappingId })
         .execute();
 
-      if ((escalated.affected ?? 0) > 0) {
-        this.logger.error(
-          `테스트 발송 여부 불명 ${escalated.affected}건 잔류 — 운영 확인 필요 (orderProductMappingId: ${orderProductMappingId})`,
-        );
-      }
-    } catch (error) {
-      // 정리는 부가 작업이라 실패해도 발송 요청 자체를 막지 않는다.
+      this.logger.warn(
+        `테스트 발송 미발송 잔류 ${discarded}건 정리·한도 회수 (orderProductMappingId: ${orderProductMappingId})`,
+      );
+    }
+
+    // 선점하지 않은(관리자) TEMP 잔류도 화면에 남지 않도록 정리한다. 한도는 올린 적이 없어 회수하지 않는다.
+    const discardedUnclaimed = await this.testOrderDeliveryRepository
+      .createQueryBuilder()
+      .softDelete()
+      .where('order_product_mapping_id = :orderProductMappingId', { orderProductMappingId })
+      .andWhere('status = :temp', { temp: IOrderDeliveryStatus.TEMP })
+      .andWhere('deleted_at IS NULL')
+      .andWhere('limit_claimed = 0')
+      .andWhere(`created_at < NOW(6) - INTERVAL ${graceSeconds} SECOND`)
+      .execute();
+
+    if ((discardedUnclaimed.affected ?? 0) > 0) {
+      this.logger.warn(
+        `테스트 발송 미발송 잔류(관리자, 한도 미선점) ${discardedUnclaimed.affected}건 정리 (orderProductMappingId: ${orderProductMappingId})`,
+      );
+    }
+
+    // 발송 여부 불명(WAIT) 잔류는 미경보 건만 1회 마킹한다. ops_escalated_at 이 중복 경보를 막는다.
+    const escalated = await this.testOrderDeliveryRepository
+      .createQueryBuilder()
+      .update()
+      .set({ opsEscalatedAt: () => 'NOW()' })
+      .where('order_product_mapping_id = :orderProductMappingId', { orderProductMappingId })
+      .andWhere('status = :wait', { wait: IOrderDeliveryStatus.WAIT })
+      .andWhere('deleted_at IS NULL')
+      .andWhere('ops_escalated_at IS NULL')
+      .andWhere(`created_at < NOW(6) - INTERVAL ${graceSeconds} SECOND`)
+      .execute();
+
+    if ((escalated.affected ?? 0) > 0) {
       this.logger.error(
-        `테스트 발송 잔류 정리 중 오류 (orderProductMappingId: ${orderProductMappingId})`,
-        error instanceof Error ? error.stack : String(error),
+        `테스트 발송 여부 불명 ${escalated.affected}건 잔류 — 운영 확인 필요 (orderProductMappingId: ${orderProductMappingId})`,
       );
     }
   }
 
   // 테스트 발송 실패 시 저장한 이력 제거 + 선점한 한도 보상 차감(-1).
-  // 발송 전에 한도를 선점(+1)했으므로 이후 단계가 실패하면 되돌린다. 원 실패 사유를 덮지 않도록 예외는 로그만 남긴다.
+  // 발송 전에 한도를 선점(+1)했으므로 이후 단계가 실패하면 되돌린다.
   // testOrderDeliveryId 가 null 이면 이력 저장 전(이미지 생성 등)에 실패한 경우라 한도 보상만 수행한다.
   // limitClaimed 가 false 면 관리자 발송이라 선점 자체가 없었으므로 이력만 제거한다.
+  //
+  // 이력 삭제와 한도 보상은 한 트랜잭션이어야 한다. 둘이 갈라지면
+  // - 삭제만 성공: 이력이 없어 잔류 정리도 회수하지 못해 한도가 영구 소진된다.
+  // - 보상만 성공: TEMP 행이 남아 잔류 정리가 같은 건을 다시 -1 해 2회 제한을 우회한다.
+  // 발송 실패 직후(외부 I/O 종료 후)에만 호출하므로 REQUIRES_NEW 로 열어도 발송 구간을 TX 안에 넣지 않는다.
+  //
+  // 이 TX 가 통째로 실패하면 선점(+1)은 TX 밖에서 이미 커밋됐으므로 남는다. 이때 자동 회수는
+  // 이력이 TEMP 로 남은 경우에만 이뤄진다. WAIT(발송 시도 후)은 도달 여부 불명이라 경보만 하고,
+  // 이력이 없으면(testOrderDeliveryId === null) 회수 근거가 없어 호출부 로그가 유일한 추적 수단이다.
+  @Transactional({ propagation: Propagation.REQUIRES_NEW })
   private async rollbackTestDelivery(
     testOrderDeliveryId: number | null,
     orderProductMappingId: number,
     limitClaimed: boolean,
   ): Promise<void> {
-    // 이력 삭제와 한도 보상은 서로 독립이므로 각각 try 로 감싼다.
     if (testOrderDeliveryId !== null) {
-      try {
-        await this.testOrderDeliveryRepository.softDelete(testOrderDeliveryId);
-      } catch (error) {
-        this.logger.error(
-          `테스트 발송 이력 제거 중 오류 (testOrderDeliveryId: ${testOrderDeliveryId})`,
-          error instanceof Error ? error.stack : String(error),
-        );
-      }
+      await this.testOrderDeliveryRepository.softDelete(testOrderDeliveryId);
     }
 
     // 선점하지 않았으면(관리자 무제한 경로) 되돌릴 것도 없다. 여기서 차감하면 남의 한도를 깎는다.
@@ -5904,20 +5946,13 @@ export class OrderService {
     }
 
     // 발송 전 +1 한 선점을 되돌린다. 0 미만으로 내려가지 않도록 조건부 차감.
-    try {
-      await this.orderProductMappingRepository
-        .createQueryBuilder()
-        .update()
-        .set({ testDeliveryCount: () => 'test_delivery_count - 1' })
-        .where('id = :id', { id: orderProductMappingId })
-        .andWhere('test_delivery_count > 0')
-        .execute();
-    } catch (error) {
-      this.logger.error(
-        `테스트 발송 한도 보상 차감 중 오류 (orderProductMappingId: ${orderProductMappingId})`,
-        error instanceof Error ? error.stack : String(error),
-      );
-    }
+    await this.orderProductMappingRepository
+      .createQueryBuilder()
+      .update()
+      .set({ testDeliveryCount: () => 'test_delivery_count - 1' })
+      .where('id = :id', { id: orderProductMappingId })
+      .andWhere('test_delivery_count > 0')
+      .execute();
   }
 
   async getPreviousContent(

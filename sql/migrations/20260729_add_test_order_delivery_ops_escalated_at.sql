@@ -19,9 +19,13 @@ ALTER TABLE `test_order_delivery`
   ADD COLUMN `limit_claimed` TINYINT(1) NOT NULL DEFAULT 1
     COMMENT '한도(test_delivery_count) 선점 건 여부. 운영/최고관리자 발송은 0 — 잔류 정리 시 한도 회수 대상에서 제외' AFTER `ops_escalated_at`;
 
--- (3) 조회 인덱스 — 잔류 후보 조회(status + created_at)와 운영 미해결 건 역조회에 사용한다.
+-- (3) 조회 인덱스 — 잔류 후보 조회와 주문 상세의 이력 조회에 사용한다.
+-- 두 경로 모두 order_product_mapping_id 로 먼저 좁힌 뒤 status 로 거르므로 선행 컬럼을 그에 맞춘다.
+--   - 잔류 정리: order_product_mapping_id + status(TEMP/WAIT) + created_at(grace 경과)
+--   - 주문 상세: order_product_mapping_id IN (...) + status(COMPLETE/COMPLETE_SMS)
+-- created_at 은 잔류 정리의 grace 비교에 쓰이므로 후행에 둔다.
 ALTER TABLE `test_order_delivery`
-  ADD INDEX `idx_test_order_delivery_status_created` (`status`, `created_at`);
+  ADD INDEX `idx_test_order_delivery_mapping_status_created` (`order_product_mapping_id`, `status`, `created_at`);
 
 -- (4) 검증 — 신규 컬럼 분포(escalated 는 초기 전부 NULL, limit_claimed 는 초기 전부 1 이 정상), 상태 분포
 SELECT
@@ -35,6 +39,6 @@ FROM `test_order_delivery`
 GROUP BY `status`;
 
 -- (5) 롤백 (코드 롤백 후에만 실행)
--- ALTER TABLE `test_order_delivery` DROP INDEX `idx_test_order_delivery_status_created`;
+-- ALTER TABLE `test_order_delivery` DROP INDEX `idx_test_order_delivery_mapping_status_created`;
 -- ALTER TABLE `test_order_delivery` DROP COLUMN `limit_claimed`;
 -- ALTER TABLE `test_order_delivery` DROP COLUMN `ops_escalated_at`;

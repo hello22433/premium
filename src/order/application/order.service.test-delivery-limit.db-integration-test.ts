@@ -147,6 +147,204 @@ describe('OrderService.testDelivery DB concurrency', () => {
     expect(histories[0].status).toBe(IOrderDeliveryStatus.COMPLETE);
   });
 
+  /**
+   * 잔류 정리는 이력 삭제와 한도 회수가 별도 쿼리라 한 트랜잭션으로 묶여야 한다.
+   * 갈라지면 이력만 지워지고 한도는 남는데, 원 요청은 WAIT 전환 0행을 보고 "이미 회수됐다"고
+   * 판단해 보상을 생략하므로 한도가 영구 누수된다. 실제 롤백이 일어나는지는 DB 로만 확인할 수 있다.
+   */
+  describe('잔류 정리 원자성', () => {
+    it('한도 회수가 실패하면 이력 삭제도 함께 롤백된다 (부분 반영 없음)', async () => {
+      const fixture = await seedTestDeliveryOrder(dataSource, MAX_LIMIT_COUNT);
+      // grace(600초)를 넘긴 TEMP 잔류를 심는다. 한도는 이 건이 선점한 상태(count=2).
+      const stale = await seedStaleTempDelivery(dataSource, fixture.mapping.id, true);
+
+      const service = createService(dataSource);
+      // 한도 회수 UPDATE 만 실패시킨다. 이력 삭제는 이미 수행된 뒤다.
+      const mappingRepo = (service as any).orderProductMappingRepository;
+      const originalCreateQueryBuilder = mappingRepo.createQueryBuilder.bind(mappingRepo);
+      let failedOnce = false;
+      // createQueryBuilder() 는 SelectQueryBuilder 를 주고 .update() 가 별개의 UpdateQueryBuilder 를
+      // 반환하므로, execute 는 update() 결과 쪽에 걸어야 한다.
+      mappingRepo.createQueryBuilder = (...args: any[]) => {
+        const selectBuilder = originalCreateQueryBuilder(...args);
+        const originalUpdate = selectBuilder.update.bind(selectBuilder);
+        selectBuilder.update = (...updateArgs: any[]) => {
+          const updateBuilder = originalUpdate(...updateArgs);
+          const originalExecute = updateBuilder.execute.bind(updateBuilder);
+          updateBuilder.execute = async () => {
+            // 한도 회수 UPDATE 는 set({ testDeliveryCount: () => 'GREATEST(...)' }) 형태다.
+            let isRecovery = false;
+            try {
+              const valueSet: any = updateBuilder.getValueSet?.();
+              const expression = valueSet?.testDeliveryCount;
+              isRecovery = typeof expression === 'function' && String(expression()).includes('GREATEST');
+            } catch {
+              isRecovery = false;
+            }
+            if (!failedOnce && isRecovery) {
+              failedOnce = true;
+              throw new Error('한도 회수 UPDATE 실패(주입)');
+            }
+            return originalExecute();
+          };
+          return updateBuilder;
+        };
+        return selectBuilder;
+      };
+
+      await service
+        .testDelivery(
+          { id: fixture.customer.id, authority: IUserAuthority.CORPORATE_ADMIN } as any,
+          {
+            orderId: fixture.order.id,
+            orderProductMappingId: fixture.mapping.id,
+            deliveryTarget: '01011112222',
+          } as any,
+        )
+        .catch(() => undefined);
+
+      expect(failedOnce).toBe(true);
+
+      // 회수가 실패했으므로 이력 삭제도 롤백되어야 한다. 둘 다 원래대로여야 다음 요청이 다시 정리할 수 있다.
+      const staleRow = await testOrderDeliveryRepository.findOne({
+        where: { id: stale.id },
+        withDeleted: true,
+      });
+      expect(staleRow?.deletedAt ?? null).toBeNull();
+
+      const refreshedMapping = await mappingRepository.findOneByOrFail({ id: fixture.mapping.id });
+      expect(refreshedMapping.testDeliveryCount).toBe(MAX_LIMIT_COUNT);
+    });
+
+    it('정상 경로에서는 TEMP 잔류 삭제와 한도 회수가 함께 반영된다', async () => {
+      const fixture = await seedTestDeliveryOrder(dataSource, MAX_LIMIT_COUNT);
+      const stale = await seedStaleTempDelivery(dataSource, fixture.mapping.id, true);
+
+      const service = createService(dataSource);
+
+      // 잔류 1건이 회수되어 잔여 1회가 생기므로 이 요청은 발송에 성공한다.
+      await expect(
+        service.testDelivery(
+          { id: fixture.customer.id, authority: IUserAuthority.CORPORATE_ADMIN } as any,
+          {
+            orderId: fixture.order.id,
+            orderProductMappingId: fixture.mapping.id,
+            deliveryTarget: '01011112222',
+          } as any,
+        ),
+      ).resolves.toBeUndefined();
+
+      const staleRow = await testOrderDeliveryRepository.findOne({
+        where: { id: stale.id },
+        withDeleted: true,
+      });
+      expect(staleRow?.deletedAt).not.toBeNull();
+
+      // 회수(-1) 후 이번 요청이 선점(+1) 하므로 한도는 그대로 2다.
+      const refreshedMapping = await mappingRepository.findOneByOrFail({ id: fixture.mapping.id });
+      expect(refreshedMapping.testDeliveryCount).toBe(MAX_LIMIT_COUNT);
+    });
+
+    /**
+     * 발송 실패 보상도 이력 삭제와 한도 차감이 별도 쿼리라 원자적이어야 한다.
+     * 보상만 반영되면 TEMP 행이 남아 잔류 정리가 같은 건을 또 -1 해 2회 제한을 우회한다.
+     */
+    it('보상 중 한도 차감이 실패하면 이력 삭제도 함께 롤백된다', async () => {
+      const fixture = await seedTestDeliveryOrder(dataSource, 0);
+      const service = createService(dataSource);
+      // 발송을 실패시켜 보상 경로로 보낸다.
+      (service as any).deliveryBatchService.oneSend = jest.fn(async () => false);
+
+      const mappingRepo = (service as any).orderProductMappingRepository;
+      const originalCreateQueryBuilder = mappingRepo.createQueryBuilder.bind(mappingRepo);
+      let failedOnce = false;
+      mappingRepo.createQueryBuilder = (...args: any[]) => {
+        const selectBuilder = originalCreateQueryBuilder(...args);
+        const originalUpdate = selectBuilder.update.bind(selectBuilder);
+        selectBuilder.update = (...updateArgs: any[]) => {
+          const updateBuilder = originalUpdate(...updateArgs);
+          const originalExecute = updateBuilder.execute.bind(updateBuilder);
+          updateBuilder.execute = async () => {
+            // 보상 차감은 set({ testDeliveryCount: () => 'test_delivery_count - 1' }) 형태다.
+            let isCompensation = false;
+            try {
+              const valueSet: any = updateBuilder.getValueSet?.();
+              const expression = valueSet?.testDeliveryCount;
+              isCompensation = typeof expression === 'function' && String(expression()).includes('- 1');
+            } catch {
+              isCompensation = false;
+            }
+            if (!failedOnce && isCompensation) {
+              failedOnce = true;
+              throw new Error('보상 차감 실패(주입)');
+            }
+            return originalExecute();
+          };
+          return updateBuilder;
+        };
+        return selectBuilder;
+      };
+
+      await expect(
+        service.testDelivery(
+          { id: fixture.customer.id, authority: IUserAuthority.CORPORATE_ADMIN } as any,
+          {
+            orderId: fixture.order.id,
+            orderProductMappingId: fixture.mapping.id,
+            deliveryTarget: '01011112222',
+          } as any,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(failedOnce).toBe(true);
+
+      // 보상이 실패했으므로 이력 삭제도 롤백되어야 한다(부분 반영 없음).
+      const rows = await testOrderDeliveryRepository.find({
+        where: { orderProductMappingId: fixture.mapping.id },
+        withDeleted: true,
+      });
+      expect(rows).toHaveLength(1);
+      expect(rows[0].deletedAt ?? null).toBeNull();
+
+      // 남는 상태는 WAIT 이다. WAIT 전환은 oneSend 직전에 이미 커밋됐고, 롤백되는 것은
+      // 보상 TX 안의 소프트 삭제뿐이라 TEMP 로 되돌아가지 않는다.
+      expect(rows[0].status).toBe(IOrderDeliveryStatus.WAIT);
+
+      // 선점(+1)은 그대로 남는다. WAIT 은 발송 여부 불명이라 잔류 정리가 자동 회수하지 않고
+      // ops_escalated_at 경보로 운영이 확인한다(자동 회수하면 이미 도달한 건을 재발송할 수 있다).
+      const refreshedMapping = await mappingRepository.findOneByOrFail({ id: fixture.mapping.id });
+      expect(refreshedMapping.testDeliveryCount).toBe(1);
+    });
+
+    it('관리자 잔류(한도 미선점)는 삭제되지만 한도를 회수하지 않는다', async () => {
+      const fixture = await seedTestDeliveryOrder(dataSource, MAX_LIMIT_COUNT);
+      const stale = await seedStaleTempDelivery(dataSource, fixture.mapping.id, false);
+
+      const service = createService(dataSource);
+
+      // 관리자 잔류는 한도를 올린 적이 없으므로 회수되지 않는다 → 여전히 한도 초과로 차단된다.
+      await expect(
+        service.testDelivery(
+          { id: fixture.customer.id, authority: IUserAuthority.CORPORATE_ADMIN } as any,
+          {
+            orderId: fixture.order.id,
+            orderProductMappingId: fixture.mapping.id,
+            deliveryTarget: '01011112222',
+          } as any,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      const staleRow = await testOrderDeliveryRepository.findOne({
+        where: { id: stale.id },
+        withDeleted: true,
+      });
+      expect(staleRow?.deletedAt).not.toBeNull();
+
+      const refreshedMapping = await mappingRepository.findOneByOrFail({ id: fixture.mapping.id });
+      expect(refreshedMapping.testDeliveryCount).toBe(MAX_LIMIT_COUNT);
+    });
+  });
+
   it('한도 소진 상태에서는 발송 없이 차단되고 한도가 더 오르지 않는다', async () => {
     const fixture = await seedTestDeliveryOrder(dataSource, MAX_LIMIT_COUNT);
     const service = createService(dataSource);
@@ -325,6 +523,37 @@ async function seedTestDeliveryOrder(dataSource: DataSource, testDeliveryCount: 
   );
 
   return { customer, order, mapping };
+}
+
+/**
+ * grace(600초)를 넘긴 TEMP 잔류 이력을 심는다.
+ * created_at 은 @CreateDateColumn 이라 save 로는 과거 시각을 넣을 수 없어 UPDATE 로 되돌린다.
+ */
+async function seedStaleTempDelivery(dataSource: DataSource, orderProductMappingId: number, limitClaimed: boolean) {
+  const repository = dataSource.getRepository(TestOrderDeliveryEntity);
+  const saved = await repository.save(
+    repository.create({
+      status: IOrderDeliveryStatus.TEMP,
+      orderProductMappingId,
+      deliveryMethod: IOrderSendMethod.ALIM_TALK,
+      deliveryTarget: '01011112222',
+      imagePath: 'test-coupon.png',
+      sendRequestAt: new Date(),
+      expireAt: null,
+      barCode: '999999',
+      personalCode: '999999',
+      limitClaimed,
+    } as any) as unknown as TestOrderDeliveryEntity,
+  );
+
+  await repository
+    .createQueryBuilder()
+    .update()
+    .set({ createdAt: () => 'NOW(6) - INTERVAL 1200 SECOND' })
+    .where('id = :id', { id: saved.id })
+    .execute();
+
+  return saved;
 }
 
 function buildUser(emailPrefix: string, authority: IUserAuthority): Partial<UserEntity> {

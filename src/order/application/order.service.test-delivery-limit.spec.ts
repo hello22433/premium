@@ -397,7 +397,10 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
       expect(service.updateBuilder.captured[1]?.set.testDeliveryCount()).toContain('test_delivery_count - 1');
     });
 
-    it('이력 삭제가 실패해도 한도 보상 차감은 수행되고, 이력은 COMPLETE 로 확정되지 않는다', async () => {
+    // 이력 삭제와 한도 보상은 한 트랜잭션이다. 삭제가 실패하면 보상도 함께 롤백되어야 한다.
+    // 보상만 반영되면 TEMP 행이 남아 잔류 정리가 같은 건을 또 -1 해 2회 제한을 우회한다.
+    // 원 발송 실패 사유는 보상 실패에 덮이지 않고 그대로 전파된다.
+    it('이력 삭제가 실패하면 보상도 하지 않고 원 발송 실패 사유를 전파한다', async () => {
       const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 0 }, { claimAffected: [1] });
       service.deliveryBatchService.oneSend.mockResolvedValue(false);
       service.testOrderDeliveryRepository.softDelete.mockRejectedValue(new Error('DB down'));
@@ -406,8 +409,10 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
         '테스트 발송에 실패했습니다. 수신자 정보를 확인해주세요.',
       );
 
-      // 이력 삭제가 throw 해도 보상 차감(-1)은 실행되어야 한다.
-      expect(service.updateBuilder.captured[1]?.set.testDeliveryCount()).toContain('test_delivery_count - 1');
+      // 삭제가 throw 했으므로 같은 TX 안의 보상 차감에는 도달하지 않는다.
+      expect(service.updateBuilder.captured.length).toBe(1);
+      expect(service.updateBuilder.captured[0].set.testDeliveryCount()).toContain('test_delivery_count + 1');
+
       expect(service.logger.error).toHaveBeenCalled();
       // soft delete 실패로 행이 잔류해도 COMPLETE 확정은 없어 성공 이력으로 노출되지 않는다.
       expect(service.testOrderDeliveryRepository.save).toHaveBeenCalledWith(
@@ -654,6 +659,52 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
       expect(service.deliveryBatchService.oneSend).not.toHaveBeenCalled();
       expect(service.testOrderDeliveryRepository.softDelete).toHaveBeenCalledWith(101);
       expect(service.updateBuilder.captured[1]?.set.testDeliveryCount()).toContain('test_delivery_count - 1');
+    });
+
+    /**
+     * 이 요청이 오래 정지된 사이 다른 인스턴스의 잔류 정리가 TEMP 이력을 이미 지웠을 수 있다.
+     * 그대로 발송하면 이력이 없는 물리 발송이 되므로, WAIT 전환 affected 로 감지해 발송 전에 멈춘다.
+     */
+    it('WAIT 전환이 0행이면(잔류 정리로 이력 회수됨) 발송하지 않고 중단한다', async () => {
+      // affected 큐: 경보 마킹 0행, WAIT 전환 0행(내 이력이 아님).
+      const service = buildService(
+        { id: 5, orderId: 77, testDeliveryCount: 1 },
+        { claimAffected: [1], confirmAffected: [0, 0] },
+      );
+
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).rejects.toThrow(
+        '테스트 발송 요청이 만료되었습니다. 다시 시도해주세요.',
+      );
+
+      // 물리 발송이 일어나면 안 된다. 이력 없는 발송이 되기 때문이다.
+      expect(service.deliveryBatchService.oneSend).not.toHaveBeenCalled();
+      expect(service.logger.error).toHaveBeenCalled();
+    });
+
+    it('WAIT 전환은 TEMP·미삭제 행만 대상으로 한다', async () => {
+      const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 0 }, { claimAffected: [1] });
+
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).resolves.toBeUndefined();
+
+      const [wait] = statusTransitions(service);
+      const where = wait.where.join(' ');
+      expect(where).toContain('status = :temp');
+      expect(where).toContain('deleted_at IS NULL');
+    });
+
+    it('WAIT 전환이 0행이면 한도를 이중 회수하지 않는다 (잔류 정리가 이미 회수함)', async () => {
+      const service = buildService(
+        { id: 5, orderId: 77, testDeliveryCount: 1 },
+        { claimAffected: [1], confirmAffected: [0, 0] },
+      );
+
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).rejects.toThrow(
+        '테스트 발송 요청이 만료되었습니다. 다시 시도해주세요.',
+      );
+
+      // 한도 UPDATE 는 이번 요청의 선점(+1) 하나뿐 — 보상(-1) 이 또 실행되면 남의 한도를 깎는다.
+      expect(service.updateBuilder.captured.length).toBe(1);
+      expect(service.updateBuilder.captured[0].set.testDeliveryCount()).toContain('test_delivery_count + 1');
     });
 
     it('확정 UPDATE 가 실패하면 이력 삭제·한도 보상을 하지 않는다 (중복 발송 방지)', async () => {
