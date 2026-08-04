@@ -286,6 +286,8 @@ describe('OrderService getDetail — cancelable 조립 (H-1)', () => {
     service.recoverDeletedProducts = jest.fn().mockResolvedValue(undefined);
     service.hideDiscardReissueDeliveries = jest.fn();
     service.resolveOrderExpireAt = jest.fn().mockReturnValue(null);
+    // 테스트발송 이력 로딩(develop 197-15)은 이 테스트 관심사가 아니라 빈 결과로 둔다.
+    service.testOrderDeliveryRepository = { find: jest.fn().mockResolvedValue([]) };
     service.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn((v: string) => v) };
     service.getCurrentDeliveryTransitionUser = jest
       .fn()
