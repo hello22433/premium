@@ -102,6 +102,7 @@ import { DualApprovalEntity } from '../entity/dual.approval.entity';
 import { DualApprovalAuditEntity } from '../entity/dual.approval.audit.entity';
 import { WorkflowResolutionEntity } from '../entity/workflow.resolution.entity';
 import { StaleExternalResponseEntity } from '../entity/stale.external.response.entity';
+import { BankDepositEntity } from '../entity/bank.deposit.entity';
 
 @Module({
   imports: [
@@ -211,6 +212,7 @@ import { StaleExternalResponseEntity } from '../entity/stale.external.response.e
           DualApprovalAuditEntity,
           WorkflowResolutionEntity,
           StaleExternalResponseEntity,
+          BankDepositEntity,
         ],
         extra: {
           connectionLimit: +configService.get('DATABASE_CONNECTION_LIMIT', 50),
