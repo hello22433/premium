@@ -8,12 +8,12 @@ import { IUserDriveStatus } from '../interface/user.drive.status';
  * 전역 ValidationPipe({ whitelist: true, transform: true }) 가 컨트롤러 진입 시 하는 일을 그대로 재현한다.
  * (서비스 유닛테스트는 DTO 검증을 우회하므로, 첨부 개수 상한이 어느 API 에 걸리는지는 여기서만 증명된다.)
  *
- * ★ 이 스펙의 존재 이유: 등록/수정은 filePath 개수 상한과 status 필수 여부가 서로 다르다.
- *   한때 UserDriveUpdateReqDto 가 UserDriveCreateReqDto 를 상속하고 두 프로퍼티를 재선언했는데,
- *   class-validator 의 상속 중복제거는 `(propertyName, type)` 쌍으로만 동작한다
- *   (MetadataStorage.getTargetValidationMetadatas). 일반 검증기는 전부 type='customValidation' 이라
- *   재선언이 부모 것을 교체했지만 @IsOptional 만 type='conditionalValidation' 이라 살아남아,
- *   자식의 @IsNotEmpty 가 무력화됐다. 지금은 상속을 끊었고 — 아래 케이스가 그 결과를 고정한다.
+ * ★ 이 스펙의 존재 이유: 등록/수정은 filePath 규칙이 같고 status 규칙이 다르다. 그 경계가 코드에
+ *   보이지 않아 한 번 사고가 났다 — UpdateReqDto 가 CreateReqDto 를 상속하고 status 를 재선언했는데,
+ *   class-validator 의 상속 중복제거가 `(propertyName, type)` 쌍으로만 동작하는 탓에
+ *   (MetadataStorage.getTargetValidationMetadatas) 일반 검증기(type='customValidation')는 교체됐지만
+ *   @IsOptional(type='conditionalValidation')만 살아남아 자식의 @IsNotEmpty 가 무력화됐다.
+ *   지금은 공통 규칙만 base 가 갖고 다른 규칙은 각 DTO 가 직접 선언한다 — 아래가 그 경계를 고정한다.
  */
 async function validatePayload<T extends object>(cls: new () => T, payload: unknown): Promise<string[]> {
   const instance = plainToInstance(cls, payload, { enableImplicitConversion: false });
@@ -42,58 +42,39 @@ const updatePayload = (filePath: string[]) => ({
   filePath,
 });
 
-describe('UserDriveCreateReqDto — 신규 등록은 첨부 10개 상한', () => {
+// ★ 첨부 규칙은 등록/수정이 같아야 한다 — 한쪽만 고치는 회귀를 막으려고 같은 표를 양쪽에 돌린다.
+//   과거엔 수정만 상한이 없었다(상한 도입 전 문서의 영구 수정 불가를 피하려던 임시 조치).
+//   운영 DB 실측(2026-08-04)에서 첨부 11개↑ 문서 0건 / 최대 2개로 확인돼 상한을 통일했다.
+describe.each([
+  ['UserDriveCreateReqDto', UserDriveCreateReqDto, createPayload],
+  ['UserDriveUpdateReqDto', UserDriveUpdateReqDto, updatePayload],
+] as const)('%s — 첨부 규칙은 등록/수정 공통', (_name, Dto, payload) => {
   it('10개는 통과한다 (경계 안쪽)', async () => {
-    expect(await validatePayload(UserDriveCreateReqDto, createPayload(files(10)))).toEqual([]);
+    expect(await validatePayload(Dto, payload(files(10)))).toEqual([]);
   });
 
   it('11개는 거부한다 (arrayMaxSize)', async () => {
-    expect(await validatePayload(UserDriveCreateReqDto, createPayload(files(11)))).toContain('arrayMaxSize');
+    expect(await validatePayload(Dto, payload(files(11)))).toContain('arrayMaxSize');
   });
 
   it('첨부 0개도 통과한다 (하한은 두지 않는다 — 첨부 없는 문서가 정상 케이스)', async () => {
-    expect(await validatePayload(UserDriveCreateReqDto, createPayload([]))).toEqual([]);
+    expect(await validatePayload(Dto, payload([]))).toEqual([]);
   });
 
   it('배열이 아니면 거부한다 (isArray)', async () => {
-    expect(await validatePayload(UserDriveCreateReqDto, createPayload('a,b' as unknown as string[]))).toContain(
-      'isArray',
-    );
+    expect(await validatePayload(Dto, payload('a,b' as unknown as string[]))).toContain('isArray');
   });
 
   it('원소가 문자열이 아니면 거부한다 (isString)', async () => {
-    expect(await validatePayload(UserDriveCreateReqDto, createPayload([1 as unknown as string]))).toContain('isString');
+    expect(await validatePayload(Dto, payload([1 as unknown as string]))).toContain('isString');
+  });
+
+  it('공통 base 의 제약(receiverId @Min(1))이 적용된다', async () => {
+    expect(await validatePayload(Dto, { ...payload(files(3)), receiverId: 0 })).toContain('min');
   });
 });
 
-describe('UserDriveUpdateReqDto — 수정은 첨부 개수 상한이 없다', () => {
-  // ★ 리뷰 P1 회귀: 상한 도입 전(무제한 시절) 만들어진 첨부 11개↑ 문서는 FE 가 기존 목록 전체를
-  //   되보내므로, update 에 상한이 살아 있으면 제목만 고쳐도 400 이 되어 영구 수정 불가해진다.
-  it('11개도 통과한다 — create 의 @ArrayMaxSize(10) 이 걸리지 않음', async () => {
-    expect(await validatePayload(UserDriveUpdateReqDto, updatePayload(files(11)))).toEqual([]);
-  });
-
-  it('30개(현실적 최악)도 통과한다', async () => {
-    expect(await validatePayload(UserDriveUpdateReqDto, updatePayload(files(30)))).toEqual([]);
-  });
-
-  // 상한만 풀렸을 뿐 타입 검증까지 사라지면 안 된다 — 재선언한 @IsArray/@IsString 이 실제로 동작하는지.
-  it('배열이 아니면 여전히 거부한다 (isArray)', async () => {
-    expect(await validatePayload(UserDriveUpdateReqDto, updatePayload('a,b' as unknown as string[]))).toContain(
-      'isArray',
-    );
-  });
-
-  it('원소가 문자열이 아니면 여전히 거부한다 (isString)', async () => {
-    expect(await validatePayload(UserDriveUpdateReqDto, updatePayload([1 as unknown as string]))).toContain('isString');
-  });
-
-  // 공통 필드는 여전히 base 에서 상속받는다 — 상속을 끊은 건 filePath/status 뿐이라는 걸 고정한다.
-  it('공통 base 의 제약(receiverId @Min(1))은 그대로 적용된다', async () => {
-    const broken = await validatePayload(UserDriveUpdateReqDto, { ...updatePayload(files(3)), receiverId: 0 });
-    expect(broken).toContain('min');
-  });
-
+describe('UserDriveUpdateReqDto — status 는 수정에서 필수', () => {
   // ★ 상속 시절의 실제 구멍: create 의 @IsOptional(conditionalValidation) 이 교체되지 않고 남아
   //   status 생략/null 이 검증을 통째로 건너뛰었다. status 컬럼은 NOT NULL 이라 null 은 저장 단계
   //   에러가 되고, 생략은 TypeORM 이 undefined 를 무시해 "필수 필드가 조용히 무시" 됐다.
