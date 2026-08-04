@@ -1,6 +1,9 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 
+/** 실패내역 한 행의 진실원천 (§8 화면 SoT 고정) */
+export type DeliveryFailureSotSource = 'WORKFLOW' | 'LEGACY';
+
 // 실패 유형
 export enum FailType {
   PIN_ISSUE_FAIL = 'PIN_ISSUE_FAIL', // 핀 발급 실패
@@ -55,6 +58,52 @@ export class PartnerCompanyExternHistoryViewDto {
 
   @ApiProperty({ description: '재발송 완료 시각', nullable: true })
   resendAt: string | null;
+
+  @ApiProperty({
+    description:
+      '이 행의 진실원천. WORKFLOW=컷오버 전환 건(delivery_workflow), LEGACY=미전환 건(order_delivery.status)',
+    enum: ['WORKFLOW', 'LEGACY'],
+  })
+  sotSource: DeliveryFailureSotSource;
+
+  @ApiProperty({ description: 'workflow 업무 상태(전환 건만)', nullable: true })
+  workflowStatus: string | null;
+
+  @ApiProperty({ description: 'workflow 업무 상태명 (한글, 전환 건만)', nullable: true })
+  workflowStatusKo: string | null;
+
+  @ApiProperty({ description: '운영 확인 승격 사유(전환 건만)', nullable: true })
+  opsReviewReason: string | null;
+
+  @ApiProperty({ description: '발송 채널 (ALIM_TALK/SMS/MMS, 전환 건만)', nullable: true })
+  channel: string | null;
+
+  @ApiProperty({ description: '발송 원인 (전환 건만)', nullable: true })
+  sendReason: string | null;
+
+  @ApiProperty({ description: '자동 재발송 시도 횟수' })
+  autoResendCount: number;
+
+  @ApiProperty({ description: '수동 재발송 시도 횟수' })
+  manualResendCount: number;
+
+  @ApiProperty({ description: '실패 코드 설명 (코드표 기반)', nullable: true })
+  failureCodeDescription: string | null;
+
+  @ApiProperty({ description: '필요한 운영 조치', nullable: true })
+  opsAction: string | null;
+
+  @ApiProperty({ description: '마지막 확정 시각', nullable: true })
+  lastResolvedAt: string | null;
+
+  @ApiProperty({ description: '이 화면에서 재발송 버튼 활성화 가능 여부' })
+  resendable: boolean;
+
+  @ApiProperty({ description: '재발송 불가 사유', nullable: true })
+  resendBlockReason: string | null;
+
+  @ApiProperty({ description: 'legacy status 미러와 workflow SoT 판정이 불일치(§10 3단계 지표)' })
+  mirrorMismatch: boolean;
 }
 
 export class GetPartnerCompanyExternHistoryListResDto {
@@ -69,6 +118,9 @@ export class GetPartnerCompanyExternHistoryListResDto {
 
   @ApiProperty({ description: '현재 페이지' })
   currentPage: number;
+
+  @ApiProperty({ description: '현재 페이지의 미러 불일치 건수 (§10 3단계 PASS 지표, 0이어야 정상)' })
+  mirrorMismatchCount: number;
 }
 
 export class GetPartnerCompanyTypesResDto {
