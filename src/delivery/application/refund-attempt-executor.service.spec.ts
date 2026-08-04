@@ -154,7 +154,8 @@ describe('RefundAttemptExecutorService', () => {
     );
 
     expect(settle).not.toHaveBeenCalled();
-    expect(recordStaleAndReconcile).toHaveBeenCalledWith(expect.anything(), outcome, expect.any(Date), true);
+    // heartbeat 소유권 상실은 mismatchReason 판정을 위해 heartbeatError=true 로 전달된다.
+    expect(recordStaleAndReconcile).toHaveBeenCalledWith(expect.anything(), outcome, expect.any(Date), true, true);
   });
 
   it('heartbeat 예외도 소유권 상실로 latch하여 stale 처리한다', async () => {

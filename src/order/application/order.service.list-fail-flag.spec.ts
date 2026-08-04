@@ -185,7 +185,8 @@ describe('OrderService getListSummary', () => {
     });
 
     const selectCalls = service.orderRepository.createQueryBuilder.mock.results[0].value.select.mock.calls;
-    expect(selectCalls[0][0]).toContain('COUNT(DISTINCT order.id)');
+    // 요약 쿼리는 select([...]) 배열로 상태별 집계를 한 번에 건다.
+    expect(selectCalls[0][0]).toEqual(expect.arrayContaining([expect.stringContaining('COUNT(DISTINCT order.id)')]));
     expect(selectCalls[1][0]).toBe('COUNT(DISTINCT order.id)');
   });
 
