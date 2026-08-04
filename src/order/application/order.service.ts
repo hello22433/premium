@@ -60,7 +60,7 @@ import {
 } from '../api/order.res.dto';
 import { OrderEntity } from '../../entity/order.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, In, ObjectLiteral, QueryRunner, Repository, SelectQueryBuilder } from 'typeorm';
+import { EntityManager, In, IsNull, Not, ObjectLiteral, QueryRunner, Repository, SelectQueryBuilder } from 'typeorm';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { CustomerSettlementViewDto, OrderViewDto } from '../api/dto/order.view.dto';
 import { DateDateFormatStr, DateFormatStr } from '../../common/domain/date.format.str';
@@ -1158,24 +1158,9 @@ export class OrderService {
     const testDeliveryHistoryMap = new Map<number, OrderTestDeliveryHistoryDto[]>();
 
     if (orderProductMappingIds.length > 0) {
-      // 발송 성공 확정된 이력만 노출한다. TEMP(발송 중/확정 실패)/WAIT/FAIL 은 제외.
-      const testDeliveryHistories = await this.testOrderDeliveryRepository.find({
-        where: {
-          orderProductMappingId: In(orderProductMappingIds),
-          status: In([IOrderDeliveryStatus.COMPLETE, IOrderDeliveryStatus.COMPLETE_SMS]),
-        },
-        order: { id: 'ASC' },
-      });
-
-      // testDeliveryHistories 는 id ASC 로 조회되므로, 상품별 push 순서(배열 인덱스+1)가 곧 id ASC 순번이다.
-      for (const history of testDeliveryHistories) {
-        const histories = testDeliveryHistoryMap.get(history.orderProductMappingId) ?? [];
-        histories.push({
-          sequence: histories.length + 1,
-          deliveryTarget: this.cryptoCipher.safeDecryptDeliveryTarget(history.deliveryTarget) ?? '',
-          sendRequestAt: format(history.sendRequestAt, DateFormatStr),
-        });
-        testDeliveryHistoryMap.set(history.orderProductMappingId, histories);
+      const loaded = await this.loadTestDeliveryHistories(orderProductMappingIds);
+      for (const [mappingId, histories] of loaded) {
+        testDeliveryHistoryMap.set(mappingId, histories);
       }
     }
 
@@ -5789,11 +5774,13 @@ export class OrderService {
       }
 
       // 발송 성공 후 확정. WAIT 인 행만 전환한다.
+      // confirmed_at 을 함께 각인해 "발송 성공이 확인된 건"을 표시한다. 이 기능 이전 legacy 행은
+      // 발송 전에 COMPLETE 로 저장돼 실패 건이 섞여 있으므로, status 만으로는 성공 이력을 가려낼 수 없다.
       isSent = true;
       const confirm = await this.testOrderDeliveryRepository
         .createQueryBuilder()
         .update()
-        .set({ status: IOrderDeliveryStatus.COMPLETE })
+        .set({ status: IOrderDeliveryStatus.COMPLETE, confirmedAt: () => 'NOW()' })
         .where('id = :id', { id: testOrderDeliveryId })
         .andWhere('status = :wait', { wait: IOrderDeliveryStatus.WAIT })
         .execute();
@@ -5970,6 +5957,45 @@ export class OrderService {
       .where('id = :id', { id: orderProductMappingId })
       .andWhere('test_delivery_count > 0')
       .execute();
+  }
+
+  /**
+   * 주문 상세에 노출할 테스트 발송 이력을 orderProductMappingId 별로 모아 돌려준다.
+   *
+   * 발송 성공이 확인된 건만 노출한다. TEMP(발송 전)/WAIT(발송 여부 불명)/FAIL 은 제외하고,
+   * confirmed_at 이 NULL 인 행도 제외한다. 이 기능 이전 구현은 oneSend 호출 전에 status=COMPLETE 로
+   * 저장하고 실패해도 행을 지우지 않아, 기존 COMPLETE 행에는 실패 건이 섞여 있다. status 만으로 거르면
+   * 과거 실패 발송이 배포 즉시 성공 이력으로 노출된다. 확정 시각이 찍힌 신규 흐름의 건만 신뢰한다.
+   */
+  private async loadTestDeliveryHistories(
+    orderProductMappingIds: number[],
+  ): Promise<Map<number, OrderTestDeliveryHistoryDto[]>> {
+    const historyMap = new Map<number, OrderTestDeliveryHistoryDto[]>();
+    if (orderProductMappingIds.length === 0) {
+      return historyMap;
+    }
+
+    const testDeliveryHistories = await this.testOrderDeliveryRepository.find({
+      where: {
+        orderProductMappingId: In(orderProductMappingIds),
+        status: In([IOrderDeliveryStatus.COMPLETE, IOrderDeliveryStatus.COMPLETE_SMS]),
+        confirmedAt: Not(IsNull()),
+      },
+      order: { id: 'ASC' },
+    });
+
+    // id ASC 로 조회되므로, 상품별 push 순서(배열 인덱스+1)가 곧 id ASC 순번이다.
+    for (const history of testDeliveryHistories) {
+      const histories = historyMap.get(history.orderProductMappingId) ?? [];
+      histories.push({
+        sequence: histories.length + 1,
+        deliveryTarget: this.cryptoCipher.safeDecryptDeliveryTarget(history.deliveryTarget) ?? '',
+        sendRequestAt: format(history.sendRequestAt, DateFormatStr),
+      });
+      historyMap.set(history.orderProductMappingId, histories);
+    }
+
+    return historyMap;
   }
 
   async getPreviousContent(

@@ -19,10 +19,20 @@ ALTER TABLE `test_order_delivery`
   ADD COLUMN `limit_claimed` TINYINT(1) NOT NULL DEFAULT 1
     COMMENT '한도(test_delivery_count) 선점 건 여부. 운영/최고관리자 발송은 0 — 잔류 정리 시 한도 회수 대상에서 제외' AFTER `ops_escalated_at`;
 
+-- (2-1) 발송 성공 확정 시각 컬럼 추가
+-- 이 기능 이전 구현은 oneSend 호출 '전' 에 status=COMPLETE 로 저장하고 발송 실패 시에도 행을 지우지 않았다.
+-- 그래서 기존 COMPLETE 행에는 실패 건이 섞여 있고, status 만으로는 성공/실패를 구분할 수 없다.
+-- 주문 상세의 테스트 발송 이력은 이번에 새로 노출되는 화면이므로, 확정 시각이 찍힌 건(신규 흐름에서
+-- 발송 성공 후 COMPLETE 로 전이한 건)만 성공 이력으로 보여준다.
+-- 기존 행은 전부 NULL 로 남아 노출되지 않는다(성공 여부 판정 불가 → 노출 금지). 백필하지 않는다.
+ALTER TABLE `test_order_delivery`
+  ADD COLUMN `confirmed_at` DATETIME NULL
+    COMMENT '발송 성공 확정 시각. NULL 이면 확정 전이거나 성공 여부 판정 불가한 legacy 행이라 이력 미노출' AFTER `limit_claimed`;
+
 -- (3) 조회 인덱스 — 잔류 후보 조회와 주문 상세의 이력 조회에 사용한다.
 -- 두 경로 모두 order_product_mapping_id 로 먼저 좁힌 뒤 status 로 거르므로 선행 컬럼을 그에 맞춘다.
 --   - 잔류 정리: order_product_mapping_id + status(TEMP/WAIT) + created_at(grace 경과)
---   - 주문 상세: order_product_mapping_id IN (...) + status(COMPLETE/COMPLETE_SMS)
+--   - 주문 상세: order_product_mapping_id IN (...) + status(COMPLETE/COMPLETE_SMS) + confirmed_at IS NOT NULL
 -- created_at 은 잔류 정리의 grace 비교에 쓰이므로 후행에 둔다.
 ALTER TABLE `test_order_delivery`
   ADD INDEX `idx_test_order_delivery_mapping_status_created` (`order_product_mapping_id`, `status`, `created_at`);
@@ -31,6 +41,7 @@ ALTER TABLE `test_order_delivery`
 SELECT
   SUM(`ops_escalated_at` IS NOT NULL) AS escalated,
   SUM(`limit_claimed` = 1) AS limit_claimed,
+  SUM(`confirmed_at` IS NOT NULL) AS confirmed,
   COUNT(*) AS total
 FROM `test_order_delivery`;
 
@@ -40,5 +51,6 @@ GROUP BY `status`;
 
 -- (5) 롤백 (코드 롤백 후에만 실행)
 -- ALTER TABLE `test_order_delivery` DROP INDEX `idx_test_order_delivery_mapping_status_created`;
+-- ALTER TABLE `test_order_delivery` DROP COLUMN `confirmed_at`;
 -- ALTER TABLE `test_order_delivery` DROP COLUMN `limit_claimed`;
 -- ALTER TABLE `test_order_delivery` DROP COLUMN `ops_escalated_at`;

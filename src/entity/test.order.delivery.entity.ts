@@ -68,6 +68,13 @@ export class TestOrderDeliveryEntity extends BaseEntity {
   })
   limitClaimed: boolean;
 
+  @Column({
+    type: 'datetime',
+    nullable: true,
+    comment: '발송 성공 확정 시각. NULL 이면 확정 전이거나 이 기능 이전 legacy 행이라 성공 이력으로 노출하지 않는다',
+  })
+  confirmedAt: Date | null;
+
   @ManyToOne(() => OrderProductMappingEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'order_product_mapping_id' })
   orderProductMapping: OrderProductMappingEntity;

@@ -110,6 +110,55 @@ describe('OrderService.testDelivery DB concurrency', () => {
     }
   });
 
+  /**
+   * 이력 노출 기준: 이 기능 이전 구현은 oneSend 호출 전에 status=COMPLETE 로 저장하고 실패해도
+   * 행을 지우지 않았다. 기존 COMPLETE 행에는 실패 건이 섞여 있어 status 만으로 거르면
+   * 과거 실패 발송이 배포 즉시 성공 이력으로 노출된다.
+   */
+  describe('이력 노출 기준', () => {
+    it('legacy COMPLETE(확정 시각 없음) 이력은 노출하지 않고 신규 확정 건만 노출한다', async () => {
+      const fixture = await seedTestDeliveryOrder(dataSource, 0);
+      const service = createService(dataSource);
+
+      // 배포 전에 쌓인 행. 발송 전에 COMPLETE 로 저장된 것이라 성공 여부를 알 수 없다.
+      const legacy = await testOrderDeliveryRepository.save(
+        testOrderDeliveryRepository.create({
+          status: IOrderDeliveryStatus.COMPLETE,
+          orderProductMappingId: fixture.mapping.id,
+          deliveryMethod: 'ALIM_TALK' as any,
+          deliveryTarget: '01099998888',
+          sendRequestAt: new Date('2026-07-01T10:00:00'),
+          barCode: '999999',
+          personalCode: '999999',
+          confirmedAt: null,
+        }),
+      );
+
+      // 신규 흐름으로 1건 발송 → 성공 확정되며 confirmed_at 이 각인된다.
+      await expect(
+        service.testDelivery(
+          { id: fixture.customer.id, authority: IUserAuthority.CORPORATE_ADMIN } as any,
+          {
+            orderId: fixture.order.id,
+            orderProductMappingId: fixture.mapping.id,
+            deliveryTarget: '01011112222',
+          } as any,
+        ),
+      ).resolves.toBeUndefined();
+
+      const histories = await (service as any).loadTestDeliveryHistories([fixture.mapping.id]);
+      const rows = histories.get(fixture.mapping.id) ?? [];
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].deliveryTarget).toBe('01011112222');
+
+      // legacy 행은 지우지 않는다. 조회에서만 빠진다.
+      const legacyRow = await testOrderDeliveryRepository.findOneByOrFail({ id: legacy.id });
+      expect(legacyRow.confirmedAt).toBeNull();
+      expect(legacyRow.status).toBe(IOrderDeliveryStatus.COMPLETE);
+    });
+  });
+
   it('잔여 1회에서 동시 2건 요청 시 정확히 1건만 발송되고 한도는 2를 넘지 않는다', async () => {
     // 이미 1회 사용해 잔여 1회인 상태에서 시작한다.
     const fixture = await seedTestDeliveryOrder(dataSource, MAX_LIMIT_COUNT - 1);
