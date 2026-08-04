@@ -99,6 +99,8 @@ describe('DeliveryBatchService — PIN 발급 실패 2-pass 재시도', () => {
 
       sut = Object.create(DeliveryBatchService.prototype);
       (sut as any).logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+      // §8 판정 SoT — 단위 테스트 기본값은 '미전환 건'(legacy status 로 최초/재발송 판별).
+      (sut as any).cutoverGuard = { isWorkflowResend: jest.fn().mockResolvedValue(null) };
       (sut as any).ssgEventRepository = { findOne: jest.fn().mockResolvedValue({ id: 42, no: 'EV1', order: 1 }) };
       (sut as any).pinIssueCommandService = {
         recordAttempt: jest.fn().mockResolvedValue(undefined),

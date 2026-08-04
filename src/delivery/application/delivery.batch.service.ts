@@ -1437,6 +1437,26 @@ export class DeliveryBatchService {
   }
 
   /**
+   * **"이번 발송이 실패 이후 재발송인가"의 단일 판정 지점** (§8 판정 SoT 고정, HIGH 4).
+   *
+   * 발송 진입점은 이 값으로 배타 op(`MANUAL_RESEND`/`MESSAGE_SEND`), 시도 유형, 환불 복구
+   * (`reverseRefundForResend`)와 `RESEND` attempt 선발급, 재실패 시 재환불을 모두 결정한다.
+   * 뒤집히면 환불이 누락되거나 없는 환불을 되감으므로 판정 근거가 하나여야 한다.
+   *
+   * - **미전환 건**: `order_delivery.status` 가 실제 SoT 다 → 종전 판별을 그대로 쓴다(동작 불변).
+   * - **전환 건**: `status` 는 legacy 호환 표시용 파생 미러다 → `delivery_workflow` 업무 상태로만
+   *   판정한다. 컷오버 마크가 서는 순간 미러 기반 판별이 뒤집히는 것을 여기서 차단한다.
+   */
+  private async resolveResendEntry(orderDelivery: OrderDeliveryEntity): Promise<boolean> {
+    const workflowVerdict = await this.cutoverGuard.isWorkflowResend(orderDelivery.id);
+    if (workflowVerdict !== null) {
+      return workflowVerdict;
+    }
+
+    return orderDelivery.status === IOrderDeliveryStatus.FAIL || orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS;
+  }
+
+  /**
    * 단일 배송건 내부 처리 로직
    */
   private async processOneDeliveryInternal(
@@ -1458,11 +1478,12 @@ export class DeliveryBatchService {
     const isEmailDelivery = orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL;
 
     // B1/B3: 최초 발송 실패는 환불을 보류한다(구매/발송 미성립 → 복구 이벤트 미생성).
-    // 진입 시점(발송 전) status 로 최초/재발송을 구분한다. 재발송이면 직전이 FAIL/FAIL_SMS.
+    // 진입 시점(발송 전) 상태로 최초/재발송을 구분한다. 재발송이면 직전이 실패다.
     // SSG 보류 여부는 발송 후 SsgInsertState 에 달려 있어(issue() 후 전이) refund 지점에서
     // shouldHoldRefundForFail() 로 재평가한다 (여기선 최초 발송 여부만 snapshot).
-    const isInitialSend =
-      orderDelivery.status !== IOrderDeliveryStatus.FAIL && orderDelivery.status !== IOrderDeliveryStatus.FAIL_SMS;
+    // 판정 SoT 는 전환 여부로 갈린다(HIGH 4) — 미전환 건은 legacy status 가 실제 SoT 이고,
+    // 전환 건은 그 값이 표시용 미러라 workflow 업무 상태로만 판정한다.
+    const isInitialSend = !(await this.resolveResendEntry(orderDelivery));
 
     // 1. PIN 발급 (barCode가 없는 경우)
     if (!orderDelivery.barCode && !isChoiceCoupon && !isEmailDelivery) {
@@ -2845,10 +2866,10 @@ export class DeliveryBatchService {
     leaseToken?: Date | null,
   ): Promise<boolean> {
     const order = orderDelivery.orderProductMapping.order;
-    // 재발송인 경우 chargeBack 후 발송 실패 시 재환불이 필요한지 판단하기 위해 이전 상태 저장 (FAIL_SMS 포함)
-    const wasFailBefore =
-      !testOrderDeliveryId &&
-      (orderDelivery.status === IOrderDeliveryStatus.FAIL || orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS);
+    // 재발송인 경우 chargeBack 후 발송 실패 시 재환불이 필요한지 판단하기 위해 이전 상태 저장.
+    // 판정 SoT 는 전환 여부로 갈린다(HIGH 4, resolveResendEntry 주석 참조).
+    // 테스트 발송은 운영 상태 모델을 쓰지 않으므로 항상 최초 발송으로 취급한다.
+    const wasFailBefore = !testOrderDeliveryId && (await this.resolveResendEntry(orderDelivery));
 
     // B1/B3: 실패 재발송 — 보류(환불 미생성)/환불됨 분기. snapshot 은 reissue 호출 *전* 에 잡는다
     // (reissue 내부 reverseRefundForResend 가 ledger 를 release 해 exists() 가 뒤집히기 때문).

@@ -35,6 +35,7 @@ describe('DeliveryBatchService.claimWaitDeliveries — 변형 lease 제외 (D3-5
       assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
       assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
       isCutover: jest.fn().mockResolvedValue(false),
+      isWorkflowResend: jest.fn().mockResolvedValue(null),
       splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
     };
     (sut as any).orderDeliveryRepository = { createQueryBuilder: jest.fn(() => qb) };
@@ -151,6 +152,7 @@ describe('DeliveryBatchService.processOneDeliveryForBatch — 변형 lease 반�
       assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
       assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
       isCutover: jest.fn().mockResolvedValue(false),
+      isWorkflowResend: jest.fn().mockResolvedValue(null),
       splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
     };
     (sut as any).orderDeliveryRepository = { update };
@@ -240,6 +242,7 @@ describe('DeliveryBatchService.processOneDeliveryInternal — full save() 부재
       assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
       assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
       isCutover: jest.fn().mockResolvedValue(false),
+      isWorkflowResend: jest.fn().mockResolvedValue(null),
       splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
     };
     (sut as any).orderDeliveryRepository = repo;
@@ -510,7 +513,9 @@ describe('DeliveryBatchService.processOneDeliveryInternal — full save() 부재
       await (sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN);
 
       // 운영이 잃은 쓰기를 대사할 때 order 조인을 손으로 안 하도록 orderId 를 함께 남긴다(리뷰 P1).
-      const msg = (sut as any).logger.error.mock.calls.map((c: any[]) => c[0]).find((m: string) => m?.includes('[BATCH_FENCE_LOST]'));
+      const msg = (sut as any).logger.error.mock.calls
+        .map((c: any[]) => c[0])
+        .find((m: string) => m?.includes('[BATCH_FENCE_LOST]'));
       expect(msg).toContain('[BATCH_FENCE_LOST]');
       expect(msg).toContain('orderId: 55');
     });
