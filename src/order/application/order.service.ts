@@ -4,7 +4,6 @@ import {
   Injectable,
   InternalServerErrorException,
   Logger,
-  Query,
 } from '@nestjs/common';
 import { UserManagementService } from '../../user_management/application/user.management.service';
 import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
@@ -61,16 +60,7 @@ import {
 } from '../api/order.res.dto';
 import { OrderEntity } from '../../entity/order.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import {
-  EntityManager,
-  In,
-  LessThanOrEqual,
-  MoreThanOrEqual,
-  ObjectLiteral,
-  QueryRunner,
-  Repository,
-  SelectQueryBuilder,
-} from 'typeorm';
+import { EntityManager, In, IsNull, Not, ObjectLiteral, QueryRunner, Repository, SelectQueryBuilder } from 'typeorm';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { CustomerSettlementViewDto, OrderViewDto } from '../api/dto/order.view.dto';
 import { DateDateFormatStr, DateFormatStr } from '../../common/domain/date.format.str';
@@ -119,7 +109,6 @@ import {
   readClientUserView,
   readLineProductView,
   readOperationPersonName,
-  readUserView,
 } from '../util/order.snapshot.builder';
 import {
   assertLineIdsValid,
@@ -135,11 +124,11 @@ import {
   OrderCompleteReportDeliveryViewDto,
   OrderDeliveryCompleteReportViewDto,
   OrderDetailProductDto,
+  OrderTestDeliveryHistoryDto,
   OrderPdfDetailProductDto,
   OrderViewDeliveryDto,
 } from '../api/dto/order.detail.product.dto';
 import { normalizeDate } from '../../util/time.util';
-import { join } from 'path';
 import * as process from 'node:process';
 import * as ExcelJS from 'exceljs';
 import { OrderSettleViewDto } from '../api/dto/order.settle.view.dto';
@@ -162,7 +151,6 @@ import { createTempOrderCode, deriveOrderCodeFromId } from '../domain/order.code
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { PhoneUtil } from '../../common/utils/phone.util';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
-import { IOrderSendMethod } from '../interface/order.send.method';
 import { IOrderSendingType } from '../interface/order.sending.type';
 import {
   canForceConfirmDelivery,
@@ -170,7 +158,6 @@ import {
   shouldExposeSsgBalanceCheck,
 } from '../domain/order.delivery-transition-authority.helper';
 import { IOrderDateType } from '../interface/order.date.type';
-import { OrderEncryptKey } from '../../order_receive/interface/order.encrypt.key';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 import {
@@ -213,7 +200,6 @@ import { MailSendSmtp } from '../../mail/infrastructure/mail-send.smtp';
 import { CompanyType, INTERNAL_BUSINESS_NUMBERS } from '../../common/domain/company.type';
 import { OrderDeliveryCompleteReportEmailReqDto } from '../api/order.req.dto';
 import { EmailSendHistoryEntity } from '../../entity/email.send.history.entity';
-import { EmailType } from '../../mail/domain/email.type';
 import { OrderManualEntryEntity } from '../../entity/order.manual.entry.entity';
 import { ManualEntryItemDto, ManualEntryViewDto } from '../api/dto/order.manual.entry.dto';
 
@@ -1168,6 +1154,15 @@ export class OrderService {
     this.hideDiscardReissueDeliveries(order.orderProductMappings);
 
     const productList: OrderDetailProductDto[] = [];
+    const orderProductMappingIds = (order.orderProductMappings ?? []).map((mapping) => mapping.id);
+    const testDeliveryHistoryMap = new Map<number, OrderTestDeliveryHistoryDto[]>();
+
+    if (orderProductMappingIds.length > 0) {
+      const loaded = await this.loadTestDeliveryHistories(orderProductMappingIds);
+      for (const [mappingId, histories] of loaded) {
+        testDeliveryHistoryMap.set(mappingId, histories);
+      }
+    }
 
     let topImagePath;
     let midImagePath;
@@ -1254,6 +1249,7 @@ export class OrderService {
           encourageDay: orderProductMapping.encourageDay,
           galaxiaDuration: orderProductMapping.galaxiaDuration,
           failCount: failCount,
+          testDeliveryHistories: testDeliveryHistoryMap.get(orderProductMapping.id) ?? [],
           // 자사 운영자(SUPER_ADMIN/OPERATION_ADMIN)에게만 가격 divergence 노출.
           // 고객사(CORPORATE_ADMIN) 또는 미인증 경로에서는 필드 자체를 omit.
           ...(user.authority === IUserAuthority.SUPER_ADMIN || user.authority === IUserAuthority.OPERATION_ADMIN
@@ -1607,6 +1603,7 @@ export class OrderService {
           encourageDay: orderProductMapping.encourageDay,
           galaxiaDuration: orderProductMapping.galaxiaDuration,
           failCount: 0, // 이벤트 불러오기 시 발송 정보가 없으므로 0
+          testDeliveryHistories: [],
         });
       }
     }
@@ -1992,7 +1989,7 @@ export class OrderService {
     //     카드할증은 물품 공급가가 아닌 결제수단 수수료이므로 별도 결제 영수증으로 첨부해 안내한다.
     //   - vat 은 상품권 특성상 0(면세)로 고정.
     let price = 0;
-    let vat = 0;
+    const vat = 0;
     let totalAmount = 0;
 
     if (order.orderProductMappings && order.orderProductMappings.length > 0) {
@@ -2462,7 +2459,7 @@ export class OrderService {
     //     카드할증은 물품 공급가가 아닌 결제수단 수수료이므로 별도 결제 영수증으로 첨부해 안내한다.
     //   - vat 은 상품권 특성상 0(면세)로 고정.
     let price = 0;
-    let vat = 0;
+    const vat = 0;
     let totalAmount = 0;
     // 거래일자: 증빙일자가 있으면 증빙일자 사용 (루프 불변값이므로 1회만 계산)
     const evidenceDateStr = evidenceDateParsed ? format(evidenceDateParsed, DateFormatStr) : null;
@@ -4667,9 +4664,7 @@ export class OrderService {
       cardSurchargeApplied: order.cardSurchargeApplied,
     };
     const hasSettleInput = order.settleMethod != null;
-    const resolvedSettlePolicy = hasSettleInput
-      ? null
-      : await this.resolveSettlePolicy(order, oneUser.company);
+    const resolvedSettlePolicy = hasSettleInput ? null : await this.resolveSettlePolicy(order, oneUser.company);
     const effectiveSettleMethod = order.settleMethod ?? resolvedSettlePolicy?.policy ?? 'CASH';
     const effectiveSurcharge = hasSettleInput
       ? order.cardSurchargeApplied
@@ -5513,7 +5508,7 @@ export class OrderService {
 
     // 성공 로그 저장
     const responseTime = Date.now() - startTime;
-    const { password: _, ...requestParams } = getBody;
+    const requestParams = Object.fromEntries(Object.entries(getBody).filter(([key]) => key !== 'password'));
 
     await this.activityLogService.createLog({
       userId: user.id,
@@ -5620,9 +5615,13 @@ export class OrderService {
   async testDelivery(user: ILoginUserInfo, getBody: OrderTestDeliveryReqDto) {
     const { orderId, orderProductMappingId, deliveryTarget } = getBody;
 
-    // 최대 횟수 (상품별 2회)
+    await this.assertOrderInViewScope(user, orderId);
+
+    // 최대 횟수 (상품별 2회). 운영관리자/최고관리자는 제한 없음.
     const maxLimitCount = 2;
     const barCode = '999999';
+    const canBypassTestDeliveryLimit =
+      user.authority === IUserAuthority.SUPER_ADMIN || user.authority === IUserAuthority.OPERATION_ADMIN;
 
     // 알림톡일 경우 order.user도 필요하므로 항상 조인
     const orderProductMapping = await this.orderProductMappingRepository
@@ -5639,71 +5638,364 @@ export class OrderService {
       throw new BadRequestException('해당 주문-상품이 존재하지 않습니다.');
     }
 
-    if (orderProductMapping.testDeliveryCount >= maxLimitCount) {
-      throw new BadRequestException('테스트발송은 상품당 최대 2회입니다.');
+    if (orderProductMapping.orderId !== orderId) {
+      throw new BadRequestException('주문 정보와 상품 정보가 일치하지 않습니다.');
     }
 
-    const firstDelivery = await this.orderDeliveryRepository.findOne({
-      where: { orderProductMappingId },
+    const testDeliveryAllowedStatuses = [
+      IOrderStatus.TEMP,
+      IOrderStatus.DELIVERY_REQUEST,
+      IOrderStatus.REVIEW_COMPLETE,
+      IOrderStatus.DELIVERY_CONFIRMED,
+      IOrderStatus.DELIVERY_COMPLETE,
+    ];
+    if (!testDeliveryAllowedStatuses.includes(orderProductMapping.order.status)) {
+      throw new BadRequestException('현재 상태의 주문은 테스트 발송할 수 없습니다.');
+    }
+
+    // 크래시로 남은 미발송 이력을 먼저 정리한다. 한도 선점 전에 수행해야 회수한 횟수를 이번 요청이 쓴다.
+    // 정리는 부가 작업이라 실패해도 발송 요청 자체를 막지 않는다. 실패 시 트랜잭션이 통째로 롤백되므로
+    // 이력·한도가 함께 원복되고, 이 요청은 잔류가 없던 것처럼 평소 경로로 진행한다.
+    try {
+      await this.discardStaleTestDeliveries(orderProductMappingId);
+    } catch (error) {
+      this.logger.error(
+        `테스트 발송 잔류 정리 중 오류 (orderProductMappingId: ${orderProductMappingId})`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+
+    // 한도 용량 원자 선점: count < 2 인 경우에만 +1. affected=0 이면 한도 초과(동시 요청 포함)로 차단한다.
+    // 락+검사 대신 조건부 UPDATE 로 선점해 동시 요청의 한도 초과를 구조적으로 막는다.
+    // 발송 전에 선점하므로, 이후 발송이 실패하면 보상(-1)한다.
+    //
+    // 운영관리자/최고관리자는 무제한이라 카운트를 아예 건드리지 않는다. 여기서 +1 하면 관리자 발송이
+    // 기업관리자 한도(상품당 2회)를 대신 소진해 "기업관리자만 2회 제한" 정책과 어긋난다.
+    if (!canBypassTestDeliveryLimit) {
+      const claim = await this.orderProductMappingRepository
+        .createQueryBuilder()
+        .update()
+        .set({ testDeliveryCount: () => 'test_delivery_count + 1' })
+        .where('id = :id', { id: orderProductMappingId })
+        .andWhere('test_delivery_count < :maxLimitCount', { maxLimitCount })
+        .execute();
+      if ((claim.affected ?? 0) === 0) {
+        throw new BadRequestException('테스트발송은 상품당 최대 2회입니다.');
+      }
+    }
+
+    // 선점 이후의 모든 준비 단계(이미지 생성·이력 저장)와 발송을 한 번에 보상 범위로 묶는다.
+    // 준비 단계도 외부 I/O 라 실패할 수 있고, 그때 보상하지 않으면 발송 없이 한도만 소진된다.
+    let testOrderDeliveryId: number | null = null;
+    let isSent = false;
+    // 잔류 정리가 이미 이력·한도를 회수한 경우. 보상을 중복 적용하지 않기 위해 구분한다.
+    let isStaleClaim = false;
+    try {
+      const firstDelivery = await this.orderDeliveryRepository.findOne({
+        where: { orderProductMappingId },
+        order: { id: 'ASC' },
+      });
+      const expireAt = this.resolveOrderExpireAt(orderProductMapping, firstDelivery?.expireAt);
+      const expireDate = expireAt ? dayjs(expireAt).tz('Asia/Seoul').format('YYYY. MM. DD') : null;
+
+      const deliveryMethod = orderProductMapping.sendMethod!;
+      const encryptedDeliveryTarget = this.cryptoCipher.encryptDeliveryTarget(
+        PhoneUtil.normalizeDeliveryTarget(deliveryTarget),
+      );
+
+      // 쿠폰이미지 만들기
+      const { path: imagePath } = await DeliveryCreateCouponImage(
+        orderProductMapping.product.imagePath,
+        orderProductMapping.product.name,
+        barCode,
+        orderProductMapping.product.brand!.nameKorean,
+        expireDate,
+        orderProductMapping.topImagePath,
+        orderProductMapping.midImagePath,
+        orderProductMapping.product.type,
+      );
+
+      // test_order_delivery 저장 (oneSend에서 테스트 발송 여부를 판단하여 PIN 재발급 스킵)
+      // 발송 전에는 TEMP 로 저장한다. COMPLETE 를 미리 넣으면 발송 중/실패 건이 성공 이력으로 노출된다.
+      const testOrderDelivery = new TestOrderDeliveryEntity();
+      testOrderDelivery.status = IOrderDeliveryStatus.TEMP;
+      testOrderDelivery.orderProductMappingId = orderProductMapping.id;
+      testOrderDelivery.deliveryMethod = deliveryMethod;
+      testOrderDelivery.deliveryTarget = encryptedDeliveryTarget;
+      testOrderDelivery.imagePath = imagePath;
+      testOrderDelivery.sendRequestAt = new Date();
+      testOrderDelivery.expireAt = expireAt;
+      testOrderDelivery.barCode = barCode;
+      testOrderDelivery.personalCode = barCode;
+      // 이 건이 한도를 선점했는지 남긴다. 관리자 발송(false)은 카운트를 올리지 않았으므로
+      // 잔류 정리 시에도 회수 대상이 아니다. 행만 보고 회수 여부를 판단할 수 있어야 한다.
+      testOrderDelivery.limitClaimed = !canBypassTestDeliveryLimit;
+      const savedTestOrderDelivery = await this.testOrderDeliveryRepository.save(testOrderDelivery);
+      testOrderDeliveryId = savedTestOrderDelivery.id;
+
+      const orderDelivery = new OrderDeliveryEntity();
+      orderDelivery.deliveryMethod = deliveryMethod;
+      orderDelivery.orderProductMappingId = orderProductMapping.id;
+      orderDelivery.deliveryTarget = encryptedDeliveryTarget;
+      orderDelivery.barCode = barCode;
+      orderDelivery.personalCode = barCode;
+      orderDelivery.orderProductMapping = orderProductMapping;
+      orderDelivery.imagePath = imagePath;
+      orderDelivery.expireAt = expireAt;
+
+      // 발송 직전 WAIT 로 전환한다. 크래시로 잔류했을 때 TEMP(발송 전)와 WAIT(발송 여부 불명)를
+      // 구분해야 잔류 정리가 미발송 건만 골라 되돌릴 수 있다.
+      //
+      // 이 전환은 발송 권한 선점도 겸한다. 이 요청이 오래 정지된 사이 다른 인스턴스의 잔류 정리가
+      // 이 이력을 이미 지웠을 수 있는데(TEMP + grace 경과), 그대로 발송하면 이력 없는 물리 발송이 된다.
+      // TEMP·미삭제인 행만 전환하고 affected 로 확인해, 내 이력이 아니면 발송 전에 중단한다.
+      const sendClaim = await this.testOrderDeliveryRepository
+        .createQueryBuilder()
+        .update()
+        .set({ status: IOrderDeliveryStatus.WAIT })
+        .where('id = :id', { id: testOrderDeliveryId })
+        .andWhere('status = :temp', { temp: IOrderDeliveryStatus.TEMP })
+        .andWhere('deleted_at IS NULL')
+        .execute();
+      if ((sendClaim.affected ?? 0) !== 1) {
+        // 잔류 정리가 이미 이력 삭제와 한도 회수(-1)를 마친 상태다. 여기서 또 보상하면 다른 건의
+        // 한도까지 깎으므로, 이력만 정리(멱등)하고 한도는 건드리지 않은 채 중단한다.
+        this.logger.error(
+          `테스트 발송 WAIT 전환이 0행 (testOrderDeliveryId: ${testOrderDeliveryId}) — 잔류 정리로 이력이 이미 회수됨. 발송하지 않고 중단`,
+        );
+        isStaleClaim = true;
+        throw new BadRequestException('테스트 발송 요청이 만료되었습니다. 다시 시도해주세요.');
+      }
+
+      // 전송 (TX 밖 — testOrderDeliveryId 로 테스트 발송임을 전달하여 PIN 재발급 스킵).
+      const isSuccess = await this.deliveryBatchService.oneSend(orderDelivery, false, testOrderDeliveryId);
+      if (!isSuccess) {
+        throw new BadRequestException('테스트 발송에 실패했습니다. 수신자 정보를 확인해주세요.');
+      }
+
+      // 발송 성공 후 확정. WAIT 인 행만 전환한다.
+      // confirmed_at 을 함께 각인해 "발송 성공이 확인된 건"을 표시한다. 이 기능 이전 legacy 행은
+      // 발송 전에 COMPLETE 로 저장돼 실패 건이 섞여 있으므로, status 만으로는 성공 이력을 가려낼 수 없다.
+      isSent = true;
+      const confirm = await this.testOrderDeliveryRepository
+        .createQueryBuilder()
+        .update()
+        .set({ status: IOrderDeliveryStatus.COMPLETE, confirmedAt: () => 'NOW()' })
+        .where('id = :id', { id: testOrderDeliveryId })
+        .andWhere('status = :wait', { wait: IOrderDeliveryStatus.WAIT })
+        .execute();
+      if ((confirm.affected ?? 0) === 0) {
+        this.logger.error(
+          `테스트 발송 확정 UPDATE 가 0행 (testOrderDeliveryId: ${testOrderDeliveryId}) — 이미 발송된 건이 TEMP 로 잔류`,
+        );
+      }
+    } catch (error) {
+      // 이미 발송된 건은 되돌리지 않는다. 이력 삭제·한도 보상 시 다음 요청이 다시 발송해 중복이 된다.
+      if (isSent) {
+        this.logger.error(
+          `테스트 발송 확정 실패 (testOrderDeliveryId: ${testOrderDeliveryId}) — 발송은 완료됨. 이력 TEMP 잔류, 한도 보상 안 함`,
+          error instanceof Error ? error.stack : String(error),
+        );
+        throw error;
+      }
+      // 준비 단계 실패 시에는 아직 이력이 없을 수 있으므로 testOrderDeliveryId 는 null 일 수 있다.
+      // 관리자 발송은 한도를 선점하지 않았으므로 보상 차감도 하지 않는다(하면 기업관리자 한도를 깎는다).
+      // 잔류 정리가 이미 회수한 건(isStaleClaim)도 같은 이유로 보상 대상에서 제외한다.
+      const shouldCompensate = !canBypassTestDeliveryLimit && !isStaleClaim;
+      try {
+        await this.rollbackTestDelivery(testOrderDeliveryId, orderProductMappingId, shouldCompensate);
+      } catch (rollbackError) {
+        // 보상 실패가 원 발송 실패 사유를 덮지 않도록 로그만 남긴다.
+        // 보상은 한 트랜잭션이라 부분 반영은 없지만, 선점(+1)은 이 TX 밖에서 이미 커밋됐으므로 남는다.
+        // 이후 회수 여부는 이력 상태에 달렸다.
+        // - TEMP 로 남은 경우(WAIT 전환 전 실패): 잔류 정리가 삭제하며 한도를 회수한다.
+        // - WAIT 로 남은 경우(발송 시도 후 실패): 발송 여부 불명이라 자동 회수하지 않는다.
+        //   ops_escalated_at 경보로 운영이 확인한다.
+        // - 이력 자체가 없는 경우(testOrderDeliveryId === null): 회수 근거가 없어 자동 복구되지 않는다.
+        //   아래 로그가 유일한 추적 수단이다.
+        this.logger.error(
+          `테스트 발송 보상 처리 중 오류 (testOrderDeliveryId: ${testOrderDeliveryId}, orderProductMappingId: ${orderProductMappingId})`,
+          rollbackError instanceof Error ? rollbackError.stack : String(rollbackError),
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * 크래시나 확정 실패로 rollbackTestDelivery 가 실행되지 못해 남은 이력을 정리한다.
+   *
+   * TEMP 는 oneSend 호출 전에 죽은 경우라 확실한 미발송이다. 이력을 지우고 선점한 한도를 회수한다.
+   * 단, 한도 회수는 선점한 건(limit_claimed = 1)만 대상이다. 관리자 발송은 카운트를 올리지 않았으므로
+   * 이력만 지우고 한도는 건드리지 않는다.
+   * WAIT 은 발송됐을 수 있어 provider 도달 여부를 알 수 없다. 지우면 재발송으로 중복이 될 수 있어
+   * 그대로 두고 한도도 소진 상태로 유지한다. 대신 화면에 안 보이면서 횟수만 소진된 상태라
+   * 운영이 인지할 수 있도록 1회 경보·마킹한다(자동 확정은 미발송 건을 성공으로 만들 수 있어 하지 않는다).
+   *
+   * 진행 중인 정상 흐름을 잔류로 오인하지 않도록 grace 를 둔다.
+   *
+   * 이력 삭제와 한도 회수는 한 트랜잭션이어야 한다. 둘이 갈라지면 이력만 지워지고 한도는 남아,
+   * 원 요청이 WAIT 전환 0행을 보고 "이미 회수됐다"고 판단해 보상을 생략하면서 한도가 영구 누수된다.
+   * 발송 전에만 호출하므로(외부 I/O 앞) REQUIRES_NEW 로 열어도 발송 구간을 TX 안에 넣지 않는다.
+   */
+  @Transactional({ propagation: Propagation.REQUIRES_NEW })
+  private async discardStaleTestDeliveries(orderProductMappingId: number): Promise<void> {
+    const graceSeconds = 600;
+    // 한도를 선점한 건(limit_claimed = 1)만 대상으로 한다. affected 를 그대로 회수량으로 쓰므로
+    // 관리자 발송(선점 없음)이 섞이면 올리지도 않은 한도를 깎게 된다.
+    const stale = await this.testOrderDeliveryRepository
+      .createQueryBuilder()
+      .softDelete()
+      .where('order_product_mapping_id = :orderProductMappingId', { orderProductMappingId })
+      .andWhere('status = :temp', { temp: IOrderDeliveryStatus.TEMP })
+      .andWhere('deleted_at IS NULL')
+      .andWhere('limit_claimed = 1')
+      .andWhere(`created_at < NOW(6) - INTERVAL ${graceSeconds} SECOND`)
+      .execute();
+
+    const discarded = stale.affected ?? 0;
+    if (discarded > 0) {
+      // 발송되지 않은 건이므로 선점됐던 한도를 회수한다. 0 미만으로 내려가지 않도록 조건부 차감.
+      await this.orderProductMappingRepository
+        .createQueryBuilder()
+        .update()
+        .set({ testDeliveryCount: () => `GREATEST(test_delivery_count - ${discarded}, 0)` })
+        .where('id = :id', { id: orderProductMappingId })
+        .execute();
+
+      this.logger.warn(
+        `테스트 발송 미발송 잔류 ${discarded}건 정리·한도 회수 (orderProductMappingId: ${orderProductMappingId})`,
+      );
+    }
+
+    // 선점하지 않은(관리자) TEMP 잔류도 화면에 남지 않도록 정리한다. 한도는 올린 적이 없어 회수하지 않는다.
+    const discardedUnclaimed = await this.testOrderDeliveryRepository
+      .createQueryBuilder()
+      .softDelete()
+      .where('order_product_mapping_id = :orderProductMappingId', { orderProductMappingId })
+      .andWhere('status = :temp', { temp: IOrderDeliveryStatus.TEMP })
+      .andWhere('deleted_at IS NULL')
+      .andWhere('limit_claimed = 0')
+      .andWhere(`created_at < NOW(6) - INTERVAL ${graceSeconds} SECOND`)
+      .execute();
+
+    if ((discardedUnclaimed.affected ?? 0) > 0) {
+      this.logger.warn(
+        `테스트 발송 미발송 잔류(관리자, 한도 미선점) ${discardedUnclaimed.affected}건 정리 (orderProductMappingId: ${orderProductMappingId})`,
+      );
+    }
+
+    // 발송 여부 불명(WAIT) 잔류는 미경보 건만 1회 마킹한다. ops_escalated_at 이 중복 경보를 막는다.
+    const escalated = await this.testOrderDeliveryRepository
+      .createQueryBuilder()
+      .update()
+      .set({ opsEscalatedAt: () => 'NOW()' })
+      .where('order_product_mapping_id = :orderProductMappingId', { orderProductMappingId })
+      .andWhere('status = :wait', { wait: IOrderDeliveryStatus.WAIT })
+      .andWhere('deleted_at IS NULL')
+      .andWhere('ops_escalated_at IS NULL')
+      .andWhere(`created_at < NOW(6) - INTERVAL ${graceSeconds} SECOND`)
+      .execute();
+
+    if ((escalated.affected ?? 0) > 0) {
+      this.logger.error(
+        `테스트 발송 여부 불명 ${escalated.affected}건 잔류 — 운영 확인 필요 (orderProductMappingId: ${orderProductMappingId})`,
+      );
+    }
+  }
+
+  // 테스트 발송 실패 시 저장한 이력 제거 + 선점한 한도 보상 차감(-1).
+  // 발송 전에 한도를 선점(+1)했으므로 이후 단계가 실패하면 되돌린다.
+  // testOrderDeliveryId 가 null 이면 이력 저장 전(이미지 생성 등)에 실패한 경우라 한도 보상만 수행한다.
+  // limitClaimed 가 false 면 관리자 발송이라 선점 자체가 없었으므로 이력만 제거한다.
+  //
+  // 이력 삭제와 한도 보상은 한 트랜잭션이어야 한다. 둘이 갈라지면
+  // - 삭제만 성공: 이력이 없어 잔류 정리도 회수하지 못해 한도가 영구 소진된다.
+  // - 보상만 성공: TEMP 행이 남아 잔류 정리가 같은 건을 다시 -1 해 2회 제한을 우회한다.
+  // 발송 실패 직후(외부 I/O 종료 후)에만 호출하므로 REQUIRES_NEW 로 열어도 발송 구간을 TX 안에 넣지 않는다.
+  //
+  // 이 TX 가 통째로 실패하면 선점(+1)은 TX 밖에서 이미 커밋됐으므로 남는다. 이때 자동 회수는
+  // 이력이 TEMP 로 남은 경우에만 이뤄진다. WAIT(발송 시도 후)은 도달 여부 불명이라 경보만 하고,
+  // 이력이 없으면(testOrderDeliveryId === null) 회수 근거가 없어 호출부 로그가 유일한 추적 수단이다.
+  @Transactional({ propagation: Propagation.REQUIRES_NEW })
+  private async rollbackTestDelivery(
+    testOrderDeliveryId: number | null,
+    orderProductMappingId: number,
+    limitClaimed: boolean,
+  ): Promise<void> {
+    // 살아있는 행을 이 요청이 실제로 지웠을 때만 보상한다.
+    // 발송 실패를 처리하는 사이 다른 인스턴스의 잔류 정리가 같은 행을 지우며 한도까지 회수했을 수 있는데,
+    // 여기서 또 -1 하면 그 회수분과 겹쳐 앞선 성공 건의 선점까지 깎여 2회 제한을 넘겨 발송할 수 있다.
+    if (testOrderDeliveryId !== null) {
+      const removed = await this.testOrderDeliveryRepository
+        .createQueryBuilder()
+        .softDelete()
+        .where('id = :id', { id: testOrderDeliveryId })
+        .andWhere('deleted_at IS NULL')
+        .execute();
+
+      // 선점하지 않았으면(관리자 무제한 경로) 되돌릴 것도 없다. 여기서 차감하면 남의 한도를 깎는다.
+      if (!limitClaimed) {
+        return;
+      }
+
+      if ((removed.affected ?? 0) !== 1) {
+        this.logger.warn(
+          `테스트 발송 이력이 이미 정리됨 (testOrderDeliveryId: ${testOrderDeliveryId}) — 한도 회수는 정리 쪽에서 수행돼 보상 생략`,
+        );
+        return;
+      }
+    } else if (!limitClaimed) {
+      return;
+    }
+
+    // 발송 전 +1 한 선점을 되돌린다. 0 미만으로 내려가지 않도록 조건부 차감.
+    await this.orderProductMappingRepository
+      .createQueryBuilder()
+      .update()
+      .set({ testDeliveryCount: () => 'test_delivery_count - 1' })
+      .where('id = :id', { id: orderProductMappingId })
+      .andWhere('test_delivery_count > 0')
+      .execute();
+  }
+
+  /**
+   * 주문 상세에 노출할 테스트 발송 이력을 orderProductMappingId 별로 모아 돌려준다.
+   *
+   * 발송 성공이 확인된 건만 노출한다. TEMP(발송 전)/WAIT(발송 여부 불명)/FAIL 은 제외하고,
+   * confirmed_at 이 NULL 인 행도 제외한다. 이 기능 이전 구현은 oneSend 호출 전에 status=COMPLETE 로
+   * 저장하고 실패해도 행을 지우지 않아, 기존 COMPLETE 행에는 실패 건이 섞여 있다. status 만으로 거르면
+   * 과거 실패 발송이 배포 즉시 성공 이력으로 노출된다. 확정 시각이 찍힌 신규 흐름의 건만 신뢰한다.
+   */
+  private async loadTestDeliveryHistories(
+    orderProductMappingIds: number[],
+  ): Promise<Map<number, OrderTestDeliveryHistoryDto[]>> {
+    const historyMap = new Map<number, OrderTestDeliveryHistoryDto[]>();
+    if (orderProductMappingIds.length === 0) {
+      return historyMap;
+    }
+
+    const testDeliveryHistories = await this.testOrderDeliveryRepository.find({
+      where: {
+        orderProductMappingId: In(orderProductMappingIds),
+        status: In([IOrderDeliveryStatus.COMPLETE, IOrderDeliveryStatus.COMPLETE_SMS]),
+        confirmedAt: Not(IsNull()),
+      },
       order: { id: 'ASC' },
     });
-    const expireAt = this.resolveOrderExpireAt(orderProductMapping, firstDelivery?.expireAt);
-    const expireDate = expireAt ? dayjs(expireAt).tz('Asia/Seoul').format('YYYY. MM. DD') : null;
 
-    // 2. 쿠폰이미지 만들기
-    const { path: imagePath } = await DeliveryCreateCouponImage(
-      orderProductMapping.product.imagePath,
-      orderProductMapping.product.name,
-      barCode,
-      orderProductMapping.product.brand!.nameKorean,
-      expireDate,
-      orderProductMapping.topImagePath,
-      orderProductMapping.midImagePath,
-      orderProductMapping.product.type,
-    );
-
-    const deliveryMethod = orderProductMapping.sendMethod!;
-    const encryptedDeliveryTarget = this.cryptoCipher.encryptDeliveryTarget(
-      PhoneUtil.normalizeDeliveryTarget(deliveryTarget),
-    );
-
-    // test_order_delivery 테이블에 저장 (oneSend에서 테스트 발송 여부를 판단하여 PIN 재발급 스킵)
-    const testOrderDelivery = new TestOrderDeliveryEntity();
-    testOrderDelivery.status = IOrderDeliveryStatus.COMPLETE;
-    testOrderDelivery.orderProductMappingId = orderProductMapping.id;
-    testOrderDelivery.deliveryMethod = deliveryMethod;
-    testOrderDelivery.deliveryTarget = encryptedDeliveryTarget;
-    testOrderDelivery.imagePath = imagePath;
-
-    testOrderDelivery.sendRequestAt = new Date();
-    testOrderDelivery.expireAt = expireAt;
-    testOrderDelivery.barCode = barCode;
-    testOrderDelivery.personalCode = barCode;
-
-    const savedTestOrderDelivery = await this.testOrderDeliveryRepository.save(testOrderDelivery);
-    const testOrderDeliveryId = savedTestOrderDelivery.id;
-
-    const orderDelivery = new OrderDeliveryEntity();
-    orderDelivery.deliveryMethod = deliveryMethod;
-    orderDelivery.orderProductMappingId = orderProductMapping.id;
-    orderDelivery.deliveryTarget = encryptedDeliveryTarget;
-    orderDelivery.barCode = barCode;
-    orderDelivery.personalCode = barCode;
-    orderDelivery.orderProductMapping = orderProductMapping;
-    orderDelivery.imagePath = imagePath;
-    orderDelivery.expireAt = expireAt;
-
-    // 3. 전송 (testOrderDeliveryId로 테스트 발송임을 전달하여 PIN 재발급 스킵)
-    const isSuccess = await this.deliveryBatchService.oneSend(orderDelivery, false, testOrderDeliveryId);
-
-    // 발송 실패 시 에러 throw (횟수 증가하지 않음)
-    if (!isSuccess) {
-      throw new BadRequestException('테스트 발송에 실패했습니다. 수신자 정보를 확인해주세요.');
+    // id ASC 로 조회되므로, 상품별 push 순서(배열 인덱스+1)가 곧 id ASC 순번이다.
+    for (const history of testDeliveryHistories) {
+      const histories = historyMap.get(history.orderProductMappingId) ?? [];
+      histories.push({
+        sequence: histories.length + 1,
+        deliveryTarget: this.cryptoCipher.safeDecryptDeliveryTarget(history.deliveryTarget) ?? '',
+        sendRequestAt: format(history.sendRequestAt, DateFormatStr),
+      });
+      historyMap.set(history.orderProductMappingId, histories);
     }
 
-    // 4. 테스트 발송 횟수 증가 (상품별) - 발송 성공 시에만 증가
-    orderProductMapping.testDeliveryCount += 1;
-    await this.orderProductMappingRepository.save(orderProductMapping);
+    return historyMap;
   }
 
   async getPreviousContent(
