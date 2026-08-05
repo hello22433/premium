@@ -88,6 +88,10 @@ export class DepositService {
 
     if (depositor) {
       const ciphers = await this.resolveDepositorCiphers(depositor);
+      // ⚠️ 감사 로그는 결과 건수와 무관하게, 조기 반환보다 **먼저** 남긴다.
+      // 0건이어도 "그 이름을 조회했다"는 사실 자체가 감사 대상이다. 오히려 이름을 바꿔가며
+      // 훑는 행위는 0건 검색으로 나타나므로, 0건을 빼면 가장 수상한 패턴이 로그에서 사라진다.
+      // (부재의 확인도 정보다 — "이 사람은 우리 고객이 아니다"를 알아낸 것이다)
       if (audit) {
         await this.recordPiiSearchLog(depositor, audit);
       }

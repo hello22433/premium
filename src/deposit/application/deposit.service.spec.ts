@@ -316,6 +316,20 @@ describe('DepositService.getList', () => {
       expect(logged.requestParams.maskedKeyword).not.toBe('****');
     });
 
+    // 조기 반환보다 로그가 먼저여야 한다. 0건 검색은 "이름을 바꿔가며 훑는" 가장 수상한
+    // 패턴의 흔적이라, 여기서 빠지면 감사 로그가 정작 중요한 사례를 놓친다.
+    it('검색 결과가 0건이어도 PII_SEARCH 는 남는다', async () => {
+      const { qb } = buildQbSpy([row()]);
+      qb.getRawMany.mockResolvedValue([{ depositor: enc('한빛문구') }]);
+      const { sut, activityLogService } = makeSut(qb);
+
+      const result = await sut.getList(query({ depositor: '없는이름' }), auditContext);
+
+      expect(result.totalCount).toBe(0);
+      expect(activityLogService.createLog).toHaveBeenCalledTimes(1);
+      expect(activityLogService.createLog.mock.calls[0][0].requestParams.maskedKeyword).toBe('없***');
+    });
+
     it('검색 없이 목록만 보면 PII_SEARCH 를 남기지 않는다', async () => {
       const { qb } = buildQbSpy([row()]);
       const { sut, activityLogService } = makeSut(qb);
