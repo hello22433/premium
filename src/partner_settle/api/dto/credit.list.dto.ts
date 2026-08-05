@@ -27,8 +27,8 @@ export class CreditListPaymentVarianceRowDto {
   @ApiProperty() partnerType: string;
   @ApiProperty({ example: 'PAYMENT_VARIANCE' }) subItemKey: string;
   @ApiProperty() paymentVarianceAdjustmentAmount: string;
-  @ApiProperty({ nullable: true }) monthlyLimit: null;
-  @ApiProperty({ nullable: true }) availableBalance: null;
+  @ApiProperty({ type: String, nullable: true }) monthlyLimit: null;
+  @ApiProperty({ type: String, nullable: true }) availableBalance: null;
 }
 
 export class CreditListResDto {
