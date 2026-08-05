@@ -40,7 +40,11 @@ export class DepositSyncSchedule {
       return;
     }
 
-    this.syncStartedAt = Date.now();
+    // 자기 실행을 식별하는 토큰. stale 로 판정돼 다음 주기가 진입한 뒤 이 실행이 뒤늦게
+    // 끝나는 경우, finally 가 무조건 null 을 넣으면 **남이 방금 세운 플래그를 지운다**
+    // (그때부터 겹침 방지가 통째로 풀린다). 자기 것일 때만 지운다.
+    const startedAt = Date.now();
+    this.syncStartedAt = startedAt;
     try {
       await this.depositSyncService.syncRecent();
     } catch (error) {
@@ -52,7 +56,9 @@ export class DepositSyncSchedule {
         this.logger.warn(`동기화 일시 실패 — 다음 주기에 재시도합니다: ${(error as Error).message}`);
       }
     } finally {
-      this.syncStartedAt = null;
+      if (this.syncStartedAt === startedAt) {
+        this.syncStartedAt = null;
+      }
     }
   }
 
