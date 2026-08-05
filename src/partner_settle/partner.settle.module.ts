@@ -4,11 +4,15 @@ import { PartnerDiscountHistoryEntity } from '../entity/partner.discount.history
 import { PartnerDiscountScopeEntity } from '../entity/partner.discount.scope.entity';
 import { PartnerDiscountPolicyEpochEntity } from '../entity/partner.discount.policy.epoch.entity';
 import { PartnerSettleLedgerEntity } from '../entity/partner.settle.ledger.entity';
+import { PartnerProviderEventInboxEntity } from '../entity/partner.provider.event.inbox.entity';
+import { PartnerSettleTransitionObservationEntity } from '../entity/partner.settle.transition.observation.entity';
 import { PartnerDiscountHistoryService } from './application/partner.discount.history.service';
 import { PartnerDiscountIntegrityService } from './application/partner.discount.integrity.service';
 import { PartnerDiscountSeedService } from './application/partner.discount.seed.service';
 import { PartnerSettleLedgerService } from './application/partner.settle.ledger.service';
 import { PartnerSettlePricingResolverService } from './application/partner.settle.pricing.resolver.service';
+import { PartnerProviderEventInboxService } from './application/partner.provider.event.inbox.service';
+import { PartnerSettleObservationService } from './application/partner.settle.observation.service';
 import { UserDiscountEntity } from '../entity/user.discount.entity';
 
 /**
@@ -24,6 +28,8 @@ import { UserDiscountEntity } from '../entity/user.discount.entity';
       PartnerDiscountScopeEntity,
       PartnerDiscountPolicyEpochEntity,
       PartnerSettleLedgerEntity,
+      PartnerProviderEventInboxEntity,
+      PartnerSettleTransitionObservationEntity,
       UserDiscountEntity,
     ]),
   ],
@@ -33,6 +39,8 @@ import { UserDiscountEntity } from '../entity/user.discount.entity';
     PartnerDiscountSeedService,
     PartnerSettlePricingResolverService,
     PartnerSettleLedgerService,
+    PartnerSettleObservationService,
+    PartnerProviderEventInboxService,
   ],
   exports: [
     PartnerDiscountHistoryService,
@@ -40,6 +48,8 @@ import { UserDiscountEntity } from '../entity/user.discount.entity';
     PartnerDiscountSeedService,
     PartnerSettlePricingResolverService,
     PartnerSettleLedgerService,
+    PartnerSettleObservationService,
+    PartnerProviderEventInboxService,
   ],
 })
 export class PartnerSettleModule {}

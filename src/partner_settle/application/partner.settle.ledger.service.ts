@@ -24,6 +24,7 @@ import { resolveSubItemKey, SubItemKeyInput } from '../domain/settle.sub.item.ke
 import { KstInstant, toDbDateTimeString } from '../domain/settle.time';
 import { PricingProductSnapshot } from '../domain/partner.settle.pricing';
 import { PartnerSettlePricingResolverService } from './partner.settle.pricing.resolver.service';
+import { insertRawRow, RawRow } from './partner.settle.raw.insert';
 
 /**
  * 정산 원장 append (정본 §5.1 · §6.4 · §6.5 · PR1B 명세 B10).
@@ -100,9 +101,7 @@ export type LedgerReversalCommand = {
   memo?: string | null;
 };
 
-type LedgerRow = Record<string, string | number | null>;
-
-const MYSQL_DUPLICATE_ENTRY = 1062;
+type LedgerRow = RawRow;
 
 @Injectable()
 export class PartnerSettleLedgerService {
@@ -388,24 +387,9 @@ export class PartnerSettleLedgerService {
     };
   }
 
-  /**
-   * 파라미터 바인딩 raw INSERT.
-   *
-   * 엔티티 insert 를 쓰지 않는 이유는 TypeORM 이 datetime 값을 `Date` 로 정규화해 `.123456` 을
-   * `.123000` 으로 깎기 때문이다. 컬럼과 값은 한 객체에서 뽑아 개수가 어긋날 수 없다.
-   */
+  /** append 결과는 항상 멱등키로 재조회한다 — 신규 INSERT 든 UNIQUE 충돌이든 답은 같은 row 다. */
   private async insertRow(row: LedgerRow, idempotencyKey: string): Promise<PartnerSettleLedgerEntity> {
-    const columns = Object.keys(row);
-    const sql =
-      `INSERT INTO partner_settle_ledger (${columns.map((column) => `\`${column}\``).join(', ')})` +
-      ` VALUES (${columns.map(() => '?').join(', ')})`;
-
-    try {
-      await this.ledgerRepository.query(sql, columns.map((column) => row[column]));
-    } catch (error) {
-      // 동시 producer 2건이 같은 전이를 집으면 한쪽이 UNIQUE 에 걸린다. 그건 정상이고, 기존 row 가 답이다.
-      if (!isDuplicateKeyError(error)) throw error;
-    }
+    await insertRawRow(this.ledgerRepository, 'partner_settle_ledger', row);
 
     const inserted = await this.findByIdempotencyKey(idempotencyKey);
     if (!inserted) {
@@ -473,11 +457,4 @@ function assertAggregate(label: string, value: bigint): void {
     }
     throw error;
   }
-}
-
-function isDuplicateKeyError(error: unknown): boolean {
-  const errno =
-    (error as { driverError?: { errno?: number }; errno?: number })?.driverError?.errno ??
-    (error as { errno?: number })?.errno;
-  return errno === MYSQL_DUPLICATE_ENTRY;
 }
