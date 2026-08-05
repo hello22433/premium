@@ -45,6 +45,12 @@ const check = (label: string, ok: boolean, detail: unknown) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}  ${JSON.stringify(detail)}`);
   if (!ok) failed += 1;
 };
+/** getList 는 감사 맥락을 필수로 받는다(무감사 호출을 타입으로 막는다). */
+const SMOKE_AUDIT = {
+  user: { id: 0, email: 'smoke@local', authority: 'SUPER_ADMIN' } as any,
+  ipAddress: '127.0.0.1',
+  userAgent: 'smoke',
+};
 
 /** 상대 DepositView 가 실제로 돌려주는 필드만. depositorRaw/erpPartnerCode 는 없다. */
 const item = (overrides: Partial<DepositSourceItem> = {}): DepositSourceItem => ({
@@ -136,7 +142,7 @@ const fakeConfig = (values: Record<string, string> = {}) => ({
     const syncService = new DepositSyncService(repository, fakeSource(first) as any, fakeConfig() as any, cryptoCipher);
     await syncService.syncRange('2026-07-01', '2026-07-31');
 
-    const afterFirst = await listService.getList({ page: 1, take: 10 } as any);
+    const afterFirst = await listService.getList({ page: 1, take: 10 } as any, SMOKE_AUDIT);
     check('최초 동기화 2건 저장', afterFirst.totalCount === 2, afterFirst.totalCount);
     check(
       '엔티티↔DDL 정합 (전 컬럼 왕복)',
@@ -160,8 +166,8 @@ const fakeConfig = (values: Record<string, string> = {}) => ({
     );
     check(
       '입금처 부분검색이 암호화 컬럼 위에서 동작한다',
-      (await listService.getList({ page: 1, take: 10, depositor: '한빛' } as any)).totalCount === 1,
-      (await listService.getList({ page: 1, take: 10, depositor: '한빛' } as any)).totalCount,
+      (await listService.getList({ page: 1, take: 10, depositor: '한빛' } as any, SMOKE_AUDIT)).totalCount === 1,
+      (await listService.getList({ page: 1, take: 10, depositor: '한빛' } as any, SMOKE_AUDIT)).totalCount,
     );
     check(
       "tx_date 가 'yyyy-MM-dd' 문자열",

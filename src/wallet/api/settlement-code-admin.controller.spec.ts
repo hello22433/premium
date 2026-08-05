@@ -6,6 +6,7 @@ describe('SettlementCodeAdminController', () => {
   let walletReadService: { getSettlementCodeSnapshot: jest.Mock };
   let adminService: {
     issueNewCode: jest.Mock;
+    createCodeForCompany: jest.Mock;
     assignUserToCode: jest.Mock;
     renameCode: jest.Mock;
     setCodeCreditLimit: jest.Mock;
@@ -20,6 +21,7 @@ describe('SettlementCodeAdminController', () => {
     walletReadService = { getSettlementCodeSnapshot: jest.fn() };
     adminService = {
       issueNewCode: jest.fn(),
+      createCodeForCompany: jest.fn(),
       assignUserToCode: jest.fn(),
       renameCode: jest.fn(),
       setCodeCreditLimit: jest.fn(),
@@ -71,6 +73,24 @@ describe('SettlementCodeAdminController', () => {
     const r = await controller.issue({ userId: 3 });
     expect(adminService.issueNewCode).toHaveBeenCalledWith(3);
     expect(r).toEqual({ settlementCode: 'company-7-2' });
+  });
+
+  it('POST / → adminService.createCodeForCompany(companyId, 정책/한도 옵션)', async () => {
+    adminService.createCodeForCompany.mockResolvedValue('company-7-3');
+    const r = await controller.create({
+      companyId: 7,
+      settleCondition: 'PRE_PAYMENT',
+      settleMethod: 'CARD',
+      cardSurchargeApplied: false,
+      creditLimit: 5000,
+    });
+    expect(adminService.createCodeForCompany).toHaveBeenCalledWith(7, {
+      settleCondition: 'PRE_PAYMENT',
+      settleMethod: 'CARD',
+      cardSurchargeApplied: false,
+      creditLimit: 5000,
+    });
+    expect(r).toEqual({ settlementCode: 'company-7-3' });
   });
 
   it('PUT /assign → adminService.assignUserToCode(userId, settlementCode)', async () => {

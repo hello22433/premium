@@ -196,6 +196,7 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
             assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
             assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
             isCutover: jest.fn().mockResolvedValue(false),
+            isWorkflowResend: jest.fn().mockResolvedValue(null),
             splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
           },
         },

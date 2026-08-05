@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, Injectable, Logger } from '@nes
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { Brackets, DataSource, EntityManager, Repository } from 'typeorm';
 import { UserEntity } from '../../entity/user.entity';
+import { UserCompanyEntity } from '../../entity/user.company.entity';
 import { WalletAccountEntity } from '../../entity/wallet.account.entity';
 import { PointGrantEntity } from '../../entity/point.grant.entity';
 import { OrderEntity } from '../../entity/order.entity';
@@ -49,6 +50,23 @@ export interface HistoryPage {
 }
 
 const SETTLE_COMPLETE = 'SETTLE_COMPLETE';
+/** 변경 게이트 400 응답에 실릴 대표 차단 주문 수 상한. */
+const OUTSTANDING_REP_LIMIT = 20;
+
+/** 게이트 차단 주문 1건 (운영자가 원인 상태를 즉시 식별하도록 status/settleStatus 동봉). */
+export interface BlockingOrderInfo {
+  orderId: number;
+  status: string;
+  settleStatus: string | null;
+}
+
+/** 진행 중/미정산 주문 수집 결과 (구조화 게이트 오류 payload 원본). */
+interface OutstandingSnapshot {
+  blockingUserIds: number[];
+  blockingOrderIds: number[];
+  blockingOrders: BlockingOrderInfo[];
+  blockingOrderCount: number;
+}
 
 /** 진행 중(변경 차단) 판정 대상 상태. TEMP/DELIVERY_CANCEL 은 제외. */
 const CHANGE_GATE_INFLIGHT_STATUSES: IOrderStatus[] = [
@@ -94,6 +112,7 @@ export class SettlementCodeAdminService {
    * @param code      owner_id (예: company-123).
    * @param creditLimit 신규 생성 시 여신 한도.
    * @param manager   호출자가 소유한 트랜잭션 매니저 (필수 — 프로비저닝은 호스트 TX 안에서 실행).
+   * @param cardSurchargeApplied 미지정(undefined) 시 컬럼을 INSERT 목록에서 제외해 DB 기본값(true)을 적용한다.
    */
   async ensureSettlementCodeWallet(
     companyId: number,
@@ -102,13 +121,19 @@ export class SettlementCodeAdminService {
     manager: EntityManager,
     settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT' = 'POST_PAYMENT',
     settleMethod: 'CARD' | 'CASH' = 'CASH',
+    cardSurchargeApplied?: boolean,
   ): Promise<void> {
+    const withSurcharge = cardSurchargeApplied !== undefined;
     const result = await manager.query(
       `INSERT INTO wallet_account
-         (owner_type, owner_id, owner_company_id, deposit_balance, credit_limit, credit_used_amount, credit_excess_amount, settle_condition, settle_method)
-       VALUES ('SETTLEMENT_CODE', ?, ?, 0, ?, 0, 0, ?, ?)
+         (owner_type, owner_id, owner_company_id, deposit_balance, credit_limit, credit_used_amount, credit_excess_amount, settle_condition, settle_method${
+           withSurcharge ? ', card_surcharge_applied' : ''
+         })
+       VALUES ('SETTLEMENT_CODE', ?, ?, 0, ?, 0, 0, ?, ?${withSurcharge ? ', ?' : ''})
        ON DUPLICATE KEY UPDATE id = id`,
-      [code, companyId, creditLimit, settleCondition, settleMethod],
+      withSurcharge
+        ? [code, companyId, creditLimit, settleCondition, settleMethod, cardSurchargeApplied ? 1 : 0]
+        : [code, companyId, creditLimit, settleCondition, settleMethod],
     );
 
     // MySQL: 신규 insert 는 affectedRows=1, id=id no-op update(중복) 는 affectedRows=0.
@@ -243,6 +268,56 @@ export class SettlementCodeAdminService {
         await this.ensureSettlementCodeWallet(companyId, newCode, 0, manager, user.settleCondition, user.settleMethod);
         await manager.getRepository(UserEntity).update({ id: userId }, { settlementCode: newCode });
         this.logger.log(`issueNewCode userId=${userId} ${sourceCode || '(none)'} -> ${newCode}`);
+        return newCode;
+      }),
+    );
+  }
+
+  /**
+   * 운영자: 배정 계정 없이 회사에 정산코드만 생성한다 (company-{id}-{n}).
+   *
+   * issueNewCode 와 달리 어떤 user.settlement_code 도 건드리지 않으므로 계정 이동/자금 이동이 없고,
+   * 따라서 변경 게이트(assertChangeGate) 대상이 아니다. 배정 대기 계정이 0명인 회사도 코드를 선발급할 수 있다.
+   * 회사 row FOR UPDATE(lockByCompany)로 같은 회사의 동시 채번을 직렬화하고, 정책/한도를 wallet 생성과
+   * 단일 TX 로 반영한다(생성 후 별도 정책 설정 호출의 비원자성 제거).
+   */
+  async createCodeForCompany(
+    companyId: number,
+    options: {
+      settleCondition?: 'PRE_PAYMENT' | 'POST_PAYMENT';
+      settleMethod?: 'CARD' | 'CASH';
+      cardSurchargeApplied?: boolean;
+      creditLimit?: number;
+    } = {},
+  ): Promise<string> {
+    const creditLimit = options.creditLimit ?? 0;
+    if (!Number.isInteger(creditLimit) || creditLimit < 0) {
+      throw new BadRequestException('여신 한도(creditLimit)는 0 이상의 정수여야 합니다.');
+    }
+    return this.runWithRetry(() =>
+      this.dataSource.transaction(async (manager) => {
+        const company = await manager.getRepository(UserCompanyEntity).findOne({ where: { id: companyId } });
+        if (!company) {
+          throw new BadRequestException(`회사(companyId=${companyId})를 찾을 수 없습니다.`);
+        }
+        // 채번 직렬화 — issueNewCode 와 동일한 회사 row FOR UPDATE 경계를 공유한다.
+        await this.billingScopeLock.lockByCompany(companyId, manager);
+
+        const newCode = await this.nextIssuedCode(manager, companyId);
+        await this.ensureSettlementCodeWallet(
+          companyId,
+          newCode,
+          creditLimit,
+          manager,
+          options.settleCondition ?? 'POST_PAYMENT',
+          options.settleMethod ?? 'CASH',
+          options.cardSurchargeApplied,
+        );
+        this.logger.log(
+          `createCodeForCompany companyId=${companyId} -> ${newCode} (creditLimit=${creditLimit}, ` +
+            `settleCondition=${options.settleCondition ?? 'POST_PAYMENT'}, settleMethod=${options.settleMethod ?? 'CASH'}, ` +
+            `cardSurchargeApplied=${options.cardSurchargeApplied ?? '(default)'})`,
+        );
         return newCode;
       }),
     );
@@ -458,6 +533,7 @@ export class SettlementCodeAdminService {
               blockingUserIds: outstanding.blockingUserIds,
               blockingOrderCount: outstanding.blockingOrderCount, // 전체 차단 주문 수
               blockingOrderIds: outstanding.blockingOrderIds, // 대표 최대 20건
+              blockingOrders: outstanding.blockingOrders, // 대표 주문 상태/정산상태 (원인 식별용)
             });
           }
           wallet.settleCondition = update.settleCondition!;
@@ -764,14 +840,13 @@ export class SettlementCodeAdminService {
 
   /**
    * 정산코드를 공유하는 전체 계정에서 진행 중/미정산 주문(또는 미정산 외상 잔액)을 **수집**한다(선/후정산 전환 게이트).
-   * 대량 응답/락 보유시간 방지: 전체 count 는 집계로, 대표 주문 ID 는 최대 REP_LIMIT 건만 조회한다.
+   * 대량 응답/락 보유시간 방지: 전체 count 는 집계로, 대표 주문은 최대 OUTSTANDING_REP_LIMIT 건만 조회한다.
    * blockingUserIds 는 코드 멤버 수로 유계이므로 DISTINCT 전량 수집.
    */
   private async collectOutstandingForCode(
     manager: EntityManager,
     settlementCode: string,
-  ): Promise<{ blockingUserIds: number[]; blockingOrderIds: number[]; blockingOrderCount: number }> {
-    const REP_LIMIT = 20;
+  ): Promise<OutstandingSnapshot> {
     const users = await manager
       .getRepository(UserEntity)
       .find({ where: { settlementCode }, select: ['id', 'allSettleAmount'] });
@@ -782,38 +857,55 @@ export class SettlementCodeAdminService {
       }
     }
 
-    const blockingOrderIds: number[] = [];
-    let blockingOrderCount = 0;
     const userIds = users.map((u) => u.id);
-    if (userIds.length > 0) {
-      // (1) 전체 차단 주문 수(집계만 — row 미적재).
-      blockingOrderCount = await this.outstandingOrdersQuery(manager, userIds).getCount();
-
-      if (blockingOrderCount > 0) {
-        // (2) 대표 주문 ID 최대 REP_LIMIT 건.
-        const repRows = await this.outstandingOrdersQuery(manager, userIds)
-          .select('o.id', 'id')
-          .orderBy('o.id', 'DESC')
-          .limit(REP_LIMIT)
-          .getRawMany<{ id: number }>();
-        for (const r of repRows) {
-          blockingOrderIds.push(Number(r.id));
-        }
-
-        // (3) 차단 주문의 DISTINCT billing user(대표 주문에 없어도 누락되지 않도록 별도 집계).
-        const uidRows = await this.outstandingOrdersQuery(manager, userIds)
-          .select('DISTINCT COALESCE(o.clientUserId, o.userId)', 'uid')
-          .getRawMany<{ uid: number }>();
-        for (const r of uidRows) {
-          blockingUserIds.add(Number(r.uid));
-        }
-      }
+    if (userIds.length === 0) {
+      return { blockingUserIds: [...blockingUserIds], blockingOrderIds: [], blockingOrders: [], blockingOrderCount: 0 };
     }
 
-    return { blockingUserIds: [...blockingUserIds], blockingOrderIds, blockingOrderCount };
+    const outstanding = await this.collectBlockingOrders(manager, userIds);
+    for (const uid of outstanding.blockingUserIds) {
+      blockingUserIds.add(uid);
+    }
+    return { ...outstanding, blockingUserIds: [...blockingUserIds] };
   }
 
-  /** collectOutstandingForCode 의 3개 조회가 공유하는 base queryBuilder (대상 사용자 + 진행 중/미정산 필터). */
+  /**
+   * 대상 사용자들의 진행 중/미정산 주문을 수집한다 (assign/issue 게이트 · 정산조건 변경 게이트 공용).
+   * (1) 전체 건수는 집계로, (2) 대표 주문은 상태/정산상태 포함 최대 OUTSTANDING_REP_LIMIT 건(운영자 원인 식별용),
+   * (3) 차단 주문의 billing user 는 DISTINCT 전량.
+   */
+  private async collectBlockingOrders(manager: EntityManager, userIds: number[]): Promise<OutstandingSnapshot> {
+    const blockingOrderCount = await this.outstandingOrdersQuery(manager, userIds).getCount();
+    if (blockingOrderCount === 0) {
+      return { blockingUserIds: [], blockingOrderIds: [], blockingOrders: [], blockingOrderCount: 0 };
+    }
+
+    const repRows = await this.outstandingOrdersQuery(manager, userIds)
+      .select('o.id', 'id')
+      .addSelect('o.status', 'status')
+      .addSelect('o.settleStatus', 'settleStatus')
+      .orderBy('o.id', 'DESC')
+      .limit(OUTSTANDING_REP_LIMIT)
+      .getRawMany<{ id: number; status: string; settleStatus: string | null }>();
+    const blockingOrders: BlockingOrderInfo[] = repRows.map((r) => ({
+      orderId: Number(r.id),
+      status: r.status,
+      settleStatus: r.settleStatus ?? null,
+    }));
+
+    const uidRows = await this.outstandingOrdersQuery(manager, userIds)
+      .select('DISTINCT COALESCE(o.clientUserId, o.userId)', 'uid')
+      .getRawMany<{ uid: number }>();
+
+    return {
+      blockingUserIds: [...new Set(uidRows.map((r) => Number(r.uid)))],
+      blockingOrderIds: blockingOrders.map((o) => o.orderId),
+      blockingOrders,
+      blockingOrderCount,
+    };
+  }
+
+  /** 차단 주문 조회가 공유하는 base queryBuilder (대상 사용자 + 진행 중/미정산 필터). */
   private outstandingOrdersQuery(manager: EntityManager, userIds: number[]) {
     return manager
       .getRepository(OrderEntity)
@@ -909,12 +1001,18 @@ export class SettlementCodeAdminService {
       sourceWallet.creditExcessAmount === 0 &&
       !hasPoints;
     if (!isEmpty) {
-      throw new BadRequestException(
-        `마지막 사용자를 이동하면 정산코드('${sourceCode}') 풀이 고아가 됩니다. ` +
-          `잔액/여신/포인트를 먼저 정리(환불/정산)한 뒤 이동하세요. ` +
-          `(deposit=${sourceWallet.depositBalance}, credit_used=${sourceWallet.creditUsedAmount}, ` +
-          `credit_excess=${sourceWallet.creditExcessAmount}, points=${hasPoints ? '>0' : '0'})`,
-      );
+      // 구조화 오류 — 프론트가 잔액/여신/포인트 항목별로 안내한다(문자열 파싱 금지).
+      throw new BadRequestException({
+        code: 'SOURCE_POOL_NOT_EMPTY',
+        message:
+          `마지막 사용자를 이동하면 정산코드('${sourceCode}') 풀이 고아가 됩니다. ` +
+          `잔액/여신/포인트를 먼저 정리(환불/정산)한 뒤 이동하세요.`,
+        settlementCode: sourceCode,
+        depositBalance: sourceWallet.depositBalance,
+        creditUsedAmount: sourceWallet.creditUsedAmount,
+        creditExcessAmount: sourceWallet.creditExcessAmount,
+        hasPoints,
+      });
     }
   }
 
@@ -924,28 +1022,25 @@ export class SettlementCodeAdminService {
       .getRepository(UserEntity)
       .findOne({ where: { id: movingUserId }, select: ['id', 'allSettleAmount'] });
     if (movingUser && movingUser.allSettleAmount !== 0) {
-      throw new BadRequestException(
-        `미정산 외상 잔액이 남아 있어 정산코드를 변경할 수 없습니다. (all_settle=${movingUser.allSettleAmount})`,
-      );
+      throw new BadRequestException({
+        code: 'OUTSTANDING_CREDIT_BALANCE',
+        message: `미정산 외상 잔액이 남아 있어 정산코드를 변경할 수 없습니다. (all_settle=${movingUser.allSettleAmount})`,
+        allSettleAmount: movingUser.allSettleAmount,
+      });
     }
 
-    const outstanding = await manager
-      .getRepository(OrderEntity)
-      .createQueryBuilder('o')
-      .where('COALESCE(o.clientUserId, o.userId) = :uid', { uid: movingUserId })
-      .andWhere(
-        new Brackets((qb) => {
-          qb.where('o.status IN (:...inflight)', { inflight: CHANGE_GATE_INFLIGHT_STATUSES }).orWhere(
-            '(o.status = :dc AND (o.settleStatus IS NULL OR o.settleStatus != :sc))',
-            { dc: IOrderStatus.DELIVERY_COMPLETE, sc: SETTLE_COMPLETE },
-          );
-        }),
-      )
-      .getCount();
-    if (outstanding > 0) {
-      throw new BadRequestException(
-        '진행 중이거나 미정산 완료된 주문이 있어 정산코드를 변경할 수 없습니다. (발송요청/검토완료/발송확정 또는 미정산 발송완료 주문)',
-      );
+    // **구조화된 게이트 오류**(setSettlePolicy 와 동일 계약): 어떤 주문이 왜 막는지 상태까지 함께 반환한다.
+    const outstanding = await this.collectBlockingOrders(manager, [movingUserId]);
+    if (outstanding.blockingOrderCount > 0) {
+      throw new BadRequestException({
+        code: 'OUTSTANDING_ORDER_EXISTS',
+        message:
+          '진행 중이거나 미정산 완료된 주문이 있어 정산코드를 변경할 수 없습니다. (발송요청/검토완료/발송확정 또는 미정산 발송완료 주문)',
+        blockingUserIds: outstanding.blockingUserIds,
+        blockingOrderCount: outstanding.blockingOrderCount,
+        blockingOrderIds: outstanding.blockingOrderIds,
+        blockingOrders: outstanding.blockingOrders,
+      });
     }
   }
 

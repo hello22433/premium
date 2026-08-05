@@ -131,6 +131,14 @@ export class OrderProductMappingEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 255, nullable: true, comment: '[snapshot] 주문 시점 브랜드명' })
   snapshotProductBrandName: string | null;
 
+  // 협력사 매입 정산조건 매칭(findMatchingDiscount)이 상품군·카테고리를 요구한다.
+  // 레거시 row 는 live product 로 채우지 않는다 — 상품이 바뀌면 과거 정산이 따라 움직인다.
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '[snapshot] 주문 시점 상품군(product.category)' })
+  snapshotProductCategory: string | null;
+
+  @Column({ type: 'int', nullable: true, comment: '[snapshot] 주문 시점 카테고리(product.classificationId)' })
+  snapshotProductClassificationId: number | null;
+
   @Column({ type: 'int', nullable: true, comment: '[snapshot] 주문 시점 유효기간 일수' })
   snapshotProductExpireDay: number | null;
 

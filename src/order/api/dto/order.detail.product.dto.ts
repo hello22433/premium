@@ -1,5 +1,4 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IOrderDeliveryMethod } from '../../../delivery/interface/order.delivery.method';
 import { IOrderDeliveryStatus } from '../../../delivery/interface/order.delivery.status';
 import { IOrderSendMethod } from '../../interface/order.send.method';
 import { OrderEmailSendType } from '../../domain/order.email.send.type';
@@ -83,6 +82,23 @@ export class OrderViewDeliveryDto extends OrderDeliveryViewCommonDto {
     description: '재발송 여부',
   })
   isResent: boolean;
+}
+
+export class OrderTestDeliveryHistoryDto {
+  @ApiProperty({
+    description: '테스트 발송 순번',
+  })
+  sequence: number;
+
+  @ApiProperty({
+    description: '테스트 발송 수신 번호 전화번호 혹은 이메일',
+  })
+  deliveryTarget: string;
+
+  @ApiProperty({
+    description: '테스트 발송 시각 ex) yyyy-MM-ddTHH:mm:ss',
+  })
+  sendRequestAt: string;
 }
 
 export class OrderDeliveryCompleteReportViewDto extends OrderDeliveryViewCommonDto {
@@ -238,6 +254,12 @@ export class OrderDetailProductDto {
     description: '해당 상품의 미해결 발송 실패 건수 (재발송 완료 건 제외)',
   })
   failCount: number;
+
+  @ApiProperty({
+    type: [OrderTestDeliveryHistoryDto],
+    description: '테스트 발송 이력',
+  })
+  testDeliveryHistories: OrderTestDeliveryHistoryDto[];
 
   @ApiProperty({
     description:

@@ -57,6 +57,24 @@ export class TestOrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'int', nullable: true, comment: 'FK) product.id 초이스 쿠폰 선택 시' })
   choiceSelectProductId: number | null;
 
+  @Column({ type: 'datetime', nullable: true, comment: '발송 여부 불명(WAIT) 잔류 경보 시각. 중복 경보 방지용' })
+  opsEscalatedAt: Date | null;
+
+  @Column({
+    type: 'tinyint',
+    width: 1,
+    default: 1,
+    comment: '한도(test_delivery_count) 선점 건 여부. 운영/최고관리자 발송은 false — 잔류 정리 시 한도 회수 대상에서 제외',
+  })
+  limitClaimed: boolean;
+
+  @Column({
+    type: 'datetime',
+    nullable: true,
+    comment: '발송 성공 확정 시각. NULL 이면 확정 전이거나 이 기능 이전 legacy 행이라 성공 이력으로 노출하지 않는다',
+  })
+  confirmedAt: Date | null;
+
   @ManyToOne(() => OrderProductMappingEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'order_product_mapping_id' })
   orderProductMapping: OrderProductMappingEntity;

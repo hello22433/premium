@@ -102,6 +102,14 @@ import { DualApprovalEntity } from '../entity/dual.approval.entity';
 import { DualApprovalAuditEntity } from '../entity/dual.approval.audit.entity';
 import { WorkflowResolutionEntity } from '../entity/workflow.resolution.entity';
 import { StaleExternalResponseEntity } from '../entity/stale.external.response.entity';
+import { PartnerDiscountScopeEntity } from '../entity/partner.discount.scope.entity';
+import { PartnerDiscountPolicyEpochEntity } from '../entity/partner.discount.policy.epoch.entity';
+import { PartnerDiscountHistoryEntity } from '../entity/partner.discount.history.entity';
+import { PartnerSettleLedgerEntity } from '../entity/partner.settle.ledger.entity';
+import { PartnerSettleTransitionObservationEntity } from '../entity/partner.settle.transition.observation.entity';
+import { PartnerProviderEventInboxEntity } from '../entity/partner.provider.event.inbox.entity';
+import { PartnerCreditConfigEntity } from '../entity/partner.credit.config.entity';
+import { PartnerCreditConfigHistoryEntity } from '../entity/partner.credit.config.history.entity';
 import { BankDepositEntity } from '../entity/bank.deposit.entity';
 
 @Module({
@@ -212,6 +220,14 @@ import { BankDepositEntity } from '../entity/bank.deposit.entity';
           DualApprovalAuditEntity,
           WorkflowResolutionEntity,
           StaleExternalResponseEntity,
+          PartnerDiscountScopeEntity,
+          PartnerDiscountPolicyEpochEntity,
+          PartnerDiscountHistoryEntity,
+          PartnerSettleLedgerEntity,
+          PartnerSettleTransitionObservationEntity,
+          PartnerProviderEventInboxEntity,
+          PartnerCreditConfigEntity,
+          PartnerCreditConfigHistoryEntity,
           BankDepositEntity,
         ],
         extra: {

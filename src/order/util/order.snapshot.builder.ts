@@ -159,9 +159,13 @@ export type LineProductSnapshotPart = Pick<
   | 'snapshotProductBrandName'
   | 'snapshotProductExpireDay'
   | 'snapshotProductImagePath'
+  | 'snapshotProductCategory'
+  | 'snapshotProductClassificationId'
 >;
 
 // 주문 시점 상품 정보 박제. product.brand가 로드된 ProductEntity를 넘겨야 함.
+// category/classificationId는 협력사 정산조건 매칭(findMatchingDiscount) 입력이라, 정산 시점에
+// live product를 다시 읽지 않도록 여기서 함께 박제한다.
 export function buildLineProductSnapshot(product: ProductEntity): LineProductSnapshotPart {
   return {
     snapshotProductPrice: product.price ?? null,
@@ -169,6 +173,8 @@ export function buildLineProductSnapshot(product: ProductEntity): LineProductSna
     snapshotProductBrandName: product.brand?.nameKorean ?? '',
     snapshotProductExpireDay: product.expireDay ?? null,
     snapshotProductImagePath: product.imagePath ?? null,
+    snapshotProductCategory: product.category ?? null,
+    snapshotProductClassificationId: product.classificationId ?? null,
   };
 }
 
