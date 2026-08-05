@@ -108,6 +108,8 @@ import { PartnerDiscountHistoryEntity } from '../entity/partner.discount.history
 import { PartnerSettleLedgerEntity } from '../entity/partner.settle.ledger.entity';
 import { PartnerSettleTransitionObservationEntity } from '../entity/partner.settle.transition.observation.entity';
 import { PartnerProviderEventInboxEntity } from '../entity/partner.provider.event.inbox.entity';
+import { PartnerCreditConfigEntity } from '../entity/partner.credit.config.entity';
+import { PartnerCreditConfigHistoryEntity } from '../entity/partner.credit.config.history.entity';
 
 @Module({
   imports: [
@@ -223,6 +225,8 @@ import { PartnerProviderEventInboxEntity } from '../entity/partner.provider.even
           PartnerSettleLedgerEntity,
           PartnerSettleTransitionObservationEntity,
           PartnerProviderEventInboxEntity,
+          PartnerCreditConfigEntity,
+          PartnerCreditConfigHistoryEntity,
         ],
         extra: {
           connectionLimit: +configService.get('DATABASE_CONNECTION_LIMIT', 50),
