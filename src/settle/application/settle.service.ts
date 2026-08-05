@@ -27,6 +27,7 @@ import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { OrderEntity } from '../../entity/order.entity';
 import { readBillingView, readLineProductView, readOperationPersonName } from '../../order/util/order.snapshot.builder';
 import { IOrderDateType } from '../../order/interface/order.date.type';
+import { IOrderStatus } from '../../order/interface/order.status';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, In, IsNull, Not, Repository, SelectQueryBuilder } from 'typeorm';
 import {
@@ -1811,6 +1812,9 @@ export class SettleService {
 
     return {
       orderIds: orders.map((o) => o.id),
+      deliveryCompleteOrderIds: orders
+        .filter((order) => order.status === IOrderStatus.DELIVERY_COMPLETE)
+        .map((order) => order.id),
       userId: firstOrder.clientUserId ?? firstOrder.userId,
       userPersonName: firstBilling.personName,
       managers,

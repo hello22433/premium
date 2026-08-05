@@ -75,7 +75,11 @@ import {
   resolveDestructionCertificateGate,
   destructionCertificateBlockMessage,
 } from '../domain/destruction.certificate.gate';
-import { KIND_CERTAINTY, EffectiveDestroyAtKind, resolveOrderEffectiveDestroyAt } from '../domain/effective.destroy.date';
+import {
+  KIND_CERTAINTY,
+  EffectiveDestroyAtKind,
+  resolveOrderEffectiveDestroyAt,
+} from '../domain/effective.destroy.date';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { TestOrderDeliveryEntity } from '../../entity/test.order.delivery.entity';
 import { ProductEntity } from '../../entity/product.entity';
@@ -761,7 +765,6 @@ export class OrderService {
       );
     }
 
-
     if (status) {
       queryBuilder = queryBuilder.andWhere('order.status = :status', { status });
     }
@@ -797,10 +800,63 @@ export class OrderService {
     }
   }
 
+  private async findReportOrderInViewScope(
+    user: ILoginUserInfo,
+    orderId: number,
+    withReportRelations = false,
+  ): Promise<OrderEntity> {
+    let queryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.user', 'user')
+      .withDeleted()
+      .where('order.id = :id', { id: orderId })
+      .andWhere('order.deletedAt IS NULL');
+
+    if (withReportRelations) {
+      queryBuilder = queryBuilder
+        .leftJoinAndSelect('order.operationUser', 'operationUser')
+        .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+        .leftJoinAndSelect('orderProductMappings.product', 'product')
+        .leftJoinAndSelect('product.brand', 'brand')
+        .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries');
+    }
+
+    const currentUser = await this.userRepository.findOne({
+      where: { id: user.id },
+      select: ['id', 'companyId', 'departmentId'],
+    });
+    const viewScope = await this.userViewScopeRepository.findOne({
+      where: { userId: user.id },
+    });
+    queryBuilder = this.applyViewScopeFilter(queryBuilder, user, currentUser, viewScope);
+
+    const order = await queryBuilder.getOne();
+
+    if (!order) {
+      throw new BadRequestException('주문이 존재하지 않습니다.');
+    }
+
+    return order;
+  }
+
+  private async findDeliveryCompleteOrderInViewScope(
+    user: ILoginUserInfo,
+    orderId: number,
+    withReportRelations = false,
+  ): Promise<OrderEntity> {
+    const order = await this.findReportOrderInViewScope(user, orderId, withReportRelations);
+
+    if (order.status !== IOrderStatus.DELIVERY_COMPLETE) {
+      throw new BadRequestException('발송 완료된 건에 대해서만 조회 가능합니다.');
+    }
+
+    return order;
+  }
+
   private async findOrderProductMappingInViewScope(
     user: ILoginUserInfo,
     orderProductMappingId: number,
-    relations: Array<'product' | 'product.partnerCompany'> = [],
+    relations: Array<'product' | 'product.brand' | 'product.partnerCompany'> = [],
   ): Promise<OrderProductMappingEntity | null> {
     let queryBuilder = this.orderProductMappingRepository
       .createQueryBuilder('orderProductMapping')
@@ -808,8 +864,16 @@ export class OrderService {
       .innerJoinAndSelect('order.user', 'user')
       .where('orderProductMapping.id = :id', { id: orderProductMappingId });
 
-    if (relations.includes('product') || relations.includes('product.partnerCompany')) {
+    if (
+      relations.includes('product') ||
+      relations.includes('product.brand') ||
+      relations.includes('product.partnerCompany')
+    ) {
       queryBuilder = queryBuilder.leftJoinAndSelect('orderProductMapping.product', 'product');
+    }
+
+    if (relations.includes('product.brand')) {
+      queryBuilder = queryBuilder.leftJoinAndSelect('product.brand', 'brand');
     }
 
     if (relations.includes('product.partnerCompany')) {
@@ -934,7 +998,12 @@ export class OrderService {
       };
 
       let productSendTimes:
-        | { productName: string; sendType: 'IMMEDIATE' | 'RESERVE'; sendRequestAt: string | null; actualSendAt: string | null }[]
+        | {
+            productName: string;
+            sendType: 'IMMEDIATE' | 'RESERVE';
+            sendRequestAt: string | null;
+            actualSendAt: string | null;
+          }[]
         | undefined;
       if (isMixedSendType || distinctReserveMinuteSlots >= 2) {
         // 배열 산출: sendType ∈ {RESERVE, IMMEDIATE}인 전 매핑 (Case-G 포함, 슬롯 산정과 독립)
@@ -1012,7 +1081,9 @@ export class OrderService {
         deliveryCancel: string;
       }>();
 
-    const failedRows = await (await this.buildOrderListQuery(user, { ...params, status: undefined, hasFailedDelivery: true }))
+    const failedRows = await (
+      await this.buildOrderListQuery(user, { ...params, status: undefined, hasFailedDelivery: true })
+    )
       .clone()
       .orderBy()
       .select('COUNT(DISTINCT order.id)', 'failed')
@@ -1903,21 +1974,7 @@ export class OrderService {
     user: ILoginUserInfo,
     ipAddress: string,
   ): Promise<void> {
-    const queryBuilder = this.orderRepository
-      .createQueryBuilder('order')
-      .innerJoinAndSelect('order.user', 'user')
-      .leftJoinAndSelect('order.operationUser', 'operationUser')
-      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-      .leftJoinAndSelect('orderProductMappings.product', 'product')
-      .leftJoinAndSelect('product.brand', 'brand')
-      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-      .where('order.id = :id', { id: getBody.id });
-
-    const order = await queryBuilder.getOne();
-
-    if (!order) {
-      throw new BadRequestException('주문이 존재하지 않습니다.');
-    }
+    const order = await this.findDeliveryCompleteOrderInViewScope(user, getBody.id);
 
     order.deliveryCompleteReportCount++;
     order.deliveryReportLastSource = getBody.source || 'DOCUMENT';
@@ -2043,21 +2100,7 @@ export class OrderService {
     user: ILoginUserInfo,
     ipAddress: string,
   ): Promise<void> {
-    const queryBuilder = this.orderRepository
-      .createQueryBuilder('order')
-      .innerJoinAndSelect('order.user', 'user')
-      .leftJoinAndSelect('order.operationUser', 'operationUser')
-      .leftJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
-      .leftJoinAndSelect('orderProductMappings.product', 'product')
-      .leftJoinAndSelect('product.brand', 'brand')
-      .leftJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
-      .where('order.id = :id', { id: getBody.id });
-
-    const order = await queryBuilder.getOne();
-
-    if (!order) {
-      throw new BadRequestException('주문이 존재하지 않습니다.');
-    }
+    const order = await this.findDeliveryCompleteOrderInViewScope(user, getBody.id);
 
     order.orderCompleteReportCount++;
     order.transactionStatementLastSource = getBody.source || 'DOCUMENT';
@@ -2086,7 +2129,7 @@ export class OrderService {
     user: ILoginUserInfo,
     ipAddress: string,
   ): Promise<void> {
-    await this.assertDestructionCertificateIssuable(getBody.id);
+    await this.assertDestructionCertificateIssuable(getBody.id, user);
 
     // activity_log에 기록
     await this.activityLogService.createLog({
@@ -2186,7 +2229,8 @@ export class OrderService {
         break;
       }
       const destroyAt = resolved.at;
-      if (multipleKind === null || KIND_CERTAINTY[resolved.kind] < KIND_CERTAINTY[multipleKind]) multipleKind = resolved.kind;
+      if (multipleKind === null || KIND_CERTAINTY[resolved.kind] < KIND_CERTAINTY[multipleKind])
+        multipleKind = resolved.kind;
       if (multipleEffectiveDestroyAt === null || destroyAt > multipleEffectiveDestroyAt) {
         multipleEffectiveDestroyAt = destroyAt;
       }
@@ -5623,16 +5667,11 @@ export class OrderService {
     const canBypassTestDeliveryLimit =
       user.authority === IUserAuthority.SUPER_ADMIN || user.authority === IUserAuthority.OPERATION_ADMIN;
 
-    // 알림톡일 경우 order.user도 필요하므로 항상 조인
-    const orderProductMapping = await this.orderProductMappingRepository
-      .createQueryBuilder('orderProductMapping')
-      .innerJoinAndSelect('orderProductMapping.product', 'product')
-      .innerJoinAndSelect('orderProductMapping.order', 'order')
-      .innerJoinAndSelect('product.brand', 'brand')
-      .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
-      .innerJoinAndSelect('order.user', 'user')
-      .where('orderProductMapping.id = :id', { id: orderProductMappingId })
-      .getOne();
+    const orderProductMapping = await this.findOrderProductMappingInViewScope(user, orderProductMappingId, [
+      'product',
+      'product.brand',
+      'product.partnerCompany',
+    ]);
 
     if (!orderProductMapping) {
       throw new BadRequestException('해당 주문-상품이 존재하지 않습니다.');
@@ -6009,11 +6048,23 @@ export class OrderService {
       sendContent: null,
     };
 
-    const order = await this.orderRepository.findOne({
-      where: {
-        id: orderId,
-      },
+    let currentOrderQueryBuilder = this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoin('order.user', 'user')
+      .withDeleted()
+      .where('order.id = :id', { id: orderId })
+      .andWhere('order.deletedAt IS NULL');
+
+    const currentUser = await this.userRepository.findOne({
+      where: { id: user.id },
+      select: ['id', 'companyId', 'departmentId'],
     });
+    const viewScope = await this.userViewScopeRepository.findOne({
+      where: { userId: user.id },
+    });
+    currentOrderQueryBuilder = this.applyViewScopeFilter(currentOrderQueryBuilder, user, currentUser, viewScope);
+
+    const order = await currentOrderQueryBuilder.getOne();
 
     if (!order) {
       return response;
@@ -6022,7 +6073,7 @@ export class OrderService {
     const queryBuilder = this.orderProductMappingRepository
       .createQueryBuilder('orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
-      .where('orderProductMapping.id != :id', { id: orderId })
+      .where('order.id != :id', { id: orderId })
       .andWhere('order.userId = :userId', { userId: user.id })
       .andWhere('order.status IN (:...statusList)', {
         statusList: [IOrderStatus.DELIVERY_REQUEST, IOrderStatus.DELIVERY_CONFIRMED, IOrderStatus.DELIVERY_COMPLETE],
@@ -6067,8 +6118,16 @@ export class OrderService {
       throw new BadRequestException('임시저장 상태에서는 독려문자를 설정할 수 없습니다.');
     }
 
+    if (encourageDay === undefined) {
+      throw new BadRequestException('독려일을 입력해주세요.');
+    }
+
     // 독려문자 사용 설정 시 유효기간 검증
-    if (encourageDay !== null) {
+    if (encourageDay != null) {
+      if (!Number.isInteger(encourageDay) || encourageDay < 1) {
+        throw new BadRequestException('독려일은 1 이상의 정수여야 합니다.');
+      }
+
       // 해당 상품의 배송 정보 중 가장 빠른 만료일 조회
       const orderDelivery = await this.orderDeliveryRepository
         .createQueryBuilder('orderDelivery')
@@ -6223,12 +6282,14 @@ export class OrderService {
    * 폐기후재발행 롤백으로 soft-delete 된 배송건에도 미파기 PII 가 남을 수 있어,
    * withDeleted 로 조회해 목록 게이트와 동일한 집합을 판정한다.
    */
-  private async assertDestructionCertificateIssuable(orderId: number): Promise<void> {
-    const order = await this.orderRepository.findOne({
-      where: { id: orderId },
-      relations: ['orderProductMappings', 'orderProductMappings.orderDeliveries'],
-      withDeleted: true,
-    });
+  private async assertDestructionCertificateIssuable(orderId: number, user?: ILoginUserInfo): Promise<void> {
+    const order = user
+      ? await this.findReportOrderInViewScope(user, orderId, true)
+      : await this.orderRepository.findOne({
+          where: { id: orderId },
+          relations: ['orderProductMappings', 'orderProductMappings.orderDeliveries'],
+          withDeleted: true,
+        });
 
     if (!order) {
       throw new BadRequestException('주문이 존재하지 않습니다.');
@@ -6259,14 +6320,7 @@ export class OrderService {
   ): Promise<{ success: boolean; message: string }> {
     const { orderId, to, subject, content, pdfBase64, pdfFileName, companyType } = getBody;
 
-    // 주문 존재 여부 확인
-    const order = await this.orderRepository.findOne({
-      where: { id: orderId },
-    });
-
-    if (!order) {
-      throw new BadRequestException('해당 주문이 존재하지 않습니다.');
-    }
+    await this.findDeliveryCompleteOrderInViewScope(user, orderId);
 
     // 이메일 주소 파싱 (첫번째: to, 나머지: cc)
     const emails = to
@@ -6361,7 +6415,7 @@ export class OrderService {
     user: ILoginUserInfo,
     ipAddress: string,
   ): Promise<{ success: boolean; message: string }> {
-    await this.assertDestructionCertificateIssuable(getBody.orderId);
+    await this.assertDestructionCertificateIssuable(getBody.orderId, user);
 
     return this.sendReportEmail(getBody, user, ipAddress, {
       requestUrl: '/order/destruction-certificate/report/email',

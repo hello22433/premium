@@ -3,6 +3,7 @@ import {
   ArrayMaxSize,
   IsArray,
   IsBoolean,
+  IsDefined,
   IsEnum,
   IsIn,
   IsInt,
@@ -13,6 +14,7 @@ import {
   Matches,
   MaxLength,
   Min,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional, PickType } from '@nestjs/swagger';
@@ -23,7 +25,6 @@ import { IOrderType } from '../interface/order.type';
 import { IOrderSection } from '../interface/order.section';
 import { Transform, Type } from 'class-transformer';
 import { OrderSettleCreateDto } from './dto/order.settle.create.dto';
-import { IOrderSendMethod } from '../interface/order.send.method';
 import { IOrderSendingType } from '../interface/order.sending.type';
 import { IOrderDateType } from '../interface/order.date.type';
 import { CompanyType } from '../../common/domain/company.type';
@@ -59,7 +60,8 @@ export class OrderGetListReqDto extends PagingReqDto {
   @IsEnum(IOrderStatus)
   status?: IOrderStatus;
   @ApiPropertyOptional({
-    description: '미해결 발송 실패 건 포함 주문만 조회한다. FAIL/FAIL_SMS 이면서 재발송되지 않은(resendAt IS NULL) 활성 발송건이 하나라도 있으면 해당한다.',
+    description:
+      '미해결 발송 실패 건 포함 주문만 조회한다. FAIL/FAIL_SMS 이면서 재발송되지 않은(resendAt IS NULL) 활성 발송건이 하나라도 있으면 해당한다.',
     default: false,
   })
   @IsOptional()
@@ -119,7 +121,6 @@ export class OrderGetListReqDto extends PagingReqDto {
   @IsOptional()
   @IsEnum(IOrderSendingType)
   sendingType?: IOrderSendingType = IOrderSendingType.ALL;
-
 }
 
 export class OrderGetListSummaryReqDto extends PickType(OrderGetListReqDto, [
@@ -636,12 +637,15 @@ export class OrderUpdateEncourageDayReqParamDto {
 }
 
 export class OrderUpdateEncourageDayReqBodyDto {
-  @ApiPropertyOptional({
-    description: '독려 문자 day (null이면 미사용)',
+  @ApiProperty({
+    description: '독려 문자 day (1 이상의 정수, null이면 미사용)',
+    nullable: true,
   })
   // ===================================
-  @IsOptional()
-  @IsNumber()
+  @IsDefined()
+  @ValidateIf((_object, value) => value !== null)
+  @IsInt()
+  @Min(1)
   encourageDay: number | null;
 }
 
