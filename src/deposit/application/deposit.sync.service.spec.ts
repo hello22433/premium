@@ -87,14 +87,45 @@ describe('DepositSyncService', () => {
   };
 
   describe('upsert 컬럼 소유권', () => {
-    it('충돌 시 갱신 컬럼에 matched_user_id / match_status 가 없다 (매칭 되돌림 방지)', async () => {
+    // ⚠️ 이 테스트는 not.toContain 만으로는 부족하다 — 컬럼 이름이 바뀌면(matched_user_id →
+    // matched_owner_id) 죽은 이름을 검사하며 조용히 통과한다. 실제로 그런 상태였다.
+    // 그래서 "프리미엄 소유 컬럼이 갱신 목록에 없다"와 "갱신 목록이 정확히 이 집합이다"를
+    // 함께 고정한다. 새 원본 컬럼이 늘면 아래 목록도 함께 갱신해야 하고, 그 강제가 목적이다.
+    const PREMIUM_OWNED = ['matched_owner_type', 'matched_owner_id', 'match_status'];
+    const SOURCE_OWNED = [
+      'tx_date',
+      'tx_type',
+      'account_no',
+      'account_name',
+      'erp_partner_code',
+      'erp_partner_name',
+      'depositor',
+      'depositor_raw',
+      'amount',
+      'balance',
+      'voucher_no',
+      'source_scraped_at',
+      'synced_at',
+    ];
+
+    it('갱신 컬럼 집합이 원본 소유 컬럼과 정확히 일치한다 (프리미엄 컬럼 매칭 되돌림 방지)', async () => {
       const { sut, insertCalls } = buildSut({ pages: [[item()]] });
 
       await sut.syncRange('2026-07-01', '2026-07-31');
 
       expect(insertCalls).toHaveLength(1);
-      expect(insertCalls[0].overwrite).not.toContain('matched_user_id');
-      expect(insertCalls[0].overwrite).not.toContain('match_status');
+      // 집합 동등성 — 프리미엄 컬럼이 하나라도 섞이면 여기서 깨진다
+      expect([...insertCalls[0].overwrite].sort()).toEqual([...SOURCE_OWNED].sort());
+    });
+
+    it('프리미엄 소유 컬럼은 어느 것도 갱신 대상이 아니다', async () => {
+      const { sut, insertCalls } = buildSut({ pages: [[item()]] });
+
+      await sut.syncRange('2026-07-01', '2026-07-31');
+
+      for (const column of PREMIUM_OWNED) {
+        expect(insertCalls[0].overwrite).not.toContain(column);
+      }
     });
 
     it('충돌 키는 dedup_key 이고, 원본 컬럼은 갱신 대상에 포함된다', async () => {

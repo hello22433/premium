@@ -92,6 +92,13 @@ describe('DepositService.getList', () => {
     ...overrides,
   });
 
+  /** 감사 맥락은 컨트롤러가 항상 채워 넘긴다(getList 의 필수 인자). */
+  const auditContext = {
+    user: { id: 3, email: 'admin@test.local', authority: 'SUPER_ADMIN' } as any,
+    ipAddress: '10.0.0.1',
+    userAgent: 'jest',
+  };
+
   beforeEach(() => jest.clearAllMocks());
 
   describe('PII 복호화', () => {
@@ -101,7 +108,7 @@ describe('DepositService.getList', () => {
       ]);
       const { sut } = makeSut(qb);
 
-      const result = await sut.getList(query());
+      const result = await sut.getList(query(), auditContext);
 
       expect(result.list[0].depositor).toBe('두성종이');
       expect(result.list[0].depositorRaw).toBe('(가상)  두성종이');
@@ -112,7 +119,7 @@ describe('DepositService.getList', () => {
       const { qb } = buildQbSpy([row({ depositorRaw: null, erpPartnerCode: null })]);
       const { sut } = makeSut(qb);
 
-      const result = await sut.getList(query());
+      const result = await sut.getList(query(), auditContext);
 
       expect(result.list[0].depositorRaw).toBeNull();
       expect(result.list[0].erpPartnerCode).toBeNull();
@@ -124,7 +131,7 @@ describe('DepositService.getList', () => {
       const { qb } = buildQbSpy([row()]);
       const { sut } = makeSut(qb);
 
-      const result = await sut.getList(query());
+      const result = await sut.getList(query(), auditContext);
 
       expect(result.list[0].amount).toBe(350000);
       expect(result.list[0].balance).toBe(45717465);
@@ -134,7 +141,7 @@ describe('DepositService.getList', () => {
       const { qb } = buildQbSpy([row({ txDate: '2026-07-29' })]);
       const { sut } = makeSut(qb);
 
-      const result = await sut.getList(query());
+      const result = await sut.getList(query(), auditContext);
 
       expect(result.list[0].txDate).toBe('2026-07-29');
     });
@@ -143,7 +150,7 @@ describe('DepositService.getList', () => {
       const { qb } = buildQbSpy([row({ txType: '출금' })]);
       const { sut } = makeSut(qb);
 
-      const result = await sut.getList(query());
+      const result = await sut.getList(query(), auditContext);
 
       expect(result.list[0].txType).toBe(DepositTxType.WITHDRAW);
       expect(result.list[0].txTypeLabel).toBe('출금');
@@ -153,7 +160,7 @@ describe('DepositService.getList', () => {
       const { qb } = buildQbSpy([row({ txType: '이체' })]);
       const { sut } = makeSut(qb);
 
-      const result = await sut.getList(query());
+      const result = await sut.getList(query(), auditContext);
 
       expect(result.list[0].txType).toBeNull();
       expect(result.list[0].txTypeLabel).toBe('이체');
@@ -165,7 +172,7 @@ describe('DepositService.getList', () => {
       const { qb, orderByCalls } = buildQbSpy();
       const { sut } = makeSut(qb);
 
-      await sut.getList(query());
+      await sut.getList(query(), auditContext);
 
       expect(orderByCalls).toEqual([
         ['deposit.txDate', 'DESC'],
@@ -179,7 +186,7 @@ describe('DepositService.getList', () => {
       const { qb, andWhereCalls } = buildQbSpy();
       const { sut } = makeSut(qb);
 
-      await sut.getList(query({ startAt: '2026-07-01', endAt: '2026-07-31' }));
+      await sut.getList(query({ startAt: '2026-07-01', endAt: '2026-07-31' }), auditContext);
 
       expect(andWhereCalls).toContainEqual(['deposit.txDate >= :startAt', { startAt: '2026-07-01' }]);
       expect(andWhereCalls).toContainEqual(['deposit.txDate <= :endAt', { endAt: '2026-07-31' }]);
@@ -189,7 +196,7 @@ describe('DepositService.getList', () => {
       const { qb, andWhereCalls } = buildQbSpy();
       const { sut } = makeSut(qb);
 
-      await sut.getList(query({ txType: DepositTxType.WITHDRAW }));
+      await sut.getList(query({ txType: DepositTxType.WITHDRAW }), auditContext);
 
       expect(andWhereCalls).toContainEqual(['deposit.txType = :txType', { txType: '출금' }]);
     });
@@ -198,7 +205,7 @@ describe('DepositService.getList', () => {
       const { qb, andWhereCalls } = buildQbSpy();
       const { sut } = makeSut(qb);
 
-      await sut.getList(query({ accountNo: '280***01757104' }));
+      await sut.getList(query({ accountNo: '280***01757104' }), auditContext);
 
       expect(andWhereCalls).toContainEqual(['deposit.accountNo = :accountNo', { accountNo: '280***01757104' }]);
     });
@@ -207,7 +214,7 @@ describe('DepositService.getList', () => {
       const { qb, andWhereCalls } = buildQbSpy();
       const { sut } = makeSut(qb);
 
-      await sut.getList(query());
+      await sut.getList(query(), auditContext);
 
       expect(andWhereCalls).toHaveLength(0);
     });
@@ -216,9 +223,9 @@ describe('DepositService.getList', () => {
       const { qb } = buildQbSpy();
       const { sut } = makeSut(qb);
 
-      await expect(sut.getList(query({ startAt: '2026-07-31', endAt: '2026-07-01' }))).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+      await expect(
+        sut.getList(query({ startAt: '2026-07-31', endAt: '2026-07-01' }), auditContext),
+      ).rejects.toBeInstanceOf(BadRequestException);
       expect(qb.getManyAndCount).not.toHaveBeenCalled();
     });
   });
@@ -237,7 +244,7 @@ describe('DepositService.getList', () => {
       ]);
       const { sut } = makeSut(qb);
 
-      await sut.getList(query({ depositor: '두성' }));
+      await sut.getList(query({ depositor: '두성' }), auditContext);
 
       expect(andWhereCalls).toContainEqual([
         'deposit.depositor IN (:...depositorCiphers)',
@@ -249,7 +256,7 @@ describe('DepositService.getList', () => {
       const { qb, andWhereCalls } = buildQbSpy([row()]);
       const { sut } = makeSut(qb);
 
-      await sut.getList(query({ depositor: '두성' }));
+      await sut.getList(query({ depositor: '두성' }), auditContext);
 
       expect(andWhereCalls.some(([clause]) => clause.includes('LIKE'))).toBe(false);
     });
@@ -259,7 +266,7 @@ describe('DepositService.getList', () => {
       qb.getRawMany.mockResolvedValue([{ depositor: enc('한빛문구') }]);
       const { sut } = makeSut(qb);
 
-      const result = await sut.getList(query({ depositor: '없는이름' }));
+      const result = await sut.getList(query({ depositor: '없는이름' }), auditContext);
 
       expect(result).toEqual({ list: [], totalCount: 0, totalPage: 0, currentPage: 1 });
       expect(qb.getManyAndCount).not.toHaveBeenCalled();
@@ -270,7 +277,7 @@ describe('DepositService.getList', () => {
       qb.getRawMany.mockResolvedValue([{ depositor: enc('KB68416088') }]);
       const { sut } = makeSut(qb);
 
-      await sut.getList(query({ depositor: 'kb684' }));
+      await sut.getList(query({ depositor: 'kb684' }), auditContext);
 
       expect(andWhereCalls).toContainEqual([
         'deposit.depositor IN (:...depositorCiphers)',
@@ -280,12 +287,6 @@ describe('DepositService.getList', () => {
   });
 
   describe('감사 로그', () => {
-    const auditContext = {
-      user: { id: 3, email: 'admin@test.local', authority: 'SUPER_ADMIN' } as any,
-      ipAddress: '10.0.0.1',
-      userAgent: 'jest',
-    };
-
     it('입금처를 검색하면 PII_SEARCH 를 남기고 검색어는 마스킹한다', async () => {
       const { qb } = buildQbSpy([row()]);
       const { sut, activityLogService } = makeSut(qb);
@@ -355,7 +356,7 @@ describe('DepositService.getList', () => {
       const { qb } = buildQbSpy([row()], 25);
       const { sut } = makeSut(qb);
 
-      const result = await sut.getList(query({ page: 3, take: 10 }));
+      const result = await sut.getList(query({ page: 3, take: 10 }), auditContext);
 
       expect(qb.take).toHaveBeenCalledWith(10);
       expect(qb.skip).toHaveBeenCalledWith(20);
@@ -385,7 +386,7 @@ describe('DepositService.getList', () => {
       const { qb } = buildQbSpy([row({ matchedOwnerType: null, matchedOwnerId: null })]);
       const { sut, walletAccountRepository } = makeSut(qb);
 
-      const result = await sut.getList(query());
+      const result = await sut.getList(query(), auditContext);
 
       expect(walletAccountRepository.createQueryBuilder).not.toHaveBeenCalled();
       expect(result.list[0].matchedOwnerType).toBeNull();
@@ -402,7 +403,7 @@ describe('DepositService.getList', () => {
       const { walletQb, captured } = buildWalletQb([{ settlementCode: 'company-7', businessName: '두성종이' }]);
       const { sut, walletAccountRepository } = makeSut(qb, walletQb);
 
-      const result = await sut.getList(query());
+      const result = await sut.getList(query(), auditContext);
 
       expect(walletAccountRepository.createQueryBuilder).toHaveBeenCalledTimes(1);
       expect(captured.codes).toEqual(['company-7']);
@@ -415,7 +416,7 @@ describe('DepositService.getList', () => {
       const { walletQb } = buildWalletQb([]);
       const { sut } = makeSut(qb, walletQb);
 
-      const result = await sut.getList(query());
+      const result = await sut.getList(query(), auditContext);
 
       expect(result.list[0].matchedOwnerId).toBe('company-999');
       expect(result.list[0].matchedOwnerName).toBeNull();
@@ -432,7 +433,7 @@ describe('DepositService.getList', () => {
       const { walletQb, captured } = buildWalletQb([{ settlementCode: 'company-7', businessName: '두성종이' }]);
       const { sut } = makeSut(qb, walletQb);
 
-      const result = await sut.getList(query());
+      const result = await sut.getList(query(), auditContext);
 
       // 미지원 타입의 id 가 정산코드 조회 조건에 섞여 들어가지 않는다
       expect(captured.codes).toEqual(['company-7']);

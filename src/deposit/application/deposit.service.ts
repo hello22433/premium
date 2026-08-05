@@ -60,7 +60,12 @@ export class DepositService {
     private activityLogService: ActivityLogService,
   ) {}
 
-  async getList(getQuery: DepositGetListReqQueryDto, audit?: DepositListAuditContext): Promise<DepositGetListResDto> {
+  /**
+   * `audit` 는 **필수**다. optional 로 두면 다른 모듈이 `getList({ depositor })` 를 호출해
+   * 감사 기록 없이 실명 검색을 할 수 있게 된다(이 서비스는 모듈 밖으로 export 된다).
+   * 호출부가 한 곳뿐이라 비용 없이 타입으로 강제할 수 있다.
+   */
+  async getList(getQuery: DepositGetListReqQueryDto, audit: DepositListAuditContext): Promise<DepositGetListResDto> {
     const { startAt, endAt, txType, matchStatus, depositor, accountNo, page, take } = getQuery;
 
     // 뒤집힌 기간은 조용히 0건을 돌려주면 "데이터가 없다"로 오해되므로 입력 오류로 끊는다.
@@ -92,9 +97,7 @@ export class DepositService {
       // 0건이어도 "그 이름을 조회했다"는 사실 자체가 감사 대상이다. 오히려 이름을 바꿔가며
       // 훑는 행위는 0건 검색으로 나타나므로, 0건을 빼면 가장 수상한 패턴이 로그에서 사라진다.
       // (부재의 확인도 정보다 — "이 사람은 우리 고객이 아니다"를 알아낸 것이다)
-      if (audit) {
-        await this.recordPiiSearchLog(depositor, audit);
-      }
+      await this.recordPiiSearchLog(depositor, audit);
       // 일치하는 입금처가 없으면 빈 결과. `IN ()` 는 SQL 오류라 조기 반환한다.
       if (ciphers.length === 0) {
         return { list: [], totalCount: 0, totalPage: 0, currentPage: page };
@@ -184,6 +187,12 @@ export class DepositService {
    * 같은 암호문이 되므로, 고유 암호문 목록을 뽑아 복호화한 뒤 평문으로 부분일치를 판정하고
    * 살아남은 암호문으로 되짚는다. 고유 입금처는 거래 건수보다 훨씬 적어(실측 4,893건 → 1,133개)
    * 이 왕복이 감당된다. 규모가 크게 늘면 캐시나 검색 전용 구조를 다시 검토해야 한다.
+   *
+   * ⚠️ `plain !== null` 은 복호화 실패를 거르지 못한다. safeDecryptDeliveryTarget 은 실패 시
+   * null 이 아니라 **원본 암호문을 그대로** 돌려주기 때문이다(null 은 입력이 falsy 일 때뿐).
+   * 따라서 키 교체 등으로 복호화가 깨진 행은 base64 문자열을 상대로 부분일치 판정을 받는다.
+   * 지금은 그게 레포 관례(목록 전체가 죽지 않게 하는 safe 계열)를 따른 결과라 그대로 두지만,
+   * 키 교체를 하게 되면 이 판정 경로를 먼저 손봐야 한다.
    */
   private async resolveDepositorCiphers(keyword: string): Promise<string[]> {
     const rows = await this.bankDepositRepository

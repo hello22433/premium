@@ -194,9 +194,15 @@ export class DepositSyncService {
       page += 1;
     }
 
+    // 상한 도달을 로그만 남기고 성공으로 돌려주면 안 된다. 원본이 상한(500×200=10만)을 넘는 순간
+    // mirrorCount < sourceTotal 이 매 주기 참으로 남아 백필이 재시작되고, 매번 같은 앞부분만
+    // 다시 받고 끊긴다 — 뒤쪽 구간은 영구히 안 들어오는데 로그는 "동기화 완료"를 찍는다.
+    // 상한의 존재 이유가 "무한 순회 방지"였으므로, 도달했다는 것은 이미 그 전제가 깨진 상태다.
+    // 영구 실패로 올려 사람이 보게 한다(다음 주기에 재시도해도 같은 자리에서 끊긴다).
     if (page >= MAX_PAGES) {
-      this.logger.error(
-        `페이지 상한(${MAX_PAGES})에 도달해 중단했습니다. 구간을 좁혀 백필하세요. from=${from} to=${to}`,
+      throw new DepositSourcePermanentError(
+        `페이지 상한(${MAX_PAGES})에 도달해 중단했습니다. ${fetched}건까지만 적재됐습니다. ` +
+          `구간을 좁혀(DEPOSIT_SYNC_BACKFILL_FROM) 백필하세요. from=${from} to=${to}`,
       );
     }
 

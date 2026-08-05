@@ -3,10 +3,13 @@
  *
  * ⚠️ 정본은 문서가 아니라 상대 구현이다.
  *   erp_macro/src/main/java/com/example/erp_macro/api/DepositController.java + DepositView.java
- * Spring Data 의 Page 를 그대로 돌려주므로 봉투가 content/totalElements/number 다.
- * (프리미엄 관례인 list/totalCount/currentPage 와 다르니 변환 지점을 여기 한 곳으로 모은다)
+ * 봉투는 전용 DTO(PageResponse)로 content/number/size/totalElements/totalPages 5개 키만 담는다
+ * (2026-08-05 확정. Spring Page 가 붙이던 pageable/sort/first/last 등은 없고, 버전 업글에도
+ * 형태가 안 바뀐다). 프리미엄 관례인 list/totalCount/currentPage 와 다르니 변환 지점을 여기
+ * 한 곳으로 모은다. 프리미엄은 content 와 totalElements 만 읽으므로 키가 늘거나 줄어도 무해하다.
  *
- * matchedUserId / matchStatus 는 프리미엄 소유라 이 응답에 없다 — 있어서도 안 된다.
+ * matchedOwnerType / matchedOwnerId / matchStatus 는 프리미엄 소유라 이 응답에 없다 —
+ * 있어서도 안 된다.
  */
 export interface DepositSourceItem {
   /** erp_macro 쪽 행 id. 프리미엄은 dedupKey 를 키로 쓰므로 참고용 */
