@@ -110,6 +110,7 @@ import { PartnerSettleTransitionObservationEntity } from '../entity/partner.sett
 import { PartnerProviderEventInboxEntity } from '../entity/partner.provider.event.inbox.entity';
 import { PartnerCreditConfigEntity } from '../entity/partner.credit.config.entity';
 import { PartnerCreditConfigHistoryEntity } from '../entity/partner.credit.config.history.entity';
+import { BankDepositEntity } from '../entity/bank.deposit.entity';
 
 @Module({
   imports: [
@@ -227,6 +228,7 @@ import { PartnerCreditConfigHistoryEntity } from '../entity/partner.credit.confi
           PartnerProviderEventInboxEntity,
           PartnerCreditConfigEntity,
           PartnerCreditConfigHistoryEntity,
+          BankDepositEntity,
         ],
         extra: {
           connectionLimit: +configService.get('DATABASE_CONNECTION_LIMIT', 50),

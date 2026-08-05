@@ -44,6 +44,7 @@ export enum UserAuthSubEnum {
   REFILL_SSG = 'REFILL_SSG', // 신세계 충전
   SETTLEMENT_CODE = 'SETTLEMENT_CODE', // 정산코드 관리
   SETTLE_CREDIT = 'SETTLE_CREDIT', // 여신관리 탭 조회 + 월한도 설정 (PR2)
+  DEPOSIT_HISTORY = 'DEPOSIT_HISTORY', // 입금내역 조회
 
   // 고객 센터
   NOTICE = 'NOTICE', // 공지사항

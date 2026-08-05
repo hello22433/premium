@@ -1,0 +1,78 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
+import { DepositSyncService } from './deposit.sync.service';
+
+/** 이 시간을 넘겨 진행 중으로 남아 있으면 죽은 실행으로 보고 다음 주기가 진입한다. */
+const MAX_BATCH_RUNTIME_MS = 10 * 60 * 1000;
+
+/**
+ * 입금내역 미러 동기화 스케줄.
+ *
+ * 기본은 꺼져 있다(DEPOSIT_SYNC_ENABLED=false). erp_macro 조회 API 와 회선이 준비되기 전에
+ * 켜지면 5분마다 실패 로그만 쌓이므로, 준비가 끝난 환경에서만 켠다.
+ *
+ * 초(秒) 오프셋 35 를 쓰는 이유: 이 레포의 다른 `*​/5` 배치가 이미
+ * :00 :15 :25 :30 :45 :50 :55 :58 을 점유하고 있다(delivery 5개, external_api 2개,
+ * customer_service 1개). 남은 자리는 :05 :10 :35 :40 이며 그중 하나를 쓴다.
+ * upsert 가 멱등이라 겹쳐도 데이터는 안전하지만, 같은 순간에 배치가 몰리면
+ * DB 커넥션 풀을 함께 잡아 서로의 지연을 키운다.
+ */
+@Injectable()
+export class DepositSyncSchedule {
+  private logger = new Logger('DEPOSIT_SYNC');
+  /**
+   * 진행 중 여부를 boolean 이 아니라 **시작 시각**으로 들고 있는다(delivery.batch.schedule 관례).
+   * 프라미스가 끝내 정착하지 않는 경우(행이 걸린 소켓 등) boolean 플래그는 영원히 잠긴 채로
+   * 남지만, 시각을 두면 상한을 넘긴 뒤 stale 로 판단해 다음 주기가 진입할 수 있다.
+   */
+  private syncStartedAt: number | null = null;
+
+  constructor(private depositSyncService: DepositSyncService) {}
+
+  @Cron('35 */5 * * * *', { timeZone: 'Asia/Seoul' })
+  async syncDeposits(): Promise<void> {
+    if (!this.depositSyncService.isEnabled()) {
+      return;
+    }
+
+    if (this.isStillRunning()) {
+      this.logger.log('[BATCH] 이전 입금내역 동기화 진행 중 — skip');
+      return;
+    }
+
+    // 자기 실행을 식별하는 토큰. stale 로 판정돼 다음 주기가 진입한 뒤 이 실행이 뒤늦게
+    // 끝나는 경우, finally 가 무조건 null 을 넣으면 **남이 방금 세운 플래그를 지운다**
+    // (그때부터 겹침 방지가 통째로 풀린다). 자기 것일 때만 지운다.
+    const startedAt = Date.now();
+    this.syncStartedAt = startedAt;
+    try {
+      await this.depositSyncService.syncRecent();
+    } catch (error) {
+      // 영구 실패(인증·설정·계약 불일치)는 다음 주기에도 똑같이 실패한다. 사람이 봐야 한다.
+      // 일시 실패는 다음 주기가 같은 구간을 다시 요청하므로 경고로 충분하다.
+      if (DepositSyncService.isPermanent(error)) {
+        this.logger.error(`동기화 영구 실패 — 설정/계약 확인 필요: ${(error as Error).message}`);
+      } else {
+        this.logger.warn(`동기화 일시 실패 — 다음 주기에 재시도합니다: ${(error as Error).message}`);
+      }
+    } finally {
+      if (this.syncStartedAt === startedAt) {
+        this.syncStartedAt = null;
+      }
+    }
+  }
+
+  private isStillRunning(): boolean {
+    if (this.syncStartedAt === null) {
+      return false;
+    }
+    const elapsed = Date.now() - this.syncStartedAt;
+    if (elapsed > MAX_BATCH_RUNTIME_MS) {
+      this.logger.warn(
+        `[BATCH] 입금내역 동기화 max runtime(${MAX_BATCH_RUNTIME_MS / 1000}s) 초과 — stale 플래그 해제 후 진입`,
+      );
+      return false;
+    }
+    return true;
+  }
+}

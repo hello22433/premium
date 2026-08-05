@@ -52,6 +52,7 @@ import { SidebarModule } from './sidebar/sidebar.module';
 import { WalletModule } from './wallet/wallet.module';
 import { ForbiddenWordModule } from './forbidden_word/forbidden.word.module';
 import { AccountLifecycleModule } from './account_lifecycle/account.lifecycle.module';
+import { DepositModule } from './deposit/deposit.module';
 
 @Module({
   imports: [
@@ -110,6 +111,7 @@ import { AccountLifecycleModule } from './account_lifecycle/account.lifecycle.mo
     WalletModule,
     ForbiddenWordModule,
     AccountLifecycleModule,
+    DepositModule,
   ],
   controllers: [AppController],
   providers: [],
