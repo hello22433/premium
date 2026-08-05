@@ -2,6 +2,7 @@ import { ApiProperty } from '@nestjs/swagger';
 import { IOrderDeliveryStatus } from '../../../delivery/interface/order.delivery.status';
 import { IOrderSendMethod } from '../../interface/order.send.method';
 import { OrderEmailSendType } from '../../domain/order.email.send.type';
+import { OrderEmailFinalSendMethod } from '../../domain/order.email.final.send.method';
 
 export class OrderProductDto {
   @ApiProperty({
@@ -216,6 +217,12 @@ export class OrderDetailProductDto {
     description: 'QR, URL',
   })
   emailSendType: OrderEmailSendType | null;
+
+  @ApiProperty({
+    description: '이메일 쿠폰 최종 발신 수단(ALIM_TALK|MMS). NULL=레거시(현행 알림톡 우선)',
+    nullable: true,
+  })
+  emailFinalSendMethod: OrderEmailFinalSendMethod | null;
 
   @ApiProperty({
     description: '이메일 사용 방법',
