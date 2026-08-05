@@ -12,7 +12,10 @@ export class LoggerMiddleware implements NestMiddleware {
   private passwordKeys = new Set(['password', 'newpassword', 'oldpassword', 'confirmpassword']);
   // 이름류: 'name' 단독 substring은 companyName/productName/fileName 등 광범위 오탐 → 2단어 합성어 조각만.
   // (userPersonName/bankAccountOwner 등 접두사 변형까지 substring으로 포착, 오탐은 없음)
-  private nameKeyParts = ['personname', 'receivername', 'recipientname', 'sendername', 'accountowner'];
+  // 'depositor' 는 입금내역 화면의 입금처(예금주 실명) 검색 파라미터다. 여기 등록하지 않으면
+  // activity_log 에는 마스킹해 남기면서 HTTP 접근 로그에는 실명이 평문으로 남아, 감사 로그의
+  // 마스킹이 옆 채널에서 통째로 무력화된다. (부분일치라 depositorRaw 도 함께 걸린다)
+  private nameKeyParts = ['personname', 'receivername', 'recipientname', 'sendername', 'accountowner', 'depositor'];
   // 물리 주소 필드 allowlist (소문자 exact match). includes 방식은 addressType 등 비PII 오탐 위험.
   private addressKeys = new Set([
     'businessaddress',
