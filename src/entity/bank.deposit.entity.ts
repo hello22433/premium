@@ -27,6 +27,10 @@ import { WalletAccountOwnerType } from './wallet.account.entity';
 @Entity('bank_deposit', { synchronize: false })
 @Unique('uk_bank_deposit_dedup', ['dedupKey'])
 @Index('idx_bank_deposit_tx_date', ['txDate'])
+// ⚠️ DDL 은 접두 인덱스다 — `KEY idx_bank_deposit_depositor (depositor(191))`.
+// 암호문이 VARCHAR(512) 라 전체 컬럼 인덱스는 InnoDB 키 길이 제한에 걸린다. TypeORM 데코레이터로는
+// 접두 길이를 표현할 수 없어 선언이 DDL 과 다르게 보이며, 이 드리프트는 synchronize:false 라서
+// 무해하다(스키마 정본은 migration/bank-deposit-mirror.sql).
 @Index('idx_bank_deposit_depositor', ['depositor'])
 @Index('idx_bank_deposit_match_status', ['matchStatus'])
 @Index('idx_bank_deposit_account_no', ['accountNo'])

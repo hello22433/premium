@@ -40,6 +40,20 @@ const DATE_FORMAT = 'yyyy-MM-dd';
 const MAX_SYNC_RUNTIME_MS = 10 * 60 * 1000;
 
 /**
+ * 상대 수집 상태(/api/status) 캐시 수명. 이 값의 해상도는 스크래핑 주기(분 단위)라
+ * 초 단위로 신선할 이유가 없고, 캐시가 없으면 화면을 여는 사람 수만큼 상대로 요청이 증폭된다.
+ */
+const SOURCE_STATUS_TTL_MS = 30 * 1000;
+
+/** 화면에 내보내는 상대 수집 상태. */
+type DepositSourceStatusView = {
+  gateTripped: boolean;
+  gateReason: string | null;
+  lastScrapedAt: string | null;
+  pollingEnabled: boolean | null;
+};
+
+/**
  * erp_macro 조회 API → 프리미엄 미러 동기화.
  *
  * 설계 요지 (docs/API계약-erp_macro-입금내역-조회.md)
@@ -61,6 +75,9 @@ export class DepositSyncService {
    * 죽는다.** 두 계층의 상한을 같은 값으로 맞춰 그 구멍을 없앤다.
    */
   private syncStartedAt: number | null = null;
+
+  /** 상대 수집 상태의 짧은 캐시. 성공 응답만 담는다(실패는 즉시 다시 물어본다). */
+  private sourceStatusCache: { at: number; value: DepositSourceStatusView } | null = null;
 
   constructor(
     @InjectRepository(BankDepositEntity)
@@ -304,20 +321,33 @@ export class DepositSyncService {
     };
   }
 
-  /** 상대가 꺼져 있는 건 흔한 상황이라 예외로 올리지 않는다. 다만 차단 상태는 크게 남긴다. */
+  /**
+   * 상대가 꺼져 있는 건 흔한 상황이라 예외로 올리지 않는다. 다만 차단 상태는 크게 남긴다.
+   *
+   * 짧은 TTL 캐시를 둔다. 이 값의 해상도는 어차피 스크래핑 주기(분 단위)라 초 단위로 신선할
+   * 이유가 없는데, 캐시가 없으면 목록 화면을 여는 사람 수 × 폴링 횟수만큼 상대 서버로 요청이
+   * 증폭된다. 실패(null)는 캐시하지 않는다 — 상대가 살아난 것을 TTL 만큼 늦게 알 이유가 없다.
+   */
   private async fetchSourceStatusSafely() {
+    const now = Date.now();
+    if (this.sourceStatusCache && now - this.sourceStatusCache.at < SOURCE_STATUS_TTL_MS) {
+      return this.sourceStatusCache.value;
+    }
+
     try {
       const status = await this.depositSourceHttp.fetchStatus();
       if (status.gateTripped) {
         this.logger.error(`erp_macro 수집이 차단된 상태입니다: ${status.gateReason ?? '사유 미상'}`);
       }
-      return {
+      const value = {
         gateTripped: status.gateTripped,
         gateReason: status.gateReason,
         lastScrapedAt: status.lastScrapedAt,
         // 구버전 응답에는 없는 필드다. 없으면 "모름"이지 "꺼짐"이 아니므로 null 로 둔다.
         pollingEnabled: status.pollingEnabled ?? null,
       };
+      this.sourceStatusCache = { at: Date.now(), value };
+      return value;
     } catch (error) {
       this.logger.warn(`수집 상태 조회 실패: ${(error as Error).message}`);
       return null;

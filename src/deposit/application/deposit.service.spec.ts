@@ -306,6 +306,19 @@ describe('DepositService.getList', () => {
       expect(logged.requestParams.maskedKeyword).toBe('두*');
     });
 
+    // 1글자 검색은 maskPersonName 에서 '*' 하나가 된다. 그런데 이름을 바꿔가며 훑는 열거
+    // 프로브가 바로 그 형태라, 길이를 따로 남기지 않으면 가장 수상한 패턴이 정보량 0 으로 기록된다.
+    it('1글자 검색어도 길이를 함께 남긴다 (마스킹만으로는 정보량이 0)', async () => {
+      const { qb } = buildQbSpy([row()]);
+      const { sut, activityLogService } = makeSut(qb);
+
+      await sut.getList(query({ depositor: '김' }), auditContext);
+
+      const logged = activityLogService.createLog.mock.calls[0][0];
+      expect(logged.requestParams.maskedKeyword).toBe('*');
+      expect(logged.requestParams.keywordLength).toBe(1);
+    });
+
     it('한글 검색어도 첫 글자와 길이는 남는다 (전부 마스킹되면 감사 가치가 사라진다)', async () => {
       const { qb } = buildQbSpy([row()]);
       const { sut, activityLogService } = makeSut(qb);

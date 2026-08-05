@@ -279,6 +279,10 @@ export class DepositService {
           screen: 'DEPOSIT_HISTORY',
           searchType: 'depositor',
           maskedKeyword: MaskingUtil.maskPersonName(rawKeyword),
+          // 마스킹은 1글자 검색어를 '*' 하나로 만든다(maskPersonName 의 length<=1 분기).
+          // 그런데 이름을 바꿔가며 훑는 열거 프로브가 바로 그 1글자 검색이라, 정보량이 0 이면
+          // 감사 로그가 정작 가장 수상한 패턴을 기록하지 못한다. 길이는 실명이 아니므로 함께 남긴다.
+          keywordLength: rawKeyword.trim().length,
         },
       });
     } catch (error) {

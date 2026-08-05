@@ -469,5 +469,32 @@ describe('DepositSyncService', () => {
 
       expect(status.source?.pollingEnabled).toBeNull();
     });
+
+    // 이 값의 해상도는 스크래핑 주기(분 단위)라 초 단위로 신선할 이유가 없다. 캐시가 없으면
+    // 화면을 여는 사람 수 × 폴링 횟수만큼 상대 서버로 요청이 증폭된다.
+    it('성공 응답은 짧게 캐시해 상대 서버 호출을 증폭시키지 않는다', async () => {
+      const { sut } = buildSut({ pages: [[item()]] });
+      stubStatus(sut, { lastScrapedAt: null, gateTripped: false, gateReason: null, pollingEnabled: true });
+
+      await sut.getSyncStatus();
+      await sut.getSyncStatus();
+      await sut.getSyncStatus();
+
+      expect((sut as any).depositSourceHttp.fetchStatus).toHaveBeenCalledTimes(1);
+    });
+
+    // 실패까지 캐시하면 상대가 살아난 것을 TTL 만큼 늦게 알게 된다. 그럴 이유가 없다.
+    it('실패는 캐시하지 않는다 (상대 복구를 늦게 알 이유가 없다)', async () => {
+      const { sut } = buildSut({ pages: [[item()]] });
+      stubStatus(sut, null);
+      (sut as any).depositSourceHttp.fetchStatus = jest.fn(async () => {
+        throw new DepositSourceTransientError('연결 거부');
+      });
+
+      await sut.getSyncStatus();
+      await sut.getSyncStatus();
+
+      expect((sut as any).depositSourceHttp.fetchStatus).toHaveBeenCalledTimes(2);
+    });
   });
 });
