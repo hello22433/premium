@@ -241,6 +241,11 @@ export class DepositService {
    * 로그 적재 실패가 조회 자체를 막으면 안 되므로 삼키고 에러 로그만 남긴다(환불 목록의
    * PII_SEARCH 기록과 동일한 패턴). 검색어는 마스킹해서 저장한다 — 감사 로그가 또 하나의
    * 평문 PII 저장소가 되면 안 된다.
+   *
+   * ⚠️ 마스킹은 maskPersonName 을 쓴다. 환불 목록이 쓰는 maskDeliveryTarget 은 값이 전화번호나
+   * 이메일이라는 전제로 숫자만 추출하므로, 사람/회사 이름을 넣으면 전부 '****' 가 되어
+   * "무엇을 검색했는가"가 통째로 사라진다(감사 로그의 존재 이유가 없어진다).
+   * 같은 PII_SEARCH 라도 검색 대상의 종류가 다르면 마스킹도 달라야 한다.
    */
   private async recordPiiSearchLog(rawKeyword: string, audit: DepositListAuditContext): Promise<void> {
     const { user, ipAddress, userAgent } = audit;
@@ -260,7 +265,7 @@ export class DepositService {
         requestParams: {
           screen: 'DEPOSIT_HISTORY',
           searchType: 'depositor',
-          maskedKeyword: MaskingUtil.maskDeliveryTarget(rawKeyword),
+          maskedKeyword: MaskingUtil.maskPersonName(rawKeyword),
         },
       });
     } catch (error) {

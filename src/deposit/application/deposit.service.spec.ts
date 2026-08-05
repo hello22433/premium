@@ -300,7 +300,20 @@ describe('DepositService.getList', () => {
         requestUrl: '/deposit/list',
         ipAddress: '10.0.0.1',
       });
-      expect(logged.requestParams.maskedKeyword).not.toBe('두성');
+      // 실제 값을 단언한다. not.toBe('두성') 만 보면 '****'(전부 뭉갬)도 통과하는데,
+      // 그건 "무엇을 검색했는가"가 사라진 상태라 감사 로그로서 쓸모가 없다.
+      expect(logged.requestParams.maskedKeyword).toBe('두*');
+    });
+
+    it('한글 검색어도 첫 글자와 길이는 남는다 (전부 마스킹되면 감사 가치가 사라진다)', async () => {
+      const { qb } = buildQbSpy([row()]);
+      const { sut, activityLogService } = makeSut(qb);
+
+      await sut.getList(query({ depositor: '한빛문구' }), auditContext);
+
+      const logged = activityLogService.createLog.mock.calls[0][0];
+      expect(logged.requestParams.maskedKeyword).toBe('한***');
+      expect(logged.requestParams.maskedKeyword).not.toBe('****');
     });
 
     it('검색 없이 목록만 보면 PII_SEARCH 를 남기지 않는다', async () => {
