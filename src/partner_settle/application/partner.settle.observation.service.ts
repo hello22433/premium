@@ -19,6 +19,10 @@ import { insertRawRow, RawRow } from './partner.settle.raw.insert';
  * **활성 UNRESOLVED 1건 제한은 두지 않는다** — E1 미해소 중 실제 새 전이 E2 가 오면 삼켜지기 때문이다.
  */
 
+/** 재관측 수렴으로 삼켜도 되는 UNIQUE. 그 외 1062 는 삼키지 않고 그대로 올린다. */
+const OBSERVATION_KEY_CONSTRAINT = 'uk_partner_settle_observation_key';
+const OBSERVATION_UNRESOLVED_CONSTRAINT = 'uk_partner_settle_observation_unresolved';
+
 export type ObservationFacts = {
   provider: IPartnerCompanyType;
   orderDeliveryId: number;
@@ -56,17 +60,22 @@ export class PartnerSettleObservationService {
     const existing = await this.findByObservationKey(observationKey);
     if (existing) return existing;
 
-    await insertRawRow(this.observationRepository, 'partner_settle_transition_observation', {
-      ...this.commonColumns(input),
-      source_event_id: input.sourceEventId,
-      source_event_id_origin: 'PROVIDER',
-      observation_key: observationKey,
-      unresolved_base_key: null,
-      unresolved_evidence_key: null,
-      // generation 은 미복원 관측 전용이다. 정상 관측에 넣으면 CHECK 조합이 깨진다.
-      generation: null,
-      resolution_status: 'RESOLVED',
-    });
+    await insertRawRow(
+      this.observationRepository,
+      'partner_settle_transition_observation',
+      {
+        ...this.commonColumns(input),
+        source_event_id: input.sourceEventId,
+        source_event_id_origin: 'PROVIDER',
+        observation_key: observationKey,
+        unresolved_base_key: null,
+        unresolved_evidence_key: null,
+        // generation 은 미복원 관측 전용이다. 정상 관측에 넣으면 CHECK 조합이 깨진다.
+        generation: null,
+        resolution_status: 'RESOLVED',
+      },
+      { idempotentConstraints: [OBSERVATION_KEY_CONSTRAINT] },
+    );
 
     return this.requireByObservationKey(observationKey);
   }
@@ -92,16 +101,22 @@ export class PartnerSettleObservationService {
 
     const generation = await this.observationRepository.count({ where: { unresolvedBaseKey: baseKey } });
 
-    await insertRawRow(this.observationRepository, 'partner_settle_transition_observation', {
-      ...this.commonColumns(input),
-      source_event_id: null,
-      source_event_id_origin: null,
-      observation_key: observationKey,
-      unresolved_base_key: baseKey,
-      unresolved_evidence_key: input.evidenceKey,
-      generation: generation + 1,
-      resolution_status: 'UNRESOLVED',
-    });
+    await insertRawRow(
+      this.observationRepository,
+      'partner_settle_transition_observation',
+      {
+        ...this.commonColumns(input),
+        source_event_id: null,
+        source_event_id_origin: null,
+        observation_key: observationKey,
+        unresolved_base_key: baseKey,
+        unresolved_evidence_key: input.evidenceKey,
+        generation: generation + 1,
+        resolution_status: 'UNRESOLVED',
+      },
+      // observationKey = `${baseKey}:${evidenceKey}` 라 두 UNIQUE 는 같은 identity 를 가리킨다.
+      { idempotentConstraints: [OBSERVATION_KEY_CONSTRAINT, OBSERVATION_UNRESOLVED_CONSTRAINT] },
+    );
 
     return this.requireByObservationKey(observationKey);
   }

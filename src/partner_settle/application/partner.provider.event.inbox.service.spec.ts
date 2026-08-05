@@ -37,7 +37,11 @@ function mockInboxRepository() {
             existing.ingressFingerprint === ingress,
         )
       ) {
-        throw Object.assign(new Error('ER_DUP_ENTRY'), { errno: 1062 });
+        // 제약 이름이 있어야 서비스가 "동시 ingress 수렴"으로 판정한다(MySQL 8 형상).
+        throw Object.assign(new Error('ER_DUP_ENTRY'), {
+          errno: 1062,
+          sqlMessage: `Duplicate entry 'x' for key 'partner_provider_event_inbox.uk_partner_provider_event_inbox_ingress'`,
+        });
       }
 
       rows.push(row);

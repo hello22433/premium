@@ -5,6 +5,7 @@ import { IUserDiscountMethod } from '../../user_discount/interface/user.discount
 import { ICompareCondition } from '../../user_discount/interface/compare.condition';
 import { IPartnerDiscountChangeType } from '../interface/partner.discount.change.type';
 import { PartnerSettlePricingResolverService } from './partner.settle.pricing.resolver.service';
+import { MissingTransactionError } from './partner.settle.transaction.guard';
 
 const SNAPSHOT = {
   price: 10_000,
@@ -42,6 +43,8 @@ function build(rows: Record<string, unknown>[] = []) {
     getOne: jest.fn().mockResolvedValue({ partnerCompanyId: 4 }),
   };
   const epochRepository = {
+    // 잠금 경로는 ambient 트랜잭션 안에서만 성립한다. 기본값은 "있음".
+    manager: { queryRunner: { isTransactionActive: true } },
     query: jest.fn().mockResolvedValue(undefined),
     createQueryBuilder: jest.fn(() => queryBuilder),
   };
@@ -67,6 +70,15 @@ describe('PartnerSettlePricingResolverService.lockPolicyForRead', () => {
     queryBuilder.getOne.mockResolvedValue(null);
 
     await expect(service.lockPolicyForRead(4)).rejects.toThrow();
+  });
+
+  it('트랜잭션 밖 호출은 epoch 생성조차 하지 않는다', async () => {
+    const { service, epochRepository } = build();
+    epochRepository.manager.queryRunner.isTransactionActive = false;
+
+    // 여기서 INSERT IGNORE 가 먼저 커밋되면 잠금 없이 매입율을 읽는 경로가 열린다.
+    await expect(service.lockPolicyForRead(4)).rejects.toBeInstanceOf(MissingTransactionError);
+    expect(epochRepository.query).not.toHaveBeenCalled();
   });
 });
 
@@ -105,7 +117,11 @@ describe('PartnerSettlePricingResolverService.resolveAt', () => {
 
   it('이력이 있는데 커버 구간이 없으면 이력 손상으로 격리한다', async () => {
     const { service } = build([
-      historyRow({ id: 11, validFrom: new Date('2026-01-01T00:00:00.000'), validTo: new Date('2026-03-01T00:00:00.000') }),
+      historyRow({
+        id: 11,
+        validFrom: new Date('2026-01-01T00:00:00.000'),
+        validTo: new Date('2026-03-01T00:00:00.000'),
+      }),
       historyRow({ id: 12, validFrom: new Date('2026-05-01T00:00:00.000'), validTo: null }),
     ]);
 

@@ -20,7 +20,11 @@ function mockObservationRepository() {
       });
 
       if (rows.some((existing) => existing.observationKey === row.observationKey)) {
-        throw Object.assign(new Error('ER_DUP_ENTRY'), { errno: 1062 });
+        // 제약 이름이 있어야 서비스가 "재관측 수렴"으로 판정한다(MySQL 8 형상).
+        throw Object.assign(new Error('ER_DUP_ENTRY'), {
+          errno: 1062,
+          sqlMessage: `Duplicate entry 'x' for key 'partner_settle_transition_observation.uk_partner_settle_observation_key'`,
+        });
       }
       rows.push(row);
       return { insertId: row.id };

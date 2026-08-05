@@ -4,11 +4,8 @@ import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment
 import { PricingOutcome } from '../domain/partner.settle.pricing';
 import { SubItemKeyUnresolvedError } from '../domain/settle.sub.item.key';
 import { parseKstDateTime } from '../domain/settle.time';
-import {
-  LedgerAppendCommand,
-  LedgerInvariantError,
-  PartnerSettleLedgerService,
-} from './partner.settle.ledger.service';
+import { LedgerAppendCommand, LedgerInvariantError, PartnerSettleLedgerService } from './partner.settle.ledger.service';
+import { MissingTransactionError } from './partner.settle.transaction.guard';
 
 const HISTORY_MATCH: PricingOutcome = {
   status: 'NORMAL',
@@ -31,7 +28,7 @@ type CapturedInsert = Record<string, unknown>;
 function mockLedgerRepository(seed: Record<string, unknown>[] = []) {
   const rows: Record<string, unknown>[] = seed.map((row) => ({ ...row }));
   const inserts: CapturedInsert[] = [];
-  let duplicateOnNextInsert = false;
+  let duplicateConstraintOnNextInsert: string | null = null;
 
   const lookup = { lockMode: null as string | null, id: null as number | null };
   const queryBuilder: { setLock: jest.Mock; where: jest.Mock; getOne: jest.Mock } = {
@@ -50,8 +47,10 @@ function mockLedgerRepository(seed: Record<string, unknown>[] = []) {
     rows,
     inserts,
     queryBuilder,
-    failNextInsertAsDuplicate() {
-      duplicateOnNextInsert = true;
+    // 원장 경로는 ambient 트랜잭션이 없으면 시작조차 하지 않는다. 기본값은 "있음".
+    manager: { queryRunner: { isTransactionActive: true } },
+    failNextInsertAsDuplicate(constraint = 'uk_partner_settle_ledger_idempotency') {
+      duplicateConstraintOnNextInsert = constraint;
     },
     query: jest.fn(async (sql: string, parameters: unknown[]) => {
       if (!sql.startsWith('INSERT INTO partner_settle_ledger')) return [];
@@ -61,9 +60,14 @@ function mockLedgerRepository(seed: Record<string, unknown>[] = []) {
       columns.forEach((column, index) => (captured[column] = parameters[index]));
       inserts.push(captured);
 
-      if (duplicateOnNextInsert) {
-        duplicateOnNextInsert = false;
-        throw Object.assign(new Error('ER_DUP_ENTRY'), { errno: 1062 });
+      if (duplicateConstraintOnNextInsert) {
+        const constraint = duplicateConstraintOnNextInsert;
+        duplicateConstraintOnNextInsert = null;
+        // MySQL 8 실제 형상. 제약 이름이 없으면 서비스가 멱등으로 삼켜선 안 되므로 메시지까지 재현한다.
+        throw Object.assign(new Error('ER_DUP_ENTRY'), {
+          errno: 1062,
+          sqlMessage: `Duplicate entry 'x' for key 'partner_settle_ledger.${constraint}'`,
+        });
       }
 
       rows.push({ id: rows.length + 1, ...toEntityShape(captured) });
@@ -73,9 +77,8 @@ function mockLedgerRepository(seed: Record<string, unknown>[] = []) {
       async ({ where }: { where: { idempotencyKey: string } }) =>
         rows.find((row) => row.idempotencyKey === where.idempotencyKey) ?? null,
     ),
-    find: jest.fn(
-      async ({ where }: { where: { reversesLedgerId: number } }) =>
-        rows.filter((row) => row.reversesLedgerId === where.reversesLedgerId),
+    find: jest.fn(async ({ where }: { where: { reversesLedgerId: number } }) =>
+      rows.filter((row) => row.reversesLedgerId === where.reversesLedgerId),
     ),
     createQueryBuilder: jest.fn(() => queryBuilder),
   };
@@ -170,6 +173,31 @@ describe('PartnerSettleLedgerService.lockForAppend', () => {
   });
 });
 
+/**
+ * 트랜잭션 밖 호출은 잠금이 조용히 무력화되거나(raw FOR UPDATE), 원천 상태와 원장이 갈린다.
+ * 열어주지 않고(=별도 트랜잭션을 만들지 않고) 계약 위반으로 끊는 것이 이 가드의 목적이다.
+ */
+describe('PartnerSettleLedgerService 트랜잭션 선행조건', () => {
+  it('트랜잭션 밖에서는 잠금·append·역분개 모두 시작하지 않는다', async () => {
+    const { service, ledgerRepository, pricingResolver } = build(HISTORY_MATCH, [originalRow()]);
+    ledgerRepository.manager.queryRunner.isTransactionActive = false;
+
+    await expect(service.lockForAppend(4, 100)).rejects.toBeInstanceOf(MissingTransactionError);
+    await expect(service.appendLedger(appendCommand())).rejects.toBeInstanceOf(MissingTransactionError);
+    await expect(
+      service.appendReversal({
+        reversesLedgerId: 1,
+        baseIdempotencyKey: 'EXC:GALAXIA:USAGE:cancel-1',
+        occurredAt: parseKstDateTime('2026-07-06 09:00:00'),
+      }),
+    ).rejects.toBeInstanceOf(MissingTransactionError);
+
+    // 잠금도 INSERT 도 시도조차 하지 않는다 — 부분 write 없이 호출부에서 터진다.
+    expect(pricingResolver.lockPolicyForRead).not.toHaveBeenCalled();
+    expect(ledgerRepository.inserts).toHaveLength(0);
+  });
+});
+
 describe('PartnerSettleLedgerService.appendLedger', () => {
   it('원천 마이크로초를 그대로 저장한다', async () => {
     const { service, ledgerRepository } = build();
@@ -215,6 +243,33 @@ describe('PartnerSettleLedgerService.appendLedger', () => {
     const appended = await service.appendLedger(appendCommand());
 
     expect(appended).toMatchObject({ id: 9 });
+  });
+
+  it('멱등키가 아닌 전이 UNIQUE 충돌은 멱등으로 삼키지 않고 422 로 끊는다', async () => {
+    const { service, ledgerRepository } = build();
+    ledgerRepository.failNextInsertAsDuplicate('uk_partner_settle_ledger_transition');
+
+    // 같은 멱등키 재조회는 실패한다(다른 사건이다). 삼키면 원인 없는 500 만 남는다.
+    await expect(service.appendLedger(appendCommand())).rejects.toBeInstanceOf(UnprocessableEntityException);
+  });
+
+  it('orphan ingress 이중 정산 충돌도 원인 보존 422 다', async () => {
+    const { service, ledgerRepository } = build();
+    ledgerRepository.failNextInsertAsDuplicate('uk_partner_settle_ledger_orphan_settlement');
+
+    const error = await service.appendLedger(appendCommand()).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(UnprocessableEntityException);
+    expect((error as { cause?: unknown }).cause).toMatchObject({ errno: 1062 });
+  });
+
+  it('제약 이름을 읽을 수 없는 1062 는 멱등 수렴으로 삼키지 않는다', async () => {
+    const { service, ledgerRepository } = build();
+    ledgerRepository.query.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('ER_DUP_ENTRY'), { errno: 1062 });
+    });
+
+    await expect(service.appendLedger(appendCommand())).rejects.toMatchObject({ errno: 1062 });
   });
 
   it('이력 손상(COVERAGE_GAP)은 throw 하지 않고 금액을 비운 격리 row 로 남긴다', async () => {
@@ -275,9 +330,9 @@ describe('PartnerSettleLedgerService.appendLedger', () => {
   it('시각·금액이 모두 없으면 격리 row 조차 만들지 않는다', async () => {
     const { service, ledgerRepository } = build();
 
-    await expect(
-      service.appendLedger(appendCommand({ occurredAt: null, baseAmount: null })),
-    ).rejects.toBeInstanceOf(LedgerInvariantError);
+    await expect(service.appendLedger(appendCommand({ occurredAt: null, baseAmount: null }))).rejects.toBeInstanceOf(
+      LedgerInvariantError,
+    );
     expect(ledgerRepository.inserts).toHaveLength(0);
   });
 
@@ -296,9 +351,9 @@ describe('PartnerSettleLedgerService.appendLedger', () => {
   it('단건 상한을 넘는 baseAmount 는 400 으로 끊고 부분 write 를 남기지 않는다', async () => {
     const { service, ledgerRepository } = build();
 
-    await expect(
-      service.appendLedger(appendCommand({ baseAmount: 1_000_000_000_000_001n })),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.appendLedger(appendCommand({ baseAmount: 1_000_000_000_000_001n }))).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
     expect(ledgerRepository.inserts).toHaveLength(0);
   });
 });
@@ -397,9 +452,9 @@ describe('PartnerSettleLedgerService.appendReversal', () => {
   it('잔여를 넘는 과다취소는 422 로 끊고 부분 write 를 남기지 않는다', async () => {
     const { service, ledgerRepository } = build(HISTORY_MATCH, [originalRow()]);
 
-    await expect(
-      service.appendReversal({ ...reversalCommand, cancelBaseAmount: 10_001n }),
-    ).rejects.toBeInstanceOf(UnprocessableEntityException);
+    await expect(service.appendReversal({ ...reversalCommand, cancelBaseAmount: 10_001n })).rejects.toBeInstanceOf(
+      UnprocessableEntityException,
+    );
     expect(ledgerRepository.inserts).toHaveLength(0);
   });
 

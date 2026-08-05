@@ -1,4 +1,10 @@
-import { BadRequestException, Injectable, InternalServerErrorException, Logger, UnprocessableEntityException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PartnerSettleLedgerEntity } from '../../entity/partner.settle.ledger.entity';
@@ -24,13 +30,15 @@ import { resolveSubItemKey, SubItemKeyInput } from '../domain/settle.sub.item.ke
 import { KstInstant, toDbDateTimeString } from '../domain/settle.time';
 import { PricingProductSnapshot } from '../domain/partner.settle.pricing';
 import { PartnerSettlePricingResolverService } from './partner.settle.pricing.resolver.service';
-import { insertRawRow, RawRow } from './partner.settle.raw.insert';
+import { duplicateKeyConstraint, insertRawRow, isDuplicateKeyError, RawRow } from './partner.settle.raw.insert';
+import { assertInTransaction } from './partner.settle.transaction.guard';
 
 /**
  * 정산 원장 append (정본 §5.1 · §6.4 · §6.5 · PR1B 명세 B10).
  *
  * 원장은 append-only SoT 다. 이 서비스는 **원천 상태 갱신과 같은 트랜잭션 안에서만** 불린다.
- * 트랜잭션이 갈리면 상태는 USED 인데 원장이 없는(=영구 미정산) 창이 생긴다.
+ * 트랜잭션이 갈리면 상태는 USED 인데 원장이 없는(=영구 미정산) 창이 생긴다. 이 전제는 주석이 아니라
+ * `assertInTransaction()` 이 진입점마다 런타임에 강제한다 — 없으면 스스로 열지 않고 즉시 깨뜨린다.
  *
  * 잠금 순서는 전 producer 공통이다: `partner_discount_policy_epoch`(FOR SHARE) → `order_delivery`
  * (FOR UPDATE) → inbox → ledger. `lockForAppend()` 가 앞 두 단계를 한 지점에서 잡는다.
@@ -48,6 +56,11 @@ import { insertRawRow, RawRow } from './partner.settle.raw.insert';
 
 /** 원장을 만들 수 없는 호출부 계약 위반. 격리(NEEDS_REVIEW)로 흡수하면 안 되는 것만 여기로 온다. */
 export class LedgerInvariantError extends Error {}
+
+/** 멱등 수렴으로 삼켜도 되는 유일한 UNIQUE. 나머지 충돌은 사건이 다른데 슬롯이 겹친 대사 오류다. */
+const LEDGER_IDEMPOTENCY_CONSTRAINT = 'uk_partner_settle_ledger_idempotency';
+const LEDGER_TRANSITION_CONSTRAINT = 'uk_partner_settle_ledger_transition';
+const LEDGER_ORPHAN_SETTLEMENT_CONSTRAINT = 'uk_partner_settle_ledger_orphan_settlement';
 
 type LedgerTransitionRef = {
   observationId: number;
@@ -119,6 +132,9 @@ export class PartnerSettleLedgerService {
    * 순서를 producer 마다 다르게 잡으면 일일 배치와 push 수신이 교차 데드락에 걸린다.
    */
   async lockForAppend(partnerCompanyId: number, orderDeliveryId: number | null): Promise<void> {
+    // 트랜잭션이 없으면 raw FOR UPDATE 가 에러 없이 무력화된다(autocommit). 잠근 줄 알고 진행하는 게 최악이다.
+    assertInTransaction(this.ledgerRepository, '정산 원장 잠금(lockForAppend)');
+
     await this.pricingResolver.lockPolicyForRead(partnerCompanyId);
     if (orderDeliveryId !== null) {
       await this.ledgerRepository.query('SELECT id FROM order_delivery WHERE id = ? FOR UPDATE', [orderDeliveryId]);
@@ -131,6 +147,8 @@ export class PartnerSettleLedgerService {
    * 재스캔·재시도·동시 poll 이 모두 이 경로로 들어오므로, 멱등이 아니면 같은 사건이 여러 번 정산된다.
    */
   async appendLedger(command: LedgerAppendCommand): Promise<PartnerSettleLedgerEntity> {
+    assertInTransaction(this.ledgerRepository, '정산 원장 append(appendLedger)');
+
     const existing = await this.findByIdempotencyKey(command.idempotencyKey);
     if (existing) return existing;
 
@@ -148,6 +166,9 @@ export class PartnerSettleLedgerService {
    * 마지막 취소가 잔여 전량을 소진해 모든 구성금액이 정확히 0 이 된다.
    */
   async appendReversal(command: LedgerReversalCommand): Promise<PartnerSettleLedgerEntity> {
+    // 아래 pessimistic_write 는 비트랜잭션이면 TypeORM 이 쿼리를 거부한다. 그 전에 계약 위반으로 끊는다.
+    assertInTransaction(this.ledgerRepository, '정산 원장 역분개(appendReversal)');
+
     const idempotencyKey = buildReversalKey(command.baseIdempotencyKey, command.reversesLedgerId);
 
     const existing = await this.findByIdempotencyKey(idempotencyKey);
@@ -387,15 +408,48 @@ export class PartnerSettleLedgerService {
     };
   }
 
-  /** append 결과는 항상 멱등키로 재조회한다 — 신규 INSERT 든 UNIQUE 충돌이든 답은 같은 row 다. */
+  /** append 결과는 항상 멱등키로 재조회한다 — 신규 INSERT 든 **멱등키** 충돌이든 답은 같은 row 다. */
   private async insertRow(row: LedgerRow, idempotencyKey: string): Promise<PartnerSettleLedgerEntity> {
-    await insertRawRow(this.ledgerRepository, 'partner_settle_ledger', row);
+    try {
+      await insertRawRow(this.ledgerRepository, 'partner_settle_ledger', row, {
+        idempotentConstraints: [LEDGER_IDEMPOTENCY_CONSTRAINT],
+      });
+    } catch (error) {
+      this.rethrowInsertConflict(error, idempotencyKey);
+    }
 
     const inserted = await this.findByIdempotencyKey(idempotencyKey);
     if (!inserted) {
       throw new InternalServerErrorException('정산 원장 append 결과를 다시 읽지 못했습니다.');
     }
     return inserted;
+  }
+
+  /**
+   * 멱등키 외 UNIQUE 충돌은 **다른 사건이 같은 슬롯을 노린 대사 오류**다.
+   *
+   * 멱등키로 재조회해봐야 없으므로 원인 정보 없는 500 만 남는다. 어느 제약이 걸렸는지 남기고,
+   * 원본 driver 에러를 `cause` 로 보존한 422 로 끊는다(운영자 대사 대상).
+   */
+  private rethrowInsertConflict(error: unknown, idempotencyKey: string): never {
+    if (isDuplicateKeyError(error)) {
+      const constraint = duplicateKeyConstraint(error);
+
+      if (constraint === LEDGER_TRANSITION_CONSTRAINT) {
+        throw new UnprocessableEntityException(
+          `같은 관측 전이 순번에 이미 원장이 있습니다(key=${idempotencyKey}). 멱등키와 전이 순번이 어긋납니다.`,
+          { cause: error },
+        );
+      }
+      if (constraint === LEDGER_ORPHAN_SETTLEMENT_CONSTRAINT) {
+        throw new UnprocessableEntityException(
+          `이미 정산된 orphan ingress 입니다(key=${idempotencyKey}). 같은 inbox row 를 두 번 정산할 수 없습니다.`,
+          { cause: error },
+        );
+      }
+    }
+
+    throw error;
   }
 
   private findByIdempotencyKey(idempotencyKey: string): Promise<PartnerSettleLedgerEntity | null> {

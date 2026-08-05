@@ -24,6 +24,9 @@ import { PartnerSettleObservationService } from './partner.settle.observation.se
  * 모든 경로는 호출부가 `order_delivery FOR UPDATE` 를 잡은 트랜잭션 안에서 부른다.
  */
 
+/** 동시 ingress 수렴으로 삼켜도 되는 UNIQUE. 관측 lane 은 이 제약 대상이 아니라 목록이 비어 있다. */
+const INBOX_INGRESS_CONSTRAINT = 'uk_partner_provider_event_inbox_ingress';
+
 export type ObservationLaneInput = {
   provider: IPartnerCompanyType;
   orderDeliveryId: number;
@@ -124,14 +127,19 @@ export class PartnerProviderEventInboxService {
     );
     if (existing) return { inboxRow: existing, appended: false };
 
-    const { duplicated } = await insertRawRow(this.inboxRepository, 'partner_provider_event_inbox', {
-      ...this.commonColumns(input),
-      origin: 'ORPHAN',
-      ingress_fingerprint: input.ingressFingerprint,
-      prev_inbox_row_id: null,
-      observation_id: null,
-      processed_status: 'ORPHAN_PENDING',
-    });
+    const { duplicated } = await insertRawRow(
+      this.inboxRepository,
+      'partner_provider_event_inbox',
+      {
+        ...this.commonColumns(input),
+        origin: 'ORPHAN',
+        ingress_fingerprint: input.ingressFingerprint,
+        prev_inbox_row_id: null,
+        observation_id: null,
+        processed_status: 'ORPHAN_PENDING',
+      },
+      { idempotentConstraints: [INBOX_INGRESS_CONSTRAINT] },
+    );
 
     const saved = await this.findOrphanByIngress(
       input.provider,
@@ -184,14 +192,21 @@ export class PartnerProviderEventInboxService {
     input: ObservationLaneInput,
     prevInboxRowId: number | null,
   ): Promise<PartnerProviderEventInboxEntity> {
-    await insertRawRow(this.inboxRepository, 'partner_provider_event_inbox', {
-      ...this.commonColumns(input),
-      origin: input.origin,
-      ingress_fingerprint: null,
-      prev_inbox_row_id: prevInboxRowId,
-      observation_id: null,
-      processed_status: 'PENDING',
-    });
+    // 관측 lane 은 ingress_fingerprint NULL 이라 어떤 UNIQUE 에도 걸리지 않는다. 여기서 1062 가 나면
+    // 그건 수렴이 아니라 버그이므로 멱등 목록을 비워 그대로 올린다.
+    await insertRawRow(
+      this.inboxRepository,
+      'partner_provider_event_inbox',
+      {
+        ...this.commonColumns(input),
+        origin: input.origin,
+        ingress_fingerprint: null,
+        prev_inbox_row_id: prevInboxRowId,
+        observation_id: null,
+        processed_status: 'PENDING',
+      },
+      { idempotentConstraints: [] },
+    );
 
     const appended = await this.findLatestObservationLaneRow(input.provider, input.orderDeliveryId);
     if (!appended) {

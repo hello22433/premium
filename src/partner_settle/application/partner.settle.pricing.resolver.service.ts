@@ -9,6 +9,7 @@ import {
   PricingProductSnapshot,
   resolvePricingAt,
 } from '../domain/partner.settle.pricing';
+import { assertInTransaction } from './partner.settle.transaction.guard';
 
 /**
  * `occurredAt` 시점 매입율 판정의 적재 경로 (정본 §5.10 P10 · §8.2 · PR1B 명세 §3.5).
@@ -29,8 +30,15 @@ export class PartnerSettlePricingResolverService {
     private readonly historyRepository: Repository<PartnerDiscountHistoryEntity>,
   ) {}
 
-  /** 잠금 순서 1단계 — 협력사 정책 epoch `FOR SHARE`. 반드시 트랜잭션 안에서 부른다. */
+  /**
+   * 잠금 순서 1단계 — 협력사 정책 epoch `FOR SHARE`.
+   *
+   * 트랜잭션 밖이면 `pessimistic_read` 는 TypeORM 이 거부하고 epoch 생성만 커밋된다. 그 상태로
+   * 진행하면 잠금 없이 매입율을 읽어 정책 변경과 경합한다 — 시작 지점에서 끊는다.
+   */
   async lockPolicyForRead(partnerCompanyId: number): Promise<void> {
+    assertInTransaction(this.epochRepository, '협력사 정산조건 정책 잠금(lockPolicyForRead)');
+
     // 정책 변경이 한 번도 없던 협력사는 epoch row 자체가 없다. 없으면 잠글 대상도 없으므로 만든다.
     await this.epochRepository.query(
       'INSERT IGNORE INTO partner_discount_policy_epoch (partner_company_id) VALUES (?)',
