@@ -200,6 +200,23 @@ describe('DepositSyncService', () => {
       expect(insertCalls[0].rows[0].depositorRaw).toBeNull();
     });
 
+    // ECOUNT 원장에는 입금처가 비는 행이 있다(수수료·자동이체 등 출금 계열).
+    // 예전에는 NOT NULL 컬럼에 `as string` 으로 밀어 넣어서, 그런 행 하나가 500행짜리
+    // multi-row INSERT 전체를 되돌렸다. 백필이 매 주기 같은 자리에서 죽어 미러가 영원히
+    // 수렴하지 못했고, 로그는 "일시 실패 — 재시도합니다"라고 찍혀 정지가 드러나지도 않았다.
+    it('입금처가 비어도 그 행을 버리지 않고 null 로 적재한다 (한 행이 배치 전체를 죽이지 않게)', async () => {
+      const { sut, insertCalls } = buildSut({
+        pages: [[item({ dedupKey: 'empty', depositor: '' }), item({ dedupKey: 'normal', depositor: '두성종이' })]],
+      });
+
+      await sut.syncRange('2026-07-01', '2026-07-31');
+
+      const rows = insertCalls[0].rows;
+      expect(rows).toHaveLength(2); // 빈 행을 걸러내면 원본과 건수가 달라져 백필이 영원히 재시도된다
+      expect(rows[0].depositor).toBeNull();
+      expect(rows[1].depositor).not.toBeNull();
+    });
+
     it('한 번의 동기화 안에서는 모든 행이 같은 syncedAt 을 갖는다', async () => {
       const { sut, insertCalls } = buildSut({
         pages: [Array.from({ length: 500 }, (_, i) => item({ dedupKey: `k${i}` })), [item({ dedupKey: 'last' })]],

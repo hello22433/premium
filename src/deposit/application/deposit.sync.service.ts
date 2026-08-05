@@ -33,6 +33,13 @@ const MAX_PAGES = 200;
 const DATE_FORMAT = 'yyyy-MM-dd';
 
 /**
+ * 이 시간을 넘겨 진행 중으로 남아 있으면 죽은 실행으로 본다.
+ * DepositSyncSchedule 의 MAX_BATCH_RUNTIME_MS 와 **같은 값이어야 한다** — 여기가 더 길면
+ * 스케줄이 stale 로 열어줘도 이 층에서 다시 막혀 재기동 전까지 동기화가 멈춘다.
+ */
+const MAX_SYNC_RUNTIME_MS = 10 * 60 * 1000;
+
+/**
  * erp_macro 조회 API → 프리미엄 미러 동기화.
  *
  * 설계 요지 (docs/API계약-erp_macro-입금내역-조회.md)
@@ -45,8 +52,15 @@ const DATE_FORMAT = 'yyyy-MM-dd';
 @Injectable()
 export class DepositSyncService {
   private logger = new Logger('DEPOSIT_SYNC');
-  /** 앞 주기가 아직 안 끝났는데 다음 주기가 겹쳐 도는 것을 막는다(같은 구간 중복 왕복 방지). */
-  private running = false;
+  /**
+   * 앞 주기가 아직 안 끝났는데 다음 주기가 겹쳐 도는 것을 막는다(같은 구간 중복 왕복 방지).
+   *
+   * ⚠️ boolean 이 아니라 **시작 시각**이다. boolean 이면 프라미스가 끝내 정착하지 않았을 때
+   * 영원히 true 로 남아, 스케줄이 stale 로 판단해 진입해도 여기서 즉시 null 로 되돌아간다.
+   * 그러면 스케줄에 둔 10분 stale 상한이 통째로 무의미해지고 **재기동 전까지 동기화가 조용히
+   * 죽는다.** 두 계층의 상한을 같은 값으로 맞춰 그 구멍을 없앤다.
+   */
+  private syncStartedAt: number | null = null;
 
   constructor(
     @InjectRepository(BankDepositEntity)
@@ -87,12 +101,15 @@ export class DepositSyncService {
    * 누락까지 함께 메우는 자가 치유가 된다.
    */
   async syncRecent(): Promise<{ fetched: number; from: string; to: string } | null> {
-    if (this.running) {
+    if (this.isStillRunning()) {
       this.logger.warn('이전 동기화가 아직 진행 중이라 이번 주기를 건너뜁니다.');
       return null;
     }
 
-    this.running = true;
+    // 자기 실행을 식별하는 토큰. stale 로 판정돼 다음 주기가 진입한 뒤 이 실행이 뒤늦게 끝나면
+    // 무조건 null 을 넣는 finally 는 **남이 방금 세운 플래그를 지운다**(그때부터 겹침 방지가 풀린다).
+    const startedAt = Date.now();
+    this.syncStartedAt = startedAt;
     try {
       const now = new Date();
       const to = format(now, DATE_FORMAT);
@@ -118,8 +135,26 @@ export class DepositSyncService {
       const fetched = await this.syncRange(from, to);
       return { fetched, from, to };
     } finally {
-      this.running = false;
+      if (this.syncStartedAt === startedAt) {
+        this.syncStartedAt = null;
+      }
     }
+  }
+
+  /**
+   * 진행 중 판정. 상한을 넘겨 남아 있으면 죽은 실행으로 보고 다음 주기가 진입한다.
+   * 스케줄(DepositSyncSchedule)과 **같은 상한**을 써야 두 계층이 어긋나지 않는다 —
+   * 여기가 더 길면 스케줄이 stale 로 열어줘도 이 층에서 다시 막혀 동기화가 영영 멈춘다.
+   */
+  private isStillRunning(): boolean {
+    if (this.syncStartedAt === null) {
+      return false;
+    }
+    if (Date.now() - this.syncStartedAt > MAX_SYNC_RUNTIME_MS) {
+      this.logger.warn(`이전 동기화가 상한(${MAX_SYNC_RUNTIME_MS / 1000}s)을 넘겨 stale 로 판단하고 진입합니다.`);
+      return false;
+    }
+    return true;
   }
 
   /** 총계만 필요하므로 1건짜리 페이지를 받아 totalElements 만 읽는다. */
@@ -189,7 +224,9 @@ export class DepositSyncService {
       accountName: item.accountName,
       // PII 4종은 암호화해서 넣는다. 상대(erp_macro)가 자기 DB 에 암호화 보관하는 값이라
       // 미러도 같은 수준을 유지한다. 응답에서 다시 복호화하는 쪽은 DepositService 다.
-      depositor: this.encrypt(item.depositor) as string,
+      // 원본에 입금처가 없으면 null 로 둔다. 예전에는 NOT NULL 컬럼에 `as string` 으로 밀어 넣었는데,
+      // 그러면 빈 입금처 한 행이 페이지 전체 INSERT 를 되돌려 백필이 영영 수렴하지 못했다.
+      depositor: this.encrypt(item.depositor),
       depositorRaw: this.encrypt(item.depositorRaw),
       erpPartnerCode: this.encrypt(item.erpPartnerCode),
       erpPartnerName: this.encrypt(item.erpPartnerName),

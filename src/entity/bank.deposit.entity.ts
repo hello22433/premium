@@ -74,8 +74,12 @@ export class BankDepositEntity {
   @Column({ type: 'varchar', length: 512, nullable: true, comment: 'ECOUNT 거래처명 (암호화 저장)' })
   erpPartnerName: string | null;
 
-  @Column({ type: 'varchar', length: 512, comment: '입금처 - (가상) 접두 제거본 (암호화 저장)' })
-  depositor: string;
+  /**
+   * ⚠️ nullable 이다. ECOUNT 원장에 입금처가 비는 행이 있고(수수료·자동이체 등), NOT NULL 로 두면
+   * 그런 행 하나가 페이지 단위 multi-row INSERT 전체를 되돌려 백필이 영영 수렴하지 못한다.
+   */
+  @Column({ type: 'varchar', length: 512, nullable: true, comment: '입금처 - (가상) 접두 제거본 (암호화 저장)' })
+  depositor: string | null;
 
   @Column({ type: 'varchar', length: 512, nullable: true, comment: '입금처 원문 (암호화 저장)' })
   depositorRaw: string | null;

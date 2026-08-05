@@ -43,7 +43,12 @@ CREATE TABLE `bank_deposit` (
   -- 결정론적이라 같은 평문은 항상 같은 암호문이며, 그 덕에 DISTINCT/전체일치 조회가 성립한다.
   `erp_partner_code`  VARCHAR(512) NULL     COMMENT '[원본][암호화] ECOUNT 거래처코드',
   `erp_partner_name`  VARCHAR(512) NULL     COMMENT '[원본][암호화] ECOUNT 거래처명',
-  `depositor`         VARCHAR(512) NOT NULL COMMENT '[원본][암호화] 입금처 - (가상) 접두 제거본',
+  -- ⚠️ NULL 허용이어야 한다. ECOUNT 출입금 원장에는 입금처가 비는 행이 있다(수수료·자동이체 등
+  --    출금 계열). NOT NULL 로 두면 그런 행 **한 개**가 500행짜리 multi-row INSERT 전체를 되돌리고,
+  --    백필이 매 주기 같은 자리에서 죽어 미러가 영원히 수렴하지 못한다(에러는 "일시 실패"로 보고된다).
+  --    빈 문자열은 암호화하지 않고 NULL 로 저장한다 — 결정론적 스킴에서 "빈값"이 특정 암호문으로
+  --    고정되면 그 자체가 식별 정보가 된다.
+  `depositor`         VARCHAR(512) NULL     COMMENT '[원본][암호화] 입금처 - (가상) 접두 제거본. 원본에 없으면 NULL',
   `depositor_raw`     VARCHAR(512) NULL     COMMENT '[원본][암호화] 입금처 원문',
   `amount`            BIGINT       NOT NULL COMMENT '[원본] 금액(원). INT 상한을 넘을 수 있어 BIGINT',
   `balance`           BIGINT       NOT NULL COMMENT '[원본] 거래후 잔액(원)',
