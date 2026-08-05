@@ -2,7 +2,7 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { BankDepositEntity } from '../../entity/bank.deposit.entity';
-import { WalletAccountEntity } from '../../entity/wallet.account.entity';
+import { WalletAccountEntity, WalletAccountOwnerType } from '../../entity/wallet.account.entity';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
 import { CryptoCipher } from '../../common/infra/crypto.cipher';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
@@ -18,6 +18,18 @@ import {
   DepositViewDto,
 } from '../api/deposit.res.dto';
 import { DEPOSIT_TX_TYPE_TO_DB, toDepositTxType } from '../interface/deposit.tx.type';
+
+/**
+ * 현재 유일하게 표시명을 해석할 수 있는 지갑 주인 타입.
+ * wallet_account.ownerType 과 같은 어휘를 쓴다(같은 개념에 같은 이름).
+ */
+const SETTLEMENT_CODE_OWNER_TYPE: WalletAccountOwnerType = 'SETTLEMENT_CODE';
+
+/**
+ * 표시명 맵의 키. 타입이 늘어나면 서로 다른 타입에 같은 id 가 존재할 수 있으므로
+ * id 단독이 아니라 (타입, id) 쌍을 키로 쓴다.
+ */
+const ownerKey = (ownerType: string, ownerId: string): string => `${ownerType}|${ownerId}`;
 
 /** 입금처 검색을 감사 로그에 남기기 위한 요청 맥락 */
 export type DepositListAuditContext = {
@@ -100,7 +112,7 @@ export class DepositService {
     queryBuilder = queryBuilder.take(take).skip(skip);
 
     const [depositList, totalCount] = await queryBuilder.getManyAndCount();
-    const ownerNameMap = await this.loadSettlementCodeOwners(depositList);
+    const ownerNameMap = await this.loadMatchedOwnerNames(depositList);
 
     const list: DepositViewDto[] = depositList.map((deposit) => ({
       id: deposit.id,
@@ -120,10 +132,12 @@ export class DepositService {
       balance: Number(deposit.balance),
       voucherNo: deposit.voucherNo,
       matchStatus: deposit.matchStatus,
-      matchedSettlementCode: deposit.matchedSettlementCode,
-      matchedBusinessName: deposit.matchedSettlementCode
-        ? (ownerNameMap.get(deposit.matchedSettlementCode) ?? null)
-        : null,
+      matchedOwnerType: deposit.matchedOwnerType,
+      matchedOwnerId: deposit.matchedOwnerId,
+      matchedOwnerName:
+        deposit.matchedOwnerType !== null && deposit.matchedOwnerId !== null
+          ? (ownerNameMap.get(ownerKey(deposit.matchedOwnerType, deposit.matchedOwnerId)) ?? null)
+          : null,
       scrapedAt: deposit.sourceScrapedAt,
     }));
 
@@ -184,16 +198,24 @@ export class DepositService {
   }
 
   /**
-   * 페이지에 등장한 정산코드의 표시명(홈 회사명)을 한 번에 읽는다.
+   * 페이지에 등장한 매칭 대상의 표시명을 한 번에 읽는다.
    *
-   * matched_settlement_code 는 FK 제약 없는 논리 참조라 엔티티 관계로 JOIN 할 수 없다.
+   * ⚠️ **지갑 주인 단위가 확장될 때 손대야 할 유일한 지점이다.**
+   * 표시명이 나오는 테이블은 타입마다 다르므로(SETTLEMENT_CODE → user_company,
+   * 다른 타입 → 각자의 마스터) 타입이 늘면 여기에 분기를 추가한다. 지금은 해석 가능한
+   * 타입이 SETTLEMENT_CODE 하나뿐이라, 그 외 타입은 이름 없이(null) 코드만 노출된다.
+   *
+   * matched_owner_id 는 FK 제약 없는 논리 참조라 엔티티 관계로 JOIN 할 수 없다.
    * 행마다 조회하면 N+1 이 되고, 매칭 기능이 가동 전이라 대부분의 페이지는 값이 전부 NULL
    * 이므로 그 경우 추가 쿼리 자체가 발생하지 않는다.
    */
-  private async loadSettlementCodeOwners(depositList: BankDepositEntity[]): Promise<Map<string, string | null>> {
+  private async loadMatchedOwnerNames(depositList: BankDepositEntity[]): Promise<Map<string, string | null>> {
     const codes = [
       ...new Set(
-        depositList.map((deposit) => deposit.matchedSettlementCode).filter((code): code is string => code !== null),
+        depositList
+          .filter((deposit) => deposit.matchedOwnerType === SETTLEMENT_CODE_OWNER_TYPE)
+          .map((deposit) => deposit.matchedOwnerId)
+          .filter((code): code is string => code !== null),
       ),
     ];
 
@@ -206,11 +228,11 @@ export class DepositService {
       .leftJoin(UserCompanyEntity, 'company', 'company.id = wallet.ownerCompanyId')
       .select('wallet.ownerId', 'settlementCode')
       .addSelect('company.businessName', 'businessName')
-      .where('wallet.ownerType = :ownerType', { ownerType: 'SETTLEMENT_CODE' })
+      .where('wallet.ownerType = :ownerType', { ownerType: SETTLEMENT_CODE_OWNER_TYPE })
       .andWhere('wallet.ownerId IN (:...codes)', { codes })
       .getRawMany<{ settlementCode: string; businessName: string | null }>();
 
-    return new Map(rows.map((row) => [row.settlementCode, row.businessName]));
+    return new Map(rows.map((row) => [ownerKey(SETTLEMENT_CODE_OWNER_TYPE, row.settlementCode), row.businessName]));
   }
 
   /**

@@ -3,7 +3,7 @@
  *
  * 단위 테스트는 QueryBuilder 를 모킹하므로 다음 두 가지를 검증하지 못한다.
  *   ① migration/bank-deposit-mirror.sql 의 DDL 과 BankDepositEntity 가 실제로 맞는가
- *   ② upsert 가 프리미엄 소유 컬럼(matched_user_id/match_status)을 정말 보존하는가
+ *   ② upsert 가 프리미엄 소유 컬럼(matched_owner_type/matched_owner_id/match_status)을 정말 보존하는가
  *      — 이건 SQL 이 만들어지는 방식의 문제라 모킹으로는 절대 잡을 수 없다.
  * 이 스크립트는 그 둘만 실제 DB 로 확인한다.
  *
@@ -177,7 +177,7 @@ const fakeConfig = (values: Record<string, string> = {}) => ({
     // 4) 운영자가 한 건을 고객에 매칭했다고 가정 (앞으로 프리미엄이 하게 될 일)
     await repository.update(
       { dedupKey: 'aaaa1111' },
-      { matchedSettlementCode: 'company-7', matchStatus: DepositMatchStatus.MAPPED },
+      { matchedOwnerType: 'SETTLEMENT_CODE', matchedOwnerId: 'company-7', matchStatus: DepositMatchStatus.MAPPED },
     );
 
     // 5) 다음 주기 동기화 — 같은 건이 다시 오고, 회계전표가 뒤늦게 채워짐
@@ -193,9 +193,9 @@ const fakeConfig = (values: Record<string, string> = {}) => ({
     // ===== 이 스크립트의 핵심 =====
     check('재동기화해도 행이 늘지 않는다 (dedup_key 멱등)', (await repository.count()) === 2, await repository.count());
     check(
-      '⭐ 운영자가 지정한 matched_settlement_code 가 보존된다',
-      matched.matchedSettlementCode === 'company-7',
-      matched.matchedSettlementCode,
+      '⭐ 운영자가 지정한 matched_owner_type/id 가 보존된다',
+      matched.matchedOwnerType === 'SETTLEMENT_CODE' && matched.matchedOwnerId === 'company-7',
+      { type: matched.matchedOwnerType, id: matched.matchedOwnerId },
     );
     check(
       '⭐ 운영자가 지정한 match_status 가 보존된다',
@@ -229,8 +229,25 @@ const fakeConfig = (values: Record<string, string> = {}) => ({
     );
     check(
       '되돌림 동기화에도 운영자 매칭은 여전히 보존된다',
-      afterRevert.matchedSettlementCode === 'company-7' && afterRevert.matchStatus === DepositMatchStatus.MAPPED,
-      { code: afterRevert.matchedSettlementCode, status: afterRevert.matchStatus },
+      afterRevert.matchedOwnerType === 'SETTLEMENT_CODE' &&
+        afterRevert.matchedOwnerId === 'company-7' &&
+        afterRevert.matchStatus === DepositMatchStatus.MAPPED,
+      { type: afterRevert.matchedOwnerType, id: afterRevert.matchedOwnerId, status: afterRevert.matchStatus },
+    );
+
+    // 5-c) ⭐ 다형 참조(타입+id 쌍)의 반쪽 행을 DB 가 막는가.
+    //      한쪽만 채워진 행은 표시명 조회에서 조용히 null 이 되어 미매칭처럼 보인다.
+    //      CHECK 제약은 MySQL 8.0.16+ 에서만 실제로 강제되므로 실 DB 로만 확인 가능하다.
+    let halfMatchRejected = false;
+    try {
+      await repository.update({ dedupKey: 'bbbb2222' }, { matchedOwnerId: 'company-9' });
+    } catch {
+      halfMatchRejected = true;
+    }
+    check(
+      '⭐ 타입 없이 id 만 채운 반쪽 매칭을 DB CHECK 가 거부한다',
+      halfMatchRejected,
+      halfMatchRejected ? 'rejected' : (await repository.findOneByOrFail({ dedupKey: 'bbbb2222' })).matchedOwnerId,
     );
 
     // 6) 계좌 집계

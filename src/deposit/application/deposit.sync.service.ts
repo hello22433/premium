@@ -163,7 +163,7 @@ export class DepositSyncService {
    *
    * ⚠️ 갱신 컬럼을 명시적으로 열거하는 것이 이 메서드의 핵심이다.
    * 엔티티 전체를 save() 하거나 갱신 컬럼을 생략하면, 운영자가 방금 지정한
-   * matched_settlement_code / match_status 가 다음 동기화에서 조용히 UNMATCHED 로 되돌아간다.
+   * matched_owner_type / matched_owner_id / match_status 가 다음 동기화에서 조용히 UNMATCHED 로 되돌아간다.
    * (같은 부류의 사고가 이 레포에서 이미 있었다 — save() 가 남이 쓴 상태를 stale 로 덮은 건)
    *
    * 원본이 값을 비우는 경우(회계반영 취소·거래처 detach)도 그대로 null 로 덮어써야 미러가

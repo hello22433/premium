@@ -50,12 +50,17 @@ CREATE TABLE `bank_deposit` (
   `voucher_no`        VARCHAR(50)  NULL     COMMENT '[원본] 회계전표번호. 숫자가 아닐 수 있음(강제회계반영 등) — 파싱 금지',
 
   -- ===== 프리미엄 소유 (동기화가 덮지 않는다) =====
-  -- 귀속 단위는 고객(user)이 아니라 **정산코드**다. 예치금 지갑이 정산코드 단위이고
-  -- (wallet_account.owner_type='SETTLEMENT_CODE', owner_id=user.settlement_code),
-  -- 정산코드 하나를 여러 user 가 공유하므로 user 로 잡으면 "어느 user 를 골라도 돈은 같은
-  -- 지갑으로 가는" 의미 없는 자유도가 생기고, settlement_code 가 없는 user 에 매칭하면
+  -- 귀속 대상은 고객(user)이 아니라 **예치금 지갑의 주인**이다. 지갑(wallet_account)은 주인을
+  -- (owner_type, owner_id) **쌍**으로 표현하므로, 이 미러도 같은 쌍을 그대로 복사한다.
+  --   · 현재 유효한 타입은 'SETTLEMENT_CODE' 하나뿐이고, 그때 owner_id = user.settlement_code 다.
+  --   · 타입이 하나뿐인데도 컬럼을 함께 두는 이유: 지갑 주인 단위 확장이 예정되어 있고,
+  --     id 만 저장하면 확장 시점에 기존 행이 어느 타입이었는지 **사후 판별이 불가능**하다.
+  --     (지금 채워두면 확장 시 이 테이블은 손댈 필요가 없다)
+  -- user 로 잡지 않는 이유: 정산코드 하나를 여러 user 가 공유하므로 어느 user 를 골라도 돈은
+  -- 같은 지갑으로 가는 의미 없는 자유도가 생기고, settlement_code 가 없는 user 에 매칭하면
   -- 매칭은 통과하고 충전 단계에서 실패하는 지연 실패가 된다.
-  `matched_settlement_code` VARCHAR(50) NULL COMMENT '[프리미엄] wallet_account.owner_id(=user.settlement_code). 미매핑이면 NULL. FK 제약 없는 논리 참조',
+  `matched_owner_type` VARCHAR(20) NULL COMMENT '[프리미엄] wallet_account.owner_type. 현재 SETTLEMENT_CODE 단일. 미매핑이면 NULL',
+  `matched_owner_id`   VARCHAR(50) NULL COMMENT '[프리미엄] wallet_account.owner_id(SETTLEMENT_CODE 면 user.settlement_code). FK 제약 없는 논리 참조',
   `match_status`      VARCHAR(20)  NOT NULL DEFAULT 'UNMATCHED' COMMENT '[프리미엄] UNMATCHED/MAPPED/AMBIGUOUS/CREDITED',
 
   -- ===== 동기화 메타 =====
@@ -76,7 +81,17 @@ CREATE TABLE `bank_deposit` (
   -- 뽑고 전체일치(IN)로 되짚는 검색 경로가 이 인덱스를 탄다. 길이 제한상 접두 191바이트만.
   KEY `idx_bank_deposit_depositor` (`depositor`(191)),
   KEY `idx_bank_deposit_match_status` (`match_status`),
-  KEY `idx_bank_deposit_account_no` (`account_no`)
+  KEY `idx_bank_deposit_account_no` (`account_no`),
+  -- 다형 참조(타입+id 쌍)의 전형적 결함인 "한쪽만 채워진 행"을 DB 에서 차단한다.
+  -- 매칭은 언제나 (타입, id) 가 함께 정해지는 사건이고, 한쪽만 있는 행은 표시명 조회에서
+  -- 조용히 null 이 되어 미매칭처럼 보인다. wallet_account 의 chk_wallet_owner_type 과 같은 관례.
+  CONSTRAINT `chk_bank_deposit_matched_owner` CHECK (
+    (`matched_owner_type` IS NULL AND `matched_owner_id` IS NULL)
+    OR (`matched_owner_type` IS NOT NULL AND `matched_owner_id` IS NOT NULL)
+  )
+  -- (matched_owner_type, matched_owner_id) 인덱스는 일부러 만들지 않는다. 지금은 이 컬럼으로
+  -- 거르는 조회 경로가 없고, 5분 주기 upsert 가 도는 테이블이라 안 쓰는 인덱스는 쓰기 비용만
+  -- 남는다. "이 주인으로 매칭된 입금 목록" 화면이 생길 때 함께 추가하면 된다.
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='ECOUNT 입출금 거래내역 미러(erp_macro API 로 동기화)';
 
 

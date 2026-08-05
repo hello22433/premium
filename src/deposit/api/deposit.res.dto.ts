@@ -50,13 +50,22 @@ export class DepositViewDto {
   matchStatus: string;
 
   @ApiProperty({
-    description: '매칭된 정산코드 (예치금 지갑의 주인 단위. 미매칭이면 null)',
+    description: '매칭된 예치금 지갑의 주인 타입 (현재 SETTLEMENT_CODE 단일. 미매칭이면 null)',
     nullable: true,
   })
-  matchedSettlementCode: string | null;
+  matchedOwnerType: string | null;
 
-  @ApiProperty({ description: '정산코드의 홈 회사명 (미매칭이면 null)', nullable: true })
-  matchedBusinessName: string | null;
+  @ApiProperty({
+    description: '매칭된 지갑 주인의 식별자 (SETTLEMENT_CODE 면 정산코드. 미매칭이면 null)',
+    nullable: true,
+  })
+  matchedOwnerId: string | null;
+
+  @ApiProperty({
+    description: '매칭 대상 표시명 (정산코드면 홈 회사명). 미매칭이거나 이름을 못 찾으면 null',
+    nullable: true,
+  })
+  matchedOwnerName: string | null;
 
   @ApiProperty({ description: '스크래핑 시각' })
   scrapedAt: Date;

@@ -1,5 +1,6 @@
 import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn, Unique, UpdateDateColumn } from 'typeorm';
 import { DepositMatchStatus } from '../deposit/interface/deposit.match.status';
+import { WalletAccountOwnerType } from './wallet.account.entity';
 
 /**
  * ECOUNT 입출금 거래내역 미러 (프리미엄 소유).
@@ -16,7 +17,7 @@ import { DepositMatchStatus } from '../deposit/interface/deposit.match.status';
  *
  * ⚠️ 컬럼 소유권이 두 갈래다.
  *   · [원본] erp_macro 가 정본 — 동기화가 매 주기 덮어쓴다.
- *   · [프리미엄] matchedUserId / matchStatus — 프리미엄만 쓴다. 동기화가 건드리면
+ *   · [프리미엄] matchedOwnerType / matchedOwnerId / matchStatus — 프리미엄만 쓴다. 동기화가 건드리면
  *     운영자가 방금 지정한 매칭이 다음 주기에 UNMATCHED 로 되돌아간다.
  *     그래서 upsert 는 갱신 컬럼을 명시적으로 열거한다(deposit.sync.service.ts).
  *
@@ -97,14 +98,29 @@ export class BankDepositEntity {
   // ===== 프리미엄 소유 (동기화가 덮지 않는다) =====
 
   /**
-   * 귀속 단위는 고객(user)이 아니라 **정산코드**다.
-   * 예치금 지갑이 정산코드 단위이고(wallet_account.ownerType='SETTLEMENT_CODE',
-   * ownerId=user.settlementCode), 정산코드 하나를 여러 user 가 공유한다. user 로 잡으면
-   * 어느 user 를 골라도 돈은 같은 지갑으로 가는 무의미한 자유도가 생기고, settlementCode 가
-   * 없는 user 에 매칭하면 매칭은 통과하고 충전 단계에서 실패하는 지연 실패가 된다.
+   * 귀속 대상은 고객(user)이 아니라 **예치금 지갑의 주인**이다.
+   *
+   * 지갑(wallet_account)은 주인을 (ownerType, ownerId) **쌍**으로 표현하므로 미러도 같은 쌍을
+   * 복사한다. 현재 유효한 타입은 'SETTLEMENT_CODE' 하나뿐이고 그때 ownerId = user.settlementCode 다.
+   * 타입이 하나뿐인데도 컬럼을 함께 두는 이유는 지갑 주인 단위 확장이 예정되어 있어서다 —
+   * id 만 저장하면 확장 시점에 기존 행이 어느 타입이었는지 사후 판별이 불가능하다.
+   *
+   * user 로 잡지 않는 이유: 정산코드 하나를 여러 user 가 공유하므로 어느 user 를 골라도 돈은
+   * 같은 지갑으로 가는 무의미한 자유도가 생기고, settlementCode 가 없는 user 에 매칭하면
+   * 매칭은 통과하고 충전 단계에서 실패하는 지연 실패가 된다.
+   *
+   * ⚠️ 두 컬럼은 항상 함께 채우거나 함께 비운다(DB CHECK: chk_bank_deposit_matched_owner).
    */
+  @Column({
+    type: 'varchar',
+    length: 20,
+    nullable: true,
+    comment: 'wallet_account.owner_type. 현재 SETTLEMENT_CODE 단일',
+  })
+  matchedOwnerType: WalletAccountOwnerType | null;
+
   @Column({ type: 'varchar', length: 50, nullable: true, comment: 'wallet_account.owner_id. FK 제약 없는 논리 참조' })
-  matchedSettlementCode: string | null;
+  matchedOwnerId: string | null;
 
   @Column({ type: 'varchar', length: 20, default: DepositMatchStatus.UNMATCHED })
   matchStatus: string;

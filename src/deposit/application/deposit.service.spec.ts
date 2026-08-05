@@ -84,7 +84,8 @@ describe('DepositService.getList', () => {
     amount: '350000',
     balance: '45717465',
     voucherNo: '2026/07/29-2',
-    matchedSettlementCode: null,
+    matchedOwnerType: null,
+    matchedOwnerId: null,
     matchStatus: DepositMatchStatus.UNMATCHED,
     sourceScrapedAt: new Date('2026-08-03T01:35:51.995Z'),
     syncedAt: new Date('2026-08-03T02:00:00.000Z'),
@@ -354,21 +355,22 @@ describe('DepositService.getList', () => {
     };
 
     it('매칭이 없으면 지갑 조회를 아예 하지 않는다', async () => {
-      const { qb } = buildQbSpy([row({ matchedSettlementCode: null })]);
+      const { qb } = buildQbSpy([row({ matchedOwnerType: null, matchedOwnerId: null })]);
       const { sut, walletAccountRepository } = makeSut(qb);
 
       const result = await sut.getList(query());
 
       expect(walletAccountRepository.createQueryBuilder).not.toHaveBeenCalled();
-      expect(result.list[0].matchedSettlementCode).toBeNull();
-      expect(result.list[0].matchedBusinessName).toBeNull();
+      expect(result.list[0].matchedOwnerType).toBeNull();
+      expect(result.list[0].matchedOwnerId).toBeNull();
+      expect(result.list[0].matchedOwnerName).toBeNull();
     });
 
     it('매칭된 정산코드가 있으면 중복 없이 한 번만 조회해 홈 회사명을 채운다', async () => {
       const { qb } = buildQbSpy([
-        row({ id: 1, matchedSettlementCode: 'company-7' }),
-        row({ id: 2, matchedSettlementCode: 'company-7' }),
-        row({ id: 3, matchedSettlementCode: null }),
+        row({ id: 1, matchedOwnerType: 'SETTLEMENT_CODE', matchedOwnerId: 'company-7' }),
+        row({ id: 2, matchedOwnerType: 'SETTLEMENT_CODE', matchedOwnerId: 'company-7' }),
+        row({ id: 3, matchedOwnerType: null, matchedOwnerId: null }),
       ]);
       const { walletQb, captured } = buildWalletQb([{ settlementCode: 'company-7', businessName: '두성종이' }]);
       const { sut, walletAccountRepository } = makeSut(qb, walletQb);
@@ -377,19 +379,40 @@ describe('DepositService.getList', () => {
 
       expect(walletAccountRepository.createQueryBuilder).toHaveBeenCalledTimes(1);
       expect(captured.codes).toEqual(['company-7']);
-      expect(result.list[0].matchedBusinessName).toBe('두성종이');
-      expect(result.list[2].matchedBusinessName).toBeNull();
+      expect(result.list[0].matchedOwnerName).toBe('두성종이');
+      expect(result.list[2].matchedOwnerName).toBeNull();
     });
 
     it('정산코드가 가리키는 지갑이 없어도 목록은 깨지지 않는다 (FK 제약 없는 논리 참조)', async () => {
-      const { qb } = buildQbSpy([row({ matchedSettlementCode: 'company-999' })]);
+      const { qb } = buildQbSpy([row({ matchedOwnerType: 'SETTLEMENT_CODE', matchedOwnerId: 'company-999' })]);
       const { walletQb } = buildWalletQb([]);
       const { sut } = makeSut(qb, walletQb);
 
       const result = await sut.getList(query());
 
-      expect(result.list[0].matchedSettlementCode).toBe('company-999');
-      expect(result.list[0].matchedBusinessName).toBeNull();
+      expect(result.list[0].matchedOwnerId).toBe('company-999');
+      expect(result.list[0].matchedOwnerName).toBeNull();
+    });
+
+    // 지갑 주인 단위 확장 대비. 아직 이름을 해석할 수 없는 타입이 섞여 들어와도
+    // (a) 정산코드로 오인해 지갑을 뒤지지 않고 (b) 목록이 죽지 않아야 한다.
+    // 그 타입의 표시명 조회는 loadMatchedOwnerNames 에 분기를 추가하는 시점에 붙는다.
+    it('아직 지원하지 않는 주인 타입은 지갑 조회 없이 식별자만 노출한다', async () => {
+      const { qb } = buildQbSpy([
+        row({ id: 1, matchedOwnerType: 'PARTNER' as never, matchedOwnerId: 'p-7' }),
+        row({ id: 2, matchedOwnerType: 'SETTLEMENT_CODE', matchedOwnerId: 'company-7' }),
+      ]);
+      const { walletQb, captured } = buildWalletQb([{ settlementCode: 'company-7', businessName: '두성종이' }]);
+      const { sut } = makeSut(qb, walletQb);
+
+      const result = await sut.getList(query());
+
+      // 미지원 타입의 id 가 정산코드 조회 조건에 섞여 들어가지 않는다
+      expect(captured.codes).toEqual(['company-7']);
+      expect(result.list[0].matchedOwnerType).toBe('PARTNER');
+      expect(result.list[0].matchedOwnerId).toBe('p-7');
+      expect(result.list[0].matchedOwnerName).toBeNull();
+      expect(result.list[1].matchedOwnerName).toBe('두성종이');
     });
   });
 });
