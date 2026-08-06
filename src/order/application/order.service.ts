@@ -1305,6 +1305,7 @@ export class OrderService {
           orderDeliveryList: orderDeliveryList,
 
           emailSendType: orderProductMapping.emailSendType,
+          emailFinalSendMethod: orderProductMapping.emailFinalSendMethod,
           fromEmail: orderProductMapping.fromEmail,
           fromPhoneNumber: orderProductMapping.fromPhoneNumber,
           requestToDestroyPersonalInfoDay: orderProductMapping.requestToDestroyPersonalInfoDay,
@@ -1659,6 +1660,7 @@ export class OrderService {
           orderDeliveryList: [], // 이벤트 불러오기 시 수신자 정보는 빈 배열
 
           emailSendType: orderProductMapping.emailSendType,
+          emailFinalSendMethod: orderProductMapping.emailFinalSendMethod,
           fromEmail: orderProductMapping.fromEmail,
           fromPhoneNumber: orderProductMapping.fromPhoneNumber,
           requestToDestroyPersonalInfoDay: orderProductMapping.requestToDestroyPersonalInfoDay,
@@ -3921,6 +3923,7 @@ export class OrderService {
       orderProduct.fromEmail = product.fromEmail;
       orderProduct.sendTitle = product.sendTitle;
       orderProduct.emailSendType = product.emailSendType;
+      orderProduct.emailFinalSendMethod = product.emailFinalSendMethod;
       orderProduct.useEmailContent = product.useEmailContent;
       orderProduct.sendContent = product.sendContent;
       orderProduct.sendRequestAt = productSendAt;
@@ -4125,6 +4128,7 @@ export class OrderService {
       orderProduct.fromEmail = product.fromEmail;
       orderProduct.sendTitle = product.sendTitle;
       orderProduct.emailSendType = product.emailSendType;
+      orderProduct.emailFinalSendMethod = product.emailFinalSendMethod;
       orderProduct.useEmailContent = product.useEmailContent;
       orderProduct.sendContent = product.sendContent;
       orderProduct.sendRequestAt = productSendAt;

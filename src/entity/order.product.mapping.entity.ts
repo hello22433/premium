@@ -7,6 +7,7 @@ import { IOrderSettleDiscountType } from '../order/interface/order.settle.discou
 import { IPriceAdjustment } from '../user_discount/interface/price.adjustment';
 import { IOrderSendMethod } from '../order/interface/order.send.method';
 import { OrderEmailSendType } from '../order/domain/order.email.send.type';
+import { OrderEmailFinalSendMethod } from '../order/domain/order.email.final.send.method';
 
 @Entity('order_product_mapping')
 export class OrderProductMappingEntity extends BaseEntity {
@@ -103,6 +104,9 @@ export class OrderProductMappingEntity extends BaseEntity {
 
   @Column({ type: 'varchar', nullable: true, length: 100, comment: 'QR: QR, URL: URL' })
   emailSendType: OrderEmailSendType | null;
+
+  @Column({ type: 'varchar', nullable: true, length: 100, comment: '이메일 쿠폰 최종 발신 수단(ALIM_TALK|MMS). NULL=레거시(현행 알림톡 우선)' })
+  emailFinalSendMethod: OrderEmailFinalSendMethod | null;
 
   @Column({ type: 'text', nullable: true, comment: '이메일 시 사용 방법' })
   useEmailContent: string | null;
