@@ -73,6 +73,9 @@ describe('OrderService.deliveryCancel — 취소메일 after-commit 배선', () 
     sut.ssgEventService = ssgEventService;
     sut.orderCancelNotificationService = orderCancelNotificationService;
     sut.legacyWalletCreditSyncService = { syncCredit: jest.fn(), syncDeposit: jest.fn() };
+    // 소유권(조회범위) 검증은 이 테스트의 관심사가 아니다 — 통과시키고 통지 배선만 본다.
+    // (계약 자체는 order.service.cancel-ownership.spec.ts 가 고정한다)
+    sut.assertOrderInViewScope = jest.fn().mockResolvedValue(undefined);
     return { sut, order, oneUser, company, orderCancelNotificationService };
   };
 

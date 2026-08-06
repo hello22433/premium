@@ -777,7 +777,13 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
         refundFromAttemptTransactions: true,
         idempotencyKeyPrefix: 'fail_refund:100:100:att-resend-point-expired',
       }),
-    ).resolves.toEqual({ ledgerIds: ['1'], totalRefundedAmount: 0, alreadyRefunded: false });
+    ).resolves.toEqual({
+      ledgerIds: ['1'],
+      totalRefundedAmount: 0,
+      alreadyRefunded: false,
+      // 만료 포인트는 skip 되므로 실제로 복구된 재원이 하나도 없다.
+      restoredByResource: { deposit: 0, creditUsed: 0, creditExcess: 0, point: 0 },
+    });
 
     expect(pointGrants['pg-expired'].remainingAmount).toBe(0);
     expect(pointUsages[0].restoredAmount).toBe(0);
@@ -814,7 +820,13 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
         refundFromAttemptTransactions: true,
         idempotencyKeyPrefix: 'fail_refund:100:100:att-resend-point-expired',
       }),
-    ).resolves.toEqual({ ledgerIds: ['1'], totalRefundedAmount: 0, alreadyRefunded: true });
+    ).resolves.toEqual({
+      ledgerIds: ['1'],
+      totalRefundedAmount: 0,
+      alreadyRefunded: true,
+      // 멱등 재시도는 "이번 호출이 복구한 몫" 이 0 이어야 한다 — 미러가 두 번 적립되면 안 되므로.
+      restoredByResource: { deposit: 0, creditUsed: 0, creditExcess: 0, point: 0 },
+    });
   });
 
   it('reverseRefund: ledger 미존재 → BadRequest', async () => {
