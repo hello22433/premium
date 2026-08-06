@@ -5827,11 +5827,13 @@ export class OrderService {
    *   지금은 발송 경로들이 claimed_at/actual_send_at 을 먼저 채워 간접 차단되지만 그것은 타 모듈의
    *   암묵 불변식이다. 이 문장이 "돈을 되돌려도 되는가" 의 마지막 관문이므로 남에게 기대지 않는다.
    *
-   * sendRequestAt(10분 규칙)도 **DB NOW() 기준으로** 다시 본다. 앱에서 계산한 now 를 넘기면
-   * 조회 때 쓴 값과 같아 재검증이 되지 않으므로 SQL 함수를 쓴다. 조회~갱신 사이에 send_request_at 이
-   * 다른 흐름(유효기간 변경·재발행)으로 앞당겨진 행을 배제하고, "발송 10분 전까지" 규칙을 갱신
-   * 시점에도 그대로 지킨다. (미발송 자체는 위 상태 신호들이 보장한다 — 배치는 send_request_at 이
-   * 지난 행만 집고 집는 순간 claimed_at 이 차므로, 이 조건은 규칙 준수용이지 유일한 근거가 아니다.)
+   * sendRequestAt(10분 규칙)도 **갱신 직전에 새로 읽은 시각** 기준으로 다시 본다(조회 때 쓴 now 를
+   * 재사용하면 재검증이 아니다). 조회~갱신 사이에 send_request_at 이 다른 흐름(유효기간 변경·재발행)
+   * 으로 앞당겨진 행을 배제하고, "발송 10분 전까지" 규칙을 갱신 시점에도 지킨다.
+   * SQL NOW() 를 쓰지 않는 이유는 DB 서버 time_zone 설정에 의존하게 되어(저장은 드라이버
+   * timezone 변환) 설정이 바뀌면 조건이 조용히 무력화되기 때문이다 — 자세한 근거는 아래 주석 참조.
+   * (미발송 자체는 위 상태 신호들이 보장한다 — 배치는 send_request_at 이 지난 행만 집고 집는 순간
+   * claimed_at 이 차므로, 이 조건은 규칙 준수용이지 유일한 근거가 아니다.)
    */
   private async cancelDeliveriesIfStillWaiting(
     orderId: number,
@@ -5849,6 +5851,15 @@ export class OrderService {
         `cancelDeliveriesIfStillWaiting: 취소 대상이 비어 있다 (orderId=${orderId})`,
       );
     }
+
+    // ★ 컷오프 재검증 기준 시각은 **갱신 직전에 새로 읽는다**(조회 때 쓴 now 를 재사용하면 재검증이
+    //   아니다). NOW() 같은 SQL 함수를 쓰지 않는 이유는 타임존 의존을 만들지 않기 위해서다 —
+    //   NOW() 는 DB 서버 time_zone 설정을 따르는데 send_request_at 은 드라이버가 커넥션
+    //   timezone('+09:00')으로 변환해 넣은 값이라, 서버 tz 가 UTC 로 바뀌면 9시간이 어긋나
+    //   조건이 **항상 참(= 조용한 무력화)** 이 된다. 자금 가드가 인프라 설정 변경에 조용히
+    //   꺼지면 안 된다. JS Date 를 바인딩하면 저장할 때와 같은 변환을 거쳐 항상 정합적이다.
+    //   (dev RDS·로컬 모두 Asia/Seoul 이라 지금은 NOW() 로도 맞지만, 그 일치에 기대지 않는다.)
+    const cutoffAt = new Date(Date.now() + DELIVERY_CANCEL_CUTOFF_MS);
 
     const result = await this.orderDeliveryRepository
       .createQueryBuilder()
@@ -5882,16 +5893,13 @@ export class OrderService {
       .andWhere('couponIssuedAt IS NULL')
       .andWhere('barCode IS NULL')
       .andWhere('reportState IS NULL')
-      // ★ 컷오프도 갱신 시점에 **DB 현재시각 기준**으로 다시 본다 (관리자 리뷰 P1).
-      //   앱에서 계산한 now 를 파라미터로 넘기면 조회 때 쓴 값과 같아 재검증이 되지 않으므로
-      //   NOW() 를 쓴다. 조회~갱신 사이에 send_request_at 이 다른 흐름(유효기간 변경·재발행)으로
-      //   앞당겨져 발송이 임박해진 행을 여기서 배제한다.
+      // ★ 컷오프를 갱신 시점 기준으로 다시 본다 (관리자 리뷰 P1). cutoffAt 은 이 UPDATE 직전에
+      //   새로 읽은 시각이라, 조회~갱신 사이에 send_request_at 이 다른 흐름(유효기간 변경·재발행)
+      //   으로 앞당겨져 발송이 임박해진 행을 배제한다.
       //   ※ 이 조건이 없어도 "이미 나간 건" 은 위 4개 신호가 막는다(배치는 send_request_at 이
-      //     지난 행만 집고, 집는 순간 claimed_at 이 찬다). 즉 이 조건은 10분 규칙 자체를 갱신
-      //     시점에도 지키기 위한 것이지 미발송 보장의 유일한 근거가 아니다.
-      .andWhere('send_request_at >= DATE_ADD(NOW(), INTERVAL :cutoffMinutes MINUTE)', {
-        cutoffMinutes: DELIVERY_CANCEL_CUTOFF_MS / 60_000,
-      })
+      //     지난 행만 집고, 집는 순간 claimed_at 이 찬다). 즉 이 조건은 10분 규칙을 갱신 시점에도
+      //     지키기 위한 것이지 미발송 보장의 유일한 근거가 아니다.
+      .andWhere('sendRequestAt >= :cutoffAt', { cutoffAt })
       .andWhere('deletedAt IS NULL')
       .execute();
 
@@ -6199,7 +6207,10 @@ export class OrderService {
       // CAS 로 status=CANCEL 이 이미 반영된 발송건을 같은 트랜잭션에서 재조회해 재계산한다
       // (정산수정과 동일한 계산 함수 calculateOrderSettlementAmount + 부분취소 전용 로더).
       //
-      // ※※ [별도 확인 필요 / PR 코멘트 참고] settleAmount 의 basis 가 코드베이스에서 통일돼 있지 않다.
+      // ※※ [별도 티켓 — 추적 문서: docs/followup-settleamount-basis-inconsistency.md]
+      //   (리뷰 LOW 반영: 주석에만 남기면 사라지므로 추적 문서 경로를 코드에 박아 둔다.
+      //    티켓 번호가 발급되면 이 줄에 함께 적을 것.)
+      //   settleAmount 의 basis 가 코드베이스에서 통일돼 있지 않다.
       //   - 발송확정(wallet 최신, order.service deliveryConfirmed):
       //       settleAmount = allocation.payableSettlementAmount
       //       = (gross - 포인트) + 카드할증(gross - 포인트)   ← 포인트 제외, 할증 base 도 포인트 뺀 값
