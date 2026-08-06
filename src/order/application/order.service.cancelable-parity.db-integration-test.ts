@@ -299,4 +299,32 @@ describe('OrderService cancelable — 술어 ↔ SQL parity (실 DB)', () => {
     const after = await deliveryRepository.findByIds(ids);
     expect(after[0].status).toBe('WAIT'); // 취소되지 않았다
   });
+
+  /**
+   * 관리자 리뷰 P1 — 컷오프도 갱신 시점에 DB NOW() 기준으로 재검증되는가.
+   *
+   * 조회 시점엔 컷오프를 넘겼던 행의 send_request_at 이 그 사이 앞당겨져(유효기간 변경·재발행 등)
+   * 발송 임박이 되면, CAS 가 그 행을 배제해야 한다. 앱에서 계산한 now 를 파라미터로 넘겼다면
+   * 조회 때 쓴 값과 같아 이 테스트가 통과하지 못한다(= DB NOW() 를 쓴다는 계약을 고정).
+   */
+  it('조회 후 send_request_at 이 컷오프 안으로 앞당겨지면 CAS 가 취소를 거부한다 (DB NOW 기준 재검증)', async () => {
+    const { orderId, ids } = await seedOrder(IOrderType.GENERAL, [{}]);
+
+    const before = new Set<number>(await service.findCancelableDeliveryIds(orderId, now));
+    expect(before.has(ids[0])).toBe(true); // 조회 시점엔 컷오프 통과
+
+    // ── 창 안에서 예약시각이 5분 뒤로 앞당겨진다(컷오프 10분 이내) ──
+    await deliveryRepository.update(ids[0], { sendRequestAt: withinCutoffSendAt } as any);
+
+    const svc: any = Object.create(OrderService.prototype);
+    svc.orderDeliveryRepository = deliveryRepository;
+    svc.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+
+    await expect(svc.cancelDeliveriesIfStillWaiting(orderId, ids, '사유', new Date())).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+
+    const after = await deliveryRepository.findByIds(ids);
+    expect(after[0].status).toBe('WAIT');
+  });
 });
