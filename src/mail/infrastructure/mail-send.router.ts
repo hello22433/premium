@@ -54,25 +54,18 @@ export class MailSendRouter implements IMailSend {
     });
 
     // ISmtpMailSendOut → IMailSendOut 변환
-    if (smtpResult.success) {
-      return {
-        code: 'SUC',
-        message: `SMTP 발송 성공: ${smtpResult.messageId}`,
-        result: {
-          successList: [obj.to],
-          dupList: [],
-          wrongList: [],
-        },
-      };
+    if (!smtpResult.success) {
+      // Hiworks 어댑터와 동일하게 예외를 던져야 호출부(try/catch)가 실패를 감지한다.
+      throw new Error(smtpResult.error || 'SMTP 발송 실패');
     }
 
     return {
-      code: 'ERR',
-      message: smtpResult.error || 'SMTP 발송 실패',
+      code: 'SUC',
+      message: `SMTP 발송 성공: ${smtpResult.messageId}`,
       result: {
-        successList: [],
+        successList: [obj.to],
         dupList: [],
-        wrongList: [obj.to],
+        wrongList: [],
       },
     };
   }
