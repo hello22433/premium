@@ -13,6 +13,7 @@ import {
 import { Transform, Type } from 'class-transformer';
 import { IOrderSendMethod } from '../../interface/order.send.method';
 import { OrderEmailSendType } from '../../domain/order.email.send.type';
+import { OrderEmailFinalSendMethod } from '../../domain/order.email.final.send.method';
 import { dateAtRegexp } from '../../../common/domain/date.regexp';
 
 export class OrderProductCreateTempDto {
@@ -85,6 +86,13 @@ export class OrderProductCreateTempDto {
   @IsEnum(OrderEmailSendType)
   @Transform(({ value }) => (value === '' ? null : value)) // 빈 문자열을 null로 변환
   emailSendType: OrderEmailSendType | null = null;
+  @ApiPropertyOptional({
+    description: '이메일 쿠폰 최종 발신 수단(ALIM_TALK|MMS). NULL=레거시(현행 알림톡 우선)',
+  })
+  @IsOptional()
+  @IsEnum(OrderEmailFinalSendMethod)
+  @Transform(({ value }) => (value === '' ? null : value))
+  emailFinalSendMethod: OrderEmailFinalSendMethod | null = null;
 
   @ApiProperty({
     description: '이메일 사용 방법',

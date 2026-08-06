@@ -90,6 +90,19 @@ const setupService = (orders: any[]) => {
     take: jest.fn().mockReturnThis(),
     skip: jest.fn().mockReturnThis(),
     getManyAndCount: jest.fn().mockResolvedValue([orders, orders.length]),
+    clone: jest.fn().mockReturnThis(),
+    select: jest.fn().mockReturnThis(),
+    getRawOne: jest
+      .fn()
+      .mockResolvedValueOnce({
+        total: '2',
+        deliveryRequest: '0',
+        reviewComplete: '0',
+        deliveryConfirmed: '1',
+        deliveryComplete: '1',
+        deliveryCancel: '0',
+      })
+      .mockResolvedValueOnce({ failed: '1' }),
   };
 
   const service = Object.create(OrderService.prototype) as any;
@@ -153,5 +166,39 @@ describe('OrderService getList — hasFailedDelivery (미해결 실패 판정)',
 
     expect(result.list[0].hasFailedDelivery).toBe(true);
     expect(result.list[0].hasResentDelivery).toBe(false);
+  });
+});
+
+describe('OrderService getListSummary', () => {
+  it('상태별 및 실패 포함 주문 수를 DISTINCT 주문 기준으로 반환한다', async () => {
+    const { service } = setupService([]);
+    const result = await service.getListSummary(BASE_USER, BASE_QUERY);
+
+    expect(result).toEqual({
+      total: 2,
+      deliveryRequest: 0,
+      reviewComplete: 0,
+      deliveryConfirmed: 1,
+      deliveryComplete: 1,
+      deliveryCancel: 0,
+      failed: 1,
+    });
+
+    const selectCalls = service.orderRepository.createQueryBuilder.mock.results[0].value.select.mock.calls;
+    // 요약 쿼리는 select([...]) 배열로 상태별 집계를 한 번에 건다.
+    expect(selectCalls[0][0]).toEqual(expect.arrayContaining([expect.stringContaining('COUNT(DISTINCT order.id)')]));
+    expect(selectCalls[1][0]).toBe('COUNT(DISTINCT order.id)');
+  });
+
+  it('목록 실패 필터는 미해결 실패 delivery EXISTS 조건을 추가한다', async () => {
+    const { service } = setupService([]);
+    await service.getList(BASE_USER, { ...BASE_QUERY, hasFailedDelivery: true });
+
+    expect(service.orderRepository.createQueryBuilder.mock.results[0].value.andWhere).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({
+        failedDeliveryStatuses: [IOrderDeliveryStatus.FAIL, IOrderDeliveryStatus.FAIL_SMS],
+      }),
+    );
   });
 });

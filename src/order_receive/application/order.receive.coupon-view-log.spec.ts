@@ -22,7 +22,8 @@ describe('OrderReceiveService — coupon-view 방문 로그', () => {
     execute = jest.fn().mockResolvedValue({ identifiers: [] });
     orIgnore = jest.fn().mockReturnValue({ execute });
     values = jest.fn().mockReturnValue({ orIgnore });
-    const insert = jest.fn().mockReturnValue({ values });
+    // insert().updateEntity(false).values(...).orIgnore().execute() 체인
+    const insert = jest.fn().mockReturnValue({ updateEntity: jest.fn().mockReturnValue({ values }) });
     const createQueryBuilder = jest.fn().mockReturnValue({ insert });
 
     service = Object.create(OrderReceiveService.prototype);

@@ -24,4 +24,5 @@ export const ACTIVITY_LOG_PURGE_EXCLUDED_ACTION_TYPES: string[] = [
   ActivityLogActionType.ACCOUNT_ANONYMIZE,
   ActivityLogActionType.SETTLE_DISCOUNT_MODIFY,
   ActivityLogActionType.SETTLE_DISCOUNT_AUTO_CAPTURE,
+  ActivityLogActionType.API_ACCESS_CONFIG_MODIFY,
 ];

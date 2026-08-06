@@ -1,7 +1,10 @@
+import { PartnerSettleFeatureFlag } from '../../partner_settle/application/partner.settle.feature.flag';
+import { PartnerSettleProducerService } from '../../partner_settle/application/partner.settle.producer.service';
 // 실제 DB 연결 없는 단위 테스트이므로 typeorm-transactional 데코레이터를 no-op으로 mock한다.
 jest.mock('typeorm-transactional', () => ({
   Transactional: () => (_target: unknown, _key: unknown, _descriptor: unknown) => _descriptor,
   Propagation: { REQUIRED: 'REQUIRED', REQUIRES_NEW: 'REQUIRES_NEW' },
+  runInTransaction: (fn: () => Promise<unknown>) => fn(),
   initializeTransactionalContext: jest.fn(),
   addTransactionalDataSources: jest.fn(),
 }));
@@ -79,6 +82,8 @@ describe('PartnerCompanyExternBatchService.backfillCulturelandDailyRange', () =>
         { provide: getRepositoryToken(GiftielExchangeHistoryEntity), useValue: makeRepoMock() },
         { provide: ConfigService, useValue: { getOrThrow: jest.fn().mockReturnValue('test'), get: jest.fn() } },
         { provide: CryptoCipher, useValue: mock<any>() },
+        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, isEnabledFor: () => false } },
+        { provide: PartnerSettleProducerService, useValue: {} },
       ],
     }).compile();
 

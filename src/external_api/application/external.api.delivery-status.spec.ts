@@ -25,7 +25,10 @@ function makeOrderDelivery(over: {
   actualSendAt?: Date | null;
   couponStatus?: OrderDeliveryCouponStatus;
   personalCode?: string;
+  productPrice?: number; // live 카탈로그가(가변). 미지정 시 sendAmount 와 동일.
+  sendAmount?: number; // 주문시점 박제가.
 }): OrderDeliveryEntity {
+  const sendAmount = over.sendAmount ?? 4500;
   return {
     id: 55,
     externalTrId: 'TR-DELIVERY-STATUS',
@@ -37,8 +40,8 @@ function makeOrderDelivery(over: {
     expireAt: null,
     sendRequestAt: new Date('2026-06-22T00:00:00.000Z'),
     orderProductMapping: {
-      product: { price: 4500, partnerCompany: { validityStartsNextDay: true } },
-      order: { sendAmount: 4500, settleAmount: 4500 },
+      product: { price: over.productPrice ?? sendAmount, partnerCompany: { validityStartsNextDay: true } },
+      order: { sendAmount, settleAmount: 4500 },
     },
   } as unknown as OrderDeliveryEntity;
 }
@@ -124,5 +127,43 @@ describe('ExternalApiService 발송 결과(deliveryStatus) 응답 계약', () =>
 
     expect(res.data!.couponStatus).toBe(ExternalCouponStatus.DISCARDED);
     expect(res.data!.deliveryStatus).toBe(ExternalDeliveryStatus.SUCCESS);
+  });
+});
+
+// D3-53: 응답 price 소스 고정 회귀.
+// getOrderStatus 가 과거엔 live product.price(가변)를 읽어, 주문 후 상품가가 바뀌면
+// 생성응답(sendAmount)과 조회 price 가 달라졌다(파트너 대사 불일치). 주문시점 박제값으로 통일한 것을 잠근다.
+describe('ExternalApiService getOrderStatus price 는 주문시점 박제값(sendAmount)을 반환', () => {
+  it('상품가 변경으로 product.price(5000) ≠ sendAmount(2000) 여도 price=2000 (live 를 따라가지 않음)', async () => {
+    // 손님은 2000 에 샀는데(sendAmount) 관리자가 카탈로그가를 5000 으로 올린 상황(product.price).
+    const orderDelivery = makeOrderDelivery({
+      status: IOrderDeliveryStatus.COMPLETE,
+      actualSendAt: new Date(),
+      productPrice: 5000,
+      sendAmount: 2000,
+    });
+    const svc = makeService(orderDelivery);
+
+    const res = await svc.getOrderStatus(account, 'TR-DELIVERY-STATUS', ctx);
+
+    expect(res.data!.price).toBe(2000); // 영수증(박제)
+    expect(res.data!.price).not.toBe(5000); // 매대 가격표(live)를 따라가지 않는다
+  });
+
+  it('일반 조회와 SSG 조회가 동일 소스(sendAmount)를 써 price 가 일치한다', async () => {
+    const orderDelivery = makeOrderDelivery({
+      status: IOrderDeliveryStatus.COMPLETE,
+      actualSendAt: new Date(),
+      productPrice: 5000,
+      sendAmount: 2000,
+    });
+    const svc = makeService(orderDelivery);
+
+    const general = await svc.getOrderStatus(account, 'TR-DELIVERY-STATUS', ctx);
+    const ssg = await svc.getSsgOrderStatus(account, 'TR-DELIVERY-STATUS', ctx);
+
+    // 값 자체를 독립 고정(리뷰 LOW): 상호 일치만 보면 둘이 함께 live 5000 으로 회귀해도 통과한다.
+    expect(general.data!.price).toBe(2000);
+    expect(general.data!.price).toBe(ssg.data!.price); // 생성응답·SSG조회·일반조회 3자 일치
   });
 });

@@ -26,6 +26,7 @@ describe('OrderReceiveService 재진입 차단 판정', () => {
     null as any,
     null as any,
     null as any,
+    null as any,
   );
 
   type OdOverrides = {

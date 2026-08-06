@@ -34,6 +34,8 @@ import { format } from 'date-fns';
 import { CustomerServiceViewDto } from '../api/dto/customer.service.view.dto';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
+import { DeliveryWorkflowEntity } from '../../entity/delivery.workflow.entity';
+import { DeliveryCancelIntentEntity } from '../../entity/delivery.cancel.intent.entity';
 import { IOrderDeliveryReportState } from '../../delivery/interface/order.delivery.report.state';
 import { CustomerServiceDetailViewDto } from '../api/dto/customer.service.detail.view.dto';
 import { CustomerServiceDlvryDetailViewDto } from '../api/dto/customer.service.dlvry.detail.view.dto';
@@ -45,6 +47,18 @@ import {
   LegacyDeliveryEntryPoint,
   NOT_CUTOVER_ORDER_DELIVERY,
 } from '../../delivery/interface/legacy.delivery.entry.point';
+import {
+  ExecuteRefundContext,
+  RefundAttemptExecutorService,
+} from '../../delivery/application/refund-attempt-executor.service';
+import { RefundAttemptStatus, RefundScope } from '../../delivery/interface/refund.attempt.status';
+import { DeliverySlot, DeliveryWorkflowSlotService } from '../../delivery/application/delivery-workflow-slot.service';
+import { DeliveryExclusiveOp, DeliveryWorkflowStatus } from '../../delivery/interface/delivery.workflow.status';
+import { DeliveryCancelIntentService } from '../../delivery/application/delivery-cancel-intent.service';
+import {
+  DeliveryCancelIntentSource,
+  DeliveryCancelIntentStatus,
+} from '../../delivery/interface/delivery.cancel.intent.status';
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
@@ -100,6 +114,10 @@ import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
 import * as fs from 'fs';
 import { createExportTempPath } from '../../util/file.util';
+import { PartnerSettleFeatureFlag } from '../../partner_settle/application/partner.settle.feature.flag';
+import { PartnerSettleProducerService } from '../../partner_settle/application/partner.settle.producer.service';
+import { buildSettlementContext } from '../../partner_settle/application/partner.settle.context.builder';
+import { fromDate } from '../../partner_settle/domain/settle.time';
 
 const dayjs = require('dayjs');
 const timezone = require('dayjs/plugin/timezone');
@@ -152,6 +170,11 @@ export class CustomerServiceService {
     @InjectRepository(CouponViewLogEntity)
     private readonly couponViewLogRepository: Repository<CouponViewLogEntity>,
     private readonly cutoverGuard: DeliveryCutoverGuardService,
+    private readonly refundAttemptExecutor: RefundAttemptExecutorService,
+    private readonly deliveryWorkflowSlotService: DeliveryWorkflowSlotService,
+    private readonly deliveryCancelIntentService: DeliveryCancelIntentService,
+    private readonly settleFlag: PartnerSettleFeatureFlag,
+    private readonly settleProducer: PartnerSettleProducerService,
   ) {}
 
   /**
@@ -246,15 +269,24 @@ export class CustomerServiceService {
     operatorUser: ILoginUserInfo,
     queryRunner: QueryRunner,
     operatorName?: string,
+    refundExecution?: ExecuteRefundContext,
   ): Promise<number | null> {
-    // 컷오버 전환 건 거부(§9 인벤토리 #8). 전환 건의 폐기 환불(Tx2)은 DISCARD + REFUND 슬롯을 거쳐
-    // refund_attempt 로만 실행한다. Tx1(폐기 확정)/Tx2(환불) 분리는 유지하되 Tx2 만 대체된다.
-    // 같은 트랜잭션 매니저로 조회해 Tx1 이 만든 상태를 그대로 본다.
-    await this.cutoverGuard.assertLegacyAllowed(
-      orderDelivery.id,
-      LegacyDeliveryEntryPoint.CS_DISCARD_RESTORE,
-      queryRunner.manager,
-    );
+    if (refundExecution) {
+      await this.cutoverGuard.assertRefundExecutionAllowed(
+        {
+          orderDeliveryId: orderDelivery.id,
+          fencing: refundExecution,
+          entryPoint: LegacyDeliveryEntryPoint.CS_DISCARD_RESTORE,
+        },
+        queryRunner.manager,
+      );
+    } else {
+      await this.cutoverGuard.assertLegacyAllowed(
+        orderDelivery.id,
+        LegacyDeliveryEntryPoint.CS_DISCARD_RESTORE,
+        queryRunner.manager,
+      );
+    }
 
     const mapping = orderDelivery.orderProductMapping;
     const order = mapping.order;
@@ -336,6 +368,7 @@ export class CustomerServiceService {
       sourcePath: 'CS_DISCARD',
       operatorUserId: operatorUser.id,
       memo: `폐기복구/${restoreAmount}원`,
+      refundExecution,
     });
 
     let beforeBalance: number;
@@ -490,6 +523,97 @@ export class CustomerServiceService {
     }
 
     return restoreAmount;
+  }
+
+  private async executeLegacyDiscardRefund(
+    orderDelivery: OrderDeliveryEntity,
+    operatorUser: ILoginUserInfo,
+  ): Promise<number | null> {
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+    try {
+      const restored = await this.restoreBalanceOnDiscard(orderDelivery, operatorUser, queryRunner);
+      await queryRunner.commitTransaction();
+      return restored;
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  private async calculateDiscardRefundAmount(orderDelivery: OrderDeliveryEntity): Promise<number> {
+    const mapping = orderDelivery.orderProductMapping;
+    const order = mapping.order;
+    if (!order.isSettleComplete) {
+      return calculateSettlementPrice(mapping, order.cardSurchargeApplied, orderDelivery);
+    }
+
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    try {
+      return await this.calculateSettledDiscardRestoreAmount(orderDelivery, queryRunner);
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  private async executeCutoverDiscardRefund(
+    orderDelivery: OrderDeliveryEntity,
+    operatorUser: ILoginUserInfo,
+    cancelIntentId: string,
+    expectedAmount?: number,
+  ): Promise<number> {
+    const amount = expectedAmount ?? (await this.calculateDiscardRefundAmount(orderDelivery));
+    let restoredAmount: number | null = null;
+
+    const refundResult = await this.refundAttemptExecutor.execute({
+      orderDeliveryId: orderDelivery.id,
+      amount,
+      scope: RefundScope.FULL,
+      externalIdempotencyKey: `cs-discard:${orderDelivery.id}:${randomUUID()}`,
+      bindAttempt: async (attempt, manager) => {
+        await this.deliveryCancelIntentService.bindRefundAttempt(cancelIntentId, attempt, manager);
+      },
+      execute: async (fencing) => {
+        const queryRunner = this.dataSource.createQueryRunner();
+        await queryRunner.connect();
+        await queryRunner.startTransaction();
+        try {
+          restoredAmount = await this.restoreBalanceOnDiscard(
+            orderDelivery,
+            operatorUser,
+            queryRunner,
+            undefined,
+            fencing,
+          );
+          if (restoredAmount === null) {
+            throw new Error(`cutover discard refund produced no settlement: ${orderDelivery.id}`);
+          }
+          await queryRunner.commitTransaction();
+          return { status: RefundAttemptStatus.SUCCEEDED };
+        } catch (error) {
+          await queryRunner.rollbackTransaction();
+          throw error;
+        } finally {
+          await queryRunner.release();
+        }
+      },
+    });
+    if (refundResult.status === RefundAttemptStatus.SUCCEEDED) {
+      await this.deliveryCancelIntentService.markRefundSucceeded(cancelIntentId, {
+        attemptId: refundResult.attemptId,
+        orderDeliveryId: orderDelivery.id,
+        amount,
+        scope: RefundScope.FULL,
+      });
+      return restoredAmount!;
+    }
+
+    await this.deliveryCancelIntentService.markReconciling(cancelIntentId, `REFUND_${refundResult.status}`);
+    throw new Error(`cutover discard refund unresolved: ${orderDelivery.id}`);
   }
 
   /**
@@ -1187,6 +1311,262 @@ export class CustomerServiceService {
     );
   }
 
+  async reconcileOpenCancelIntents(limit = 50): Promise<void> {
+    const intents = await this.deliveryCancelIntentService.findOpen(DeliveryCancelIntentSource.CUSTOMER_SERVICE, limit);
+    for (const intent of intents) {
+      try {
+        await this.reconcileCancelIntent(intent);
+      } catch (error) {
+        await this.deliveryCancelIntentService.markReconciling(
+          intent.id,
+          `CS_RECONCILE_FAILED:${error instanceof Error ? error.message : String(error)}`,
+        );
+        this.logger.error(
+          `[CANCEL_INTENT] CS 재조정 실패. intentId=${intent.id}, orderDeliveryId=${intent.orderDeliveryId}`,
+          error,
+        );
+      }
+    }
+  }
+
+  private async reconcileCancelIntent(intent: DeliveryCancelIntentEntity): Promise<void> {
+    const acquired = await this.deliveryWorkflowSlotService.acquire({
+      orderDeliveryId: intent.orderDeliveryId,
+      op: DeliveryExclusiveOp.DISCARD,
+    });
+    if (!acquired.acquired) {
+      return;
+    }
+
+    const slot = acquired.slot;
+    let slotOwned = true;
+    try {
+      const claimed = await this.deliveryCancelIntentService.claimForReconcile(intent.id, slot);
+      let status = this.deliveryCancelIntentService.effectiveStatus(claimed);
+      const orderDelivery = await this.orderDeliveryRepository.findOne({
+        where: { id: intent.orderDeliveryId },
+        relations: [
+          'orderProductMapping',
+          'orderProductMapping.order',
+          'orderProductMapping.product',
+          'orderProductMapping.product.partnerCompany',
+          'choiceSelectProduct',
+          'choiceSelectProduct.partnerCompany',
+        ],
+      });
+      if (!orderDelivery) {
+        throw new Error(`cancel intent delivery not found: ${intent.orderDeliveryId}`);
+      }
+
+      if (status === DeliveryCancelIntentStatus.PENDING) {
+        const partnerType = this.getPartnerType(orderDelivery);
+        if (partnerType && partnerType !== IPartnerCompanyType.SSG) {
+          const refreshed = await this.partnerCompanyExternService.refreshCouponStatus(orderDelivery);
+          if (refreshed.couponStatus === OrderDeliveryCouponStatus.NOT_USED) {
+            await this.partnerCompanyExternService.cancel(orderDelivery);
+          } else if (
+            refreshed.couponStatus !== OrderDeliveryCouponStatus.CANCEL &&
+            refreshed.couponStatus !== OrderDeliveryCouponStatus.REFUND_CANCEL
+          ) {
+            throw new Error(`partner cancellation cannot resume from: ${refreshed.couponStatus ?? 'UNKNOWN'}`);
+          }
+        }
+        await this.deliveryCancelIntentService.markExternalCancelled(claimed.id, slot);
+        status = DeliveryCancelIntentStatus.CANCEL_CONFIRMED;
+      }
+
+      const requestedStatus = claimed.requestedCouponStatus as OrderDeliveryCouponStatus;
+      if (status === DeliveryCancelIntentStatus.CANCEL_CONFIRMED) {
+        const discardedAt = orderDelivery.discardedAt ?? new Date();
+        await this.dataSource.transaction(async (manager) => {
+          await manager
+            .getRepository(OrderDeliveryEntity)
+            .update({ id: orderDelivery.id }, { couponStatus: requestedStatus, discardedAt });
+          const workflowTransition = await manager
+            .getRepository(DeliveryWorkflowEntity)
+            .createQueryBuilder()
+            .update(DeliveryWorkflowEntity)
+            .set({
+              workflowStatus: DeliveryWorkflowStatus.CANCELLED,
+              stateEnteredAt: discardedAt,
+              activeExclusiveOp: null,
+              exclusiveOwnerToken: null,
+              exclusiveLeaseExpiresAt: null,
+              workflowVersion: () => 'workflow_version + 1',
+            })
+            .where('order_delivery_id = :orderDeliveryId', {
+              orderDeliveryId: orderDelivery.id,
+            })
+            .andWhere('active_exclusive_op = :op', {
+              op: DeliveryExclusiveOp.DISCARD,
+            })
+            .andWhere('exclusive_owner_token = :ownerToken', {
+              ownerToken: slot.ownerToken,
+            })
+            .andWhere('workflow_version = :workflowVersion', {
+              workflowVersion: slot.workflowVersion,
+            })
+            .execute();
+          if (!workflowTransition.affected) {
+            throw new Error(`cancel intent workflow fencing lost: ${claimed.id}`);
+          }
+          await this.deliveryCancelIntentService.markDbApplied(claimed.id, slot, manager, discardedAt);
+        });
+        orderDelivery.couponStatus = requestedStatus;
+        orderDelivery.discardedAt = discardedAt;
+        status = DeliveryCancelIntentStatus.DB_APPLIED;
+        slotOwned = false;
+      } else if (status === DeliveryCancelIntentStatus.DB_APPLIED) {
+        if (!(await this.deliveryWorkflowSlotService.release(slot))) {
+          throw new Error(`cancel intent DISCARD slot release failed: ${claimed.id}`);
+        }
+        slotOwned = false;
+      }
+
+      if (status !== DeliveryCancelIntentStatus.DB_APPLIED) {
+        return;
+      }
+      if (!claimed.refundRequired) {
+        await this.deliveryCancelIntentService.markResolvedNoRefund(claimed.id);
+        return;
+      }
+
+      if (claimed.expectedRefundAmount === null || claimed.expectedRefundScope !== RefundScope.FULL) {
+        throw new Error(`cancel intent refund expectation is missing: ${claimed.id}`);
+      }
+      const boundAttempt = claimed.refundAttemptId
+        ? await this.refundAttemptExecutor.findBoundAttempt({
+            attemptId: claimed.refundAttemptId,
+            orderDeliveryId: orderDelivery.id,
+            amount: claimed.expectedRefundAmount,
+            scope: RefundScope.FULL,
+          })
+        : null;
+      if (claimed.refundAttemptId && !boundAttempt) {
+        throw new Error(`cancel intent refund attempt binding mismatch: ${claimed.id}`);
+      }
+      if (boundAttempt?.status === RefundAttemptStatus.SUCCEEDED) {
+        await this.deliveryCancelIntentService.markRefundSucceeded(claimed.id, {
+          attemptId: boundAttempt.id,
+          orderDeliveryId: orderDelivery.id,
+          amount: claimed.expectedRefundAmount,
+          scope: RefundScope.FULL,
+        });
+        return;
+      }
+      if (
+        boundAttempt?.status === RefundAttemptStatus.CLAIMED ||
+        boundAttempt?.status === RefundAttemptStatus.SUBMITTING ||
+        boundAttempt?.status === RefundAttemptStatus.RECONCILING ||
+        boundAttempt?.status === RefundAttemptStatus.UNKNOWN
+      ) {
+        const reconciledStatus = await this.refundAttemptExecutor.reconcile({
+          attemptId: boundAttempt.id,
+          orderDeliveryId: orderDelivery.id,
+          amount: claimed.expectedRefundAmount,
+          scope: RefundScope.FULL,
+          inspect: async () => {
+            const ledger = await this.refundLedgerService.findByAttempt(
+              boundAttempt.id,
+              orderDelivery.id,
+              claimed.expectedRefundAmount!,
+            );
+            // CS 폐기 환불은 ledger claim 과 잔액 복원이 한 트랜잭션이라 ledger 부재 = 미실행이다.
+            // 단 직전 실행이 아직 커밋 전일 수 있으므로, FAILED 확정은 executor 의 정지 판정을 거친다.
+            if (!ledger) {
+              return {
+                status: RefundAttemptStatus.FAILED,
+                reason: 'REFUND_LEDGER_NOT_CREATED',
+              };
+            }
+            if (ledger.sourcePath !== 'CS_DISCARD' || !ledger.ssgBalanceSettled) {
+              return null;
+            }
+            return { status: RefundAttemptStatus.SUCCEEDED };
+          },
+        });
+        if (reconciledStatus === RefundAttemptStatus.SUCCEEDED) {
+          await this.deliveryCancelIntentService.markRefundSucceeded(claimed.id, {
+            attemptId: boundAttempt.id,
+            orderDeliveryId: orderDelivery.id,
+            amount: claimed.expectedRefundAmount,
+            scope: RefundScope.FULL,
+          });
+        } else {
+          await this.deliveryCancelIntentService.markReconciling(claimed.id, `REFUND_${reconciledStatus ?? 'LOCKED'}`);
+        }
+        return;
+      }
+
+      if (claimed.requestedByUserId === null) {
+        throw new Error(`cancel intent operator is missing: ${claimed.id}`);
+      }
+      const operator = await this.userRepository.findOne({
+        where: { id: claimed.requestedByUserId },
+      });
+      if (!operator) {
+        throw new Error(`cancel intent operator not found: ${claimed.requestedByUserId}`);
+      }
+      await this.executeCutoverDiscardRefund(
+        orderDelivery,
+        { id: operator.id, email: operator.email } as ILoginUserInfo,
+        claimed.id,
+        claimed.expectedRefundAmount ?? undefined,
+      );
+    } finally {
+      if (slotOwned) {
+        await this.deliveryWorkflowSlotService.release(slot);
+      }
+    }
+  }
+
+  private validateDiscardRequest(
+    partnerType: IPartnerCompanyType | null | undefined,
+    beforeChange: OrderDeliveryCouponStatus,
+    requestedStatus: OrderDeliveryCouponStatus,
+  ): void {
+    if (
+      beforeChange === OrderDeliveryCouponStatus.USED ||
+      beforeChange === OrderDeliveryCouponStatus.CANCEL ||
+      beforeChange === OrderDeliveryCouponStatus.REFUND_CANCEL
+    ) {
+      throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
+    }
+
+    switch (partnerType) {
+      case IPartnerCompanyType.GS_M_BIZ:
+      case IPartnerCompanyType.GIFT_SHOW:
+      case IPartnerCompanyType.CULTURELAND:
+      case IPartnerCompanyType.GALAXIA:
+      case IPartnerCompanyType.GIFTIEL:
+      case IPartnerCompanyType.DAOU:
+        if (
+          beforeChange === OrderDeliveryCouponStatus.EXPIRED ||
+          (requestedStatus !== OrderDeliveryCouponStatus.CANCEL &&
+            requestedStatus !== OrderDeliveryCouponStatus.REFUND_CANCEL)
+        ) {
+          throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
+        }
+        return;
+      case IPartnerCompanyType.SSG:
+        if (
+          beforeChange === OrderDeliveryCouponStatus.EXPIRED &&
+          requestedStatus !== OrderDeliveryCouponStatus.REFUND_CANCEL
+        ) {
+          throw new BadRequestException('기간만료 상태에서는 환불폐기만 가능합니다.');
+        }
+        if (
+          requestedStatus !== OrderDeliveryCouponStatus.CANCEL &&
+          requestedStatus !== OrderDeliveryCouponStatus.REFUND_CANCEL
+        ) {
+          throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
+        }
+        return;
+      default:
+        return;
+    }
+  }
+
   /**
    * 폐기 실행 (외부 API 호출 + 상태 변경 + 잔액 복구)
    * historyData가 전달되면 Tx1 안에서 history도 기록
@@ -1205,7 +1585,7 @@ export class CustomerServiceService {
     orderDeliveryId: number,
     couponStatus: OrderDeliveryCouponStatus,
     historyData?: { type: string; content: string },
-    options?: { skipBalanceRestore?: boolean },
+    options?: { skipBalanceRestore?: boolean; refundRatio?: number | null },
   ): Promise<{
     orderDelivery: OrderDeliveryEntity;
     beforeChange: string;
@@ -1249,74 +1629,83 @@ export class CustomerServiceService {
     const partnerType = this.getPartnerType(orderDelivery);
     const beforeChange = orderDelivery.couponStatus;
 
-    // terminal 상태(USED/CANCEL/REFUND_CANCEL)는 모든 협력사 분기 공통으로 차단 — 이미 폐기/사용된 건의 재진입 방지.
-    // (EXPIRED 는 협력사=차단 / SSG=환불폐기 허용으로 분기별 별도 처리. default 분기 누락 방지를 위해 switch 앞에 둔다)
-    if (
-      beforeChange === OrderDeliveryCouponStatus.USED ||
-      beforeChange === OrderDeliveryCouponStatus.CANCEL ||
-      beforeChange === OrderDeliveryCouponStatus.REFUND_CANCEL
-    ) {
-      throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
+    // 외부 부작용 전에 판정 가능한 도메인 검증은 슬롯·intent 생성보다 먼저 끝낸다.
+    this.validateDiscardRequest(partnerType, beforeChange, couponStatus);
+    // 환불폐기는 refundRatio(1~100) 필수 — 없으면 환불금액 0원 계산 위험.
+    // 정산정보 입력 화면에서 미리 세팅하거나, 호출자가 options.refundRatio 로 전달해야 한다.
+    if (couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL) {
+      const effectiveRatio = options?.refundRatio ?? orderDelivery.refundRatio;
+      if (effectiveRatio == null || effectiveRatio < 1 || effectiveRatio > 100) {
+        throw new BadRequestException('환불폐기 처리를 위해서는 환불율(1~100)이 필요합니다. 정산정보에서 환불율을 먼저 설정해 주세요.');
+      }
     }
 
-    // 변형 lease 획득 — "서로 다른 행위의 교차"(재발행 중 폐기, 취소 중 폐기 등)를 입구에서 차단.
-    // (terminal 가드=로드 스냅샷 검사, Tx1 CAS=동일행위(폐기×2) 멱등 게이트 — 각각 역할이 다르다.)
-    // 재발행 tip 은 INSERT 시점부터 lease 를 보유하므로, 발급/발송 중인 tip 폐기는 여기서 거절된다.
-    const mutationClaimAt = new Date();
-    if (!(await this.acquireMutationLease(orderDelivery.id, mutationClaimAt))) {
-      throw new BadRequestException('해당 발송 건에 다른 처리가 진행 중입니다. 잠시 후 다시 시도해 주세요.');
+    const isCutover = await this.cutoverGuard.isCutover(orderDelivery.id);
+    let discardSlot: DeliverySlot | null = null;
+    let mutationClaimAt: Date | null = null;
+    let cancelIntentId: string | null = null;
+    if (isCutover) {
+      const acquired = await this.deliveryWorkflowSlotService.acquire({
+        orderDeliveryId: orderDelivery.id,
+        op: DeliveryExclusiveOp.DISCARD,
+      });
+      if (!acquired.acquired) {
+        throw new BadRequestException('해당 발송 건에 다른 처리가 진행 중입니다. 잠시 후 다시 시도해 주세요.');
+      }
+      discardSlot = acquired.slot;
+    } else {
+      mutationClaimAt = new Date();
+      if (!(await this.acquireMutationLease(orderDelivery.id, mutationClaimAt))) {
+        throw new BadRequestException('해당 발송 건에 다른 처리가 진행 중입니다. 잠시 후 다시 시도해 주세요.');
+      }
     }
+    let cutoverRefundAmount: number | null = null;
     try {
+      const refundRequired =
+        !!discardSlot && !options?.skipBalanceRestore && couponStatus !== OrderDeliveryCouponStatus.REFUND_CANCEL;
+      if (refundRequired) {
+        cutoverRefundAmount = await this.calculateDiscardRefundAmount(orderDelivery);
+      }
+      if (discardSlot) {
+        const cancelIntent = await this.deliveryCancelIntentService.create(
+          orderDelivery.id,
+          DeliveryCancelIntentSource.CUSTOMER_SERVICE,
+          discardSlot,
+          {
+            requestedCouponStatus: couponStatus,
+            refundRequired: !options?.skipBalanceRestore && couponStatus !== OrderDeliveryCouponStatus.REFUND_CANCEL,
+            requestedByUserId: user.id,
+            expectedRefundAmount: cutoverRefundAmount,
+            expectedRefundScope: refundRequired ? RefundScope.FULL : null,
+          },
+        );
+        cancelIntentId = cancelIntent.id;
+      }
       // 외부 API 폐기 처리 (트랜잭션 밖에서 실행)
       switch (partnerType) {
-        case 'GS_M_BIZ':
-        case 'GIFT_SHOW':
-        case 'CULTURELAND':
-        case 'GALAXIA':
-        case 'GIFTIEL':
-        case 'DAOU': {
-          // 협력사 쿠폰은 EXPIRED(기간만료)도 폐기 불가 (terminal 공통 차단은 switch 앞에서 이미 수행)
-          if (beforeChange === 'EXPIRED') {
-            throw new BadRequestException('현재 변경을 할 수 없는 핀상태입니다.');
-          }
-
-          if (
-            couponStatus === OrderDeliveryCouponStatus.CANCEL ||
-            couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL
-          ) {
-            // 협력사 어댑터 cancel()은 실패를 '반환값'이 아니라 throw 로 알린다(galaxia/giftiel/giftishow/culture/daou 공통).
-            // 따라서 실패는 try/catch 로 받아야 한다. (D3-46: 기존 `result.message !== '폐기 완료'` 분기는
-            // 래퍼가 성공 시 항상 '폐기 완료'만 반환하므로 도달 불가한 데드코드였음)
-            // catch 에서는 추가 logger 를 두지 않는다 — 어댑터가 이미 infra 레벨에서 1회 로깅하므로 중복 방지.
-            try {
-              await this.partnerCompanyExternService.cancel(orderDelivery);
-            } catch (e) {
-              const syncedStatus = await this.syncCouponStatusAfterDiscardFailure(orderDelivery);
-              const statusSuffix = syncedStatus ? ` (현재 쿠폰상태: ${syncedStatus})` : '';
-              const reason = e instanceof Error ? e.message : '폐기 처리 실패';
-              throw new InternalServerErrorException(`${reason}${statusSuffix}`);
-            }
-          } else {
-            throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
+        case IPartnerCompanyType.GS_M_BIZ:
+        case IPartnerCompanyType.GIFT_SHOW:
+        case IPartnerCompanyType.CULTURELAND:
+        case IPartnerCompanyType.GALAXIA:
+        case IPartnerCompanyType.GIFTIEL:
+        case IPartnerCompanyType.DAOU: {
+          // 협력사 어댑터 cancel()은 실패를 반환하지 않고 throw 한다.
+          try {
+            await this.partnerCompanyExternService.cancel(orderDelivery);
+          } catch (error) {
+            const syncedStatus = await this.syncCouponStatusAfterDiscardFailure(orderDelivery);
+            const statusSuffix = syncedStatus ? ` (현재 쿠폰상태: ${syncedStatus})` : '';
+            const reason = error instanceof Error ? error.message : '폐기 처리 실패';
+            throw new InternalServerErrorException(`${reason}${statusSuffix}`);
           }
           break;
         }
-        case 'SSG': {
-          // terminal 공통 차단은 switch 앞에서 수행. SSG는 EXPIRED 일 때 환불폐기(REFUND_CANCEL)만 허용
-          if (beforeChange === 'EXPIRED' && couponStatus !== OrderDeliveryCouponStatus.REFUND_CANCEL) {
-            throw new BadRequestException('기간만료 상태에서는 환불폐기만 가능합니다.');
-          }
-
-          if (
-            couponStatus !== OrderDeliveryCouponStatus.CANCEL &&
-            couponStatus !== OrderDeliveryCouponStatus.REFUND_CANCEL
-          ) {
-            throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
-          }
-          break;
-        }
+        case IPartnerCompanyType.SSG:
         default:
           break;
+      }
+      if (discardSlot && cancelIntentId) {
+        await this.deliveryCancelIntentService.markExternalCancelled(cancelIntentId, discardSlot);
       }
 
       // Tx1: 폐기 상태 + (옵션) historyData 저장
@@ -1334,16 +1723,60 @@ export class CustomerServiceService {
         // 상태 전이는 조건부 UPDATE(CAS)로 저장 — coupon_status 가 아직 beforeChange 일 때만 반영.
         // 동시 폐기 요청 시 둘 다 save 로 덮어쓰는 레이스를 affected=0 으로 감지·차단(멱등).
         // (코드베이스 관례: settle.service 상태전이, ssg-insert-state.markAttempted 와 동일 패턴)
+        //
+        // 환불폐기(REFUND_CANCEL)일 때는 refundStatus·refundRegisterAt·refundRatio 도 같은 CAS UPDATE 에
+        // 포함하여 원자화한다. 종전에는 프론트에서 별도 PUT /customer-service/refund 를 fire-and-forget 으로
+        // 호출했으나, 실패 시 refundStatus=NULL 이 되어 환불관리 조회에서 누락되는 버그가 있었다.
+        const isRefundCancel = couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL;
+        const setPayload: Partial<OrderDeliveryEntity> = {
+          couponStatus,
+          discardedAt: orderDelivery.discardedAt,
+          ...(isRefundCancel && {
+            refundStatus: OrderDeliveryRefundStatusEnum.PROGRESS,
+            refundRegisterAt: orderDelivery.discardedAt,
+            refundRatio: options?.refundRatio ?? orderDelivery.refundRatio,
+          }),
+        };
+
         const transition = await tx1.manager
           .createQueryBuilder()
           .update(OrderDeliveryEntity)
-          .set({ couponStatus, discardedAt: orderDelivery.discardedAt })
+          .set(setPayload)
           .where('id = :id AND coupon_status = :before', { id: orderDelivery.id, before: beforeChange })
           .execute();
 
         if (transition.affected === 0) {
           // 다른 요청이 먼저 폐기를 반영함 → 늦은 요청은 중복 처리 차단
           throw new BadRequestException('이미 폐기 처리된 발송입니다.');
+        }
+
+        if (discardSlot) {
+          const workflowTransition = await tx1.manager
+            .getRepository(DeliveryWorkflowEntity)
+            .createQueryBuilder()
+            .update(DeliveryWorkflowEntity)
+            .set({
+              workflowStatus: DeliveryWorkflowStatus.CANCELLED,
+              stateEnteredAt: orderDelivery.discardedAt,
+              activeExclusiveOp: null,
+              exclusiveOwnerToken: null,
+              exclusiveLeaseExpiresAt: null,
+              workflowVersion: () => 'workflow_version + 1',
+            })
+            .where('order_delivery_id = :orderDeliveryId', { orderDeliveryId: orderDelivery.id })
+            .andWhere('active_exclusive_op = :op', { op: DeliveryExclusiveOp.DISCARD })
+            .andWhere('exclusive_owner_token = :ownerToken', { ownerToken: discardSlot.ownerToken })
+            .andWhere('workflow_version = :workflowVersion', { workflowVersion: discardSlot.workflowVersion })
+            .execute();
+          if (!workflowTransition.affected) {
+            throw new BadRequestException('폐기 처리 소유권이 만료되었습니다. 다시 시도해 주세요.');
+          }
+          await this.deliveryCancelIntentService.markDbApplied(
+            cancelIntentId!,
+            discardSlot,
+            tx1.manager,
+            orderDelivery.discardedAt,
+          );
         }
 
         if (historyData) {
@@ -1360,7 +1793,13 @@ export class CustomerServiceService {
           savedHistoryId = saved.id;
         }
 
+        // ── P6 정산 원장 (B14 §4 P6 — CS 폐기 역분개) ──────────────────────────
+        // 폐기 = 원본 원장의 역분개. flag off 면 완전 no-op(§4.6 회귀 요건).
+        // queryRunner.manager 를 전달해 same-tx 요건(§6.5)을 만족한다.
+        await this.recordCsDiscardSettlement(orderDelivery, tx1.manager);
+
         await tx1.commitTransaction();
+        discardSlot = null;
       } catch (error) {
         await tx1.rollbackTransaction();
         throw error;
@@ -1374,28 +1813,27 @@ export class CustomerServiceService {
       let refundError: Error | undefined;
       let restoreAmount: number | null = null;
 
-      if (!options?.skipBalanceRestore) {
-        const tx2 = this.dataSource.createQueryRunner();
-        await tx2.connect();
-        await tx2.startTransaction();
+      if (!options?.skipBalanceRestore && couponStatus !== OrderDeliveryCouponStatus.REFUND_CANCEL) {
         try {
-          restoreAmount = await this.restoreBalanceOnDiscard(orderDelivery, user, tx2);
+          restoreAmount = isCutover
+            ? await this.executeCutoverDiscardRefund(orderDelivery, user, cancelIntentId!, cutoverRefundAmount!)
+            : await this.executeLegacyDiscardRefund(orderDelivery, user);
           if (restoreAmount !== null && orderDelivery.orderProductMapping.order.isSettleComplete) {
             destroyAmount = restoreAmount;
           }
-          await tx2.commitTransaction();
           refundStatus = 'SUCCESS';
         } catch (error) {
-          await tx2.rollbackTransaction();
           refundStatus = 'FAILED';
           refundError = error instanceof Error ? error : new Error(String(error));
           this.logger.error(
             `[execDiscard] 폐기는 완료(orderDeliveryId=${orderDelivery.id})되었으나 환불 처리 실패: ${refundError.message}`,
             refundError.stack,
           );
-        } finally {
-          await tx2.release();
         }
+      }
+
+      if (isCutover && cancelIntentId && refundStatus === 'SKIPPED') {
+        await this.deliveryCancelIntentService.markResolvedNoRefund(cancelIntentId);
       }
 
       // pinDiscard 등 Tx1 에서 이미 history 를 기록한 경로: 복원액은 Tx2 후 확정되므로 보강 update
@@ -1404,8 +1842,21 @@ export class CustomerServiceService {
       }
 
       return { orderDelivery, beforeChange, refundStatus, refundError, destroyAmount, restoreAmount };
+    } catch (error) {
+      if (cancelIntentId) {
+        await this.deliveryCancelIntentService.markReconciling(
+          cancelIntentId,
+          `CS_DISCARD_FLOW_FAILED:${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      throw error;
     } finally {
-      await this.releaseMutationLease(orderDelivery.id, mutationClaimAt);
+      if (discardSlot) {
+        await this.deliveryWorkflowSlotService.release(discardSlot);
+      }
+      if (mutationClaimAt) {
+        await this.releaseMutationLease(orderDelivery.id, mutationClaimAt);
+      }
     }
   }
 
@@ -1584,6 +2035,28 @@ export class CustomerServiceService {
           afterChange: history.afterChange,
         });
         await qr.manager.save(OrderHistoryEntity, historyEntity);
+      }
+
+      // ── P6 정산 원장 (B14 §4 P6 — 핀상태변경 역분개) ──────────────────────────
+      // CANCEL/REFUND_CANCEL 전이만 역분개 대상. flag off 면 no-op.
+      if (
+        (set.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
+          set.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL) &&
+        this.settleFlag.isEnabled
+      ) {
+        const od = await this.orderDeliveryRepository.findOne({
+          where: { id: orderDeliveryId },
+          relations: [
+            'orderProductMapping',
+            'orderProductMapping.product',
+            'orderProductMapping.product.partnerCompany',
+            'choiceSelectProduct',
+            'choiceSelectProduct.partnerCompany',
+          ],
+        });
+        if (od) {
+          await this.recordCsDiscardSettlement(od, qr.manager);
+        }
       }
 
       await qr.commitTransaction();
@@ -1856,6 +2329,7 @@ export class CustomerServiceService {
       content: getBody.content || '',
       beforeChange: beforeChange || '',
       afterChange: getBody.afterChange || '',
+      refundRatio: getBody.refundRatio,
       sendMethod,
       orderDelivery,
     };
@@ -2779,7 +3253,13 @@ export class CustomerServiceService {
         break;
       }
       case CS_HISTORY_TYPE.REFUND_DISCARD: {
-        const result = await this.execDiscard(map.user, map.orderDeliveryId, OrderDeliveryCouponStatus.REFUND_CANCEL);
+        const result = await this.execDiscard(
+          map.user,
+          map.orderDeliveryId,
+          OrderDeliveryCouponStatus.REFUND_CANCEL,
+          undefined, // historyData — 공통 말미 saveCsHistory 가 저장
+          { refundRatio: map.refundRatio ?? map.orderDelivery.refundRatio },
+        );
         afterChange = result.orderDelivery.couponStatus;
         discardDestroyAmount = result.destroyAmount;
         discardRestoreAmount = result.restoreAmount;
@@ -3008,6 +3488,45 @@ export class CustomerServiceService {
       orderDelivery.choiceSelectProduct?.partnerCompany?.type ??
       orderDelivery.orderProductMapping?.product?.partnerCompany?.type
     );
+  }
+
+  /**
+   * P6 정산 원장 — CS 폐기/환불 역분개.
+   *
+   * flag off 면 즉시 리턴(DB 접근 0). flag on 이면 기존 원장의 역분개를 만든다.
+   * 잔여 금액 0 인 원장과 NEEDS_REVIEW 원장은 역분개 대상에서 제외한다.
+   * base key: `EXC:CS_DISCARD:{orderDeliveryId}`.
+   * 호출부의 queryRunner.manager 를 전달받아 same-tx(§6.5)를 만족한다.
+   */
+  private async recordCsDiscardSettlement(
+    orderDelivery: OrderDeliveryEntity,
+    manager: import('typeorm').EntityManager,
+  ): Promise<void> {
+    const provider = this.getPartnerType(orderDelivery);
+    if (!provider || !this.settleFlag.isEnabledFor(provider)) return;
+
+    const ctx = buildSettlementContext(orderDelivery, provider);
+    if (!ctx) return;
+
+    // 역분개할 기존 원장 조회 — findReversibleEntries 가 잔여>0·정상 상태만 돌려준다.
+    const reversibles = await this.settleProducer.findReversibleEntries(orderDelivery.id, manager);
+    if (reversibles.length === 0) return;
+
+    const baseKey = `EXC:CS_DISCARD:${orderDelivery.id}`;
+    const occurredAt = fromDate(new Date());
+
+    for (const entry of reversibles) {
+      await this.settleProducer.recordCancellation(
+        ctx,
+        {
+          kind: entry.sourceType as 'ISSUANCE' | 'EXCHANGE' | 'USAGE',
+          reversesLedgerId: entry.id,
+          baseIdempotencyKey: baseKey,
+          occurredAt,
+        },
+        manager,
+      );
+    }
   }
 
   private async calculateSettledDiscardRestoreAmount(
@@ -3246,6 +3765,15 @@ export class CustomerServiceService {
             continue;
           }
 
+          if (await this.cutoverGuard.isCutover(orderDelivery.id)) {
+            await this.execDiscard(user, orderDelivery.id, OrderDeliveryCouponStatus.CANCEL, {
+              type: CS_HISTORY_TYPE.DISCARD,
+              content,
+            });
+            success.push(orderDeliveryId);
+            continue;
+          }
+
           // 3-2. 변형 lease 획득 (D3-55 후속). 재발행/외부취소/배치발송이 이 행을 진행 중이면 skip.
           // 없으면 재발행이 issue()/발송(외부 통신 수 초) 중인 tip 을 다중폐기가 협력사 취소 + 환불까지
           // 마치고, 재발행은 그대로 진행해 **이미 죽은 핀이 담긴 문자를 고객에게 배달**한다.
@@ -3340,6 +3868,9 @@ export class CustomerServiceService {
                 restoreAmount,
               });
               await queryRunner.manager.save(OrderHistoryEntity, history);
+
+              // ── P6 정산 원장 (B14 §4 P6 — CS 일괄폐기 역분개) ──────────────────
+              await this.recordCsDiscardSettlement(orderDelivery, queryRunner.manager);
 
               await queryRunner.commitTransaction();
             } catch (txError) {

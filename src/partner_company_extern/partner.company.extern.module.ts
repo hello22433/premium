@@ -27,6 +27,7 @@ import { SsgResendDeductPendingEntity } from '../entity/ssg.resend.deduct.pendin
 import { GiftielPushController } from './api/giftiel.push.controller';
 import { GiftielIpGuard } from './api/giftiel.ip.guard';
 import { SsgInsertStateModule } from '../delivery/ssg.insert.state.module';
+import { PartnerSettleModule } from '../partner_settle/partner.settle.module';
 
 @Module({
   imports: [
@@ -43,6 +44,7 @@ import { SsgInsertStateModule } from '../delivery/ssg.insert.state.module';
       SsgResendDeductPendingEntity,
     ]),
     SsgInsertStateModule,
+    PartnerSettleModule,
   ],
   providers: [
     {

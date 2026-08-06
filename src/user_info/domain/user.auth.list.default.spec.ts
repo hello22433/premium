@@ -36,6 +36,11 @@ describe('UserAuthListDefault', () => {
       const result = UserAuthListDefault(IUserAuthority.SUPER_ADMIN, null);
       expect(result).toContain(UserAuthSubEnum.SETTLEMENT_CODE);
     });
+
+    it('DEPOSIT_HISTORY(입금내역)가 전체 권한에 포함된다', () => {
+      const result = UserAuthListDefault(IUserAuthority.SUPER_ADMIN, null);
+      expect(result).toContain(UserAuthSubEnum.DEPOSIT_HISTORY);
+    });
   });
 
   describe('OPERATION_ADMIN 의 메뉴별 제한은 보존된다 (CSV verbatim)', () => {
@@ -55,6 +60,12 @@ describe('UserAuthListDefault', () => {
     it('SETTLEMENT_CODE 는 기본 권한 목록에 포함되지 않는다 (권한관리 화면에서 개별 부여)', () => {
       const result = UserAuthListDefault(IUserAuthority.OPERATION_ADMIN, null);
       expect(result).not.toContain(UserAuthSubEnum.SETTLEMENT_CODE);
+    });
+
+    // 은행 계좌·예금주 실명·금액을 다루므로 운영자 전원에게 자동 부여하지 않는다.
+    it('DEPOSIT_HISTORY 는 기본 권한 목록에 포함되지 않는다 (권한관리 화면에서 개별 부여)', () => {
+      const result = UserAuthListDefault(IUserAuthority.OPERATION_ADMIN, null);
+      expect(result).not.toContain(UserAuthSubEnum.DEPOSIT_HISTORY);
     });
   });
 

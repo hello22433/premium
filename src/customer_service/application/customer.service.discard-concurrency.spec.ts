@@ -23,6 +23,7 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
     ({
       id: 7001,
       couponStatus,
+      refundRatio: 80,
       orderProductMapping: { product: { type: 'GENERAL' }, order: { cardSurchargeApplied: false } },
     }) as any;
 
@@ -205,6 +206,92 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
     });
   });
 
+  describe('(E) 컷오버 durable cancel intent', () => {
+    it('협력사 취소 후 workflow fencing을 잃으면 intent를 재조정 대상으로 남긴다', async () => {
+      const orderDelivery = buildOrderDelivery(OrderDeliveryCouponStatus.NOT_USED);
+      const sut = makeSut(orderDelivery);
+      const slot = {
+        orderDeliveryId: orderDelivery.id,
+        ownerToken: 'discard-owner',
+        workflowVersion: '3',
+      };
+
+      sut.cutoverGuard.isCutover.mockResolvedValue(true);
+      sut.deliveryWorkflowSlotService = {
+        acquire: jest.fn().mockResolvedValue({ acquired: true, slot }),
+        release: jest.fn().mockResolvedValue(false),
+      };
+      sut.deliveryCancelIntentService = {
+        create: jest.fn().mockResolvedValue({ id: 'intent-1' }),
+        markExternalCancelled: jest.fn().mockResolvedValue(undefined),
+        markDbApplied: jest.fn().mockResolvedValue(undefined),
+        markResolvedNoRefund: jest.fn().mockResolvedValue(undefined),
+        markReconciling: jest.fn().mockResolvedValue(undefined),
+      };
+      sut.partnerCompanyExternService = {
+        cancel: jest.fn().mockResolvedValue(undefined),
+      };
+      sut.getPartnerType = jest.fn().mockReturnValue('GIFT_SHOW');
+
+      const orderUpdate: any = {};
+      for (const method of ['update', 'set', 'where']) {
+        orderUpdate[method] = jest.fn(() => orderUpdate);
+      }
+      orderUpdate.execute = jest.fn().mockResolvedValue({ affected: 1 });
+
+      const workflowUpdate: any = {};
+      for (const method of ['update', 'set', 'where', 'andWhere']) {
+        workflowUpdate[method] = jest.fn(() => workflowUpdate);
+      }
+      workflowUpdate.execute = jest.fn().mockResolvedValue({ affected: 0 });
+
+      const txRunner = {
+        connect: jest.fn().mockResolvedValue(undefined),
+        startTransaction: jest.fn().mockResolvedValue(undefined),
+        commitTransaction: jest.fn().mockResolvedValue(undefined),
+        rollbackTransaction: jest.fn().mockResolvedValue(undefined),
+        release: jest.fn().mockResolvedValue(undefined),
+        manager: {
+          createQueryBuilder: jest.fn(() => orderUpdate),
+          getRepository: jest.fn(() => ({ createQueryBuilder: jest.fn(() => workflowUpdate) })),
+          save: jest.fn(),
+        },
+      };
+      sut.dataSource = { createQueryRunner: jest.fn(() => txRunner) };
+      sut.orderHistoryRepository = { create: jest.fn() };
+
+      await expect(
+        sut.execDiscard(operator, orderDelivery.id, OrderDeliveryCouponStatus.REFUND_CANCEL),
+      ).rejects.toThrow(/소유권이 만료/);
+
+      expect(sut.deliveryCancelIntentService.create.mock.invocationCallOrder[0]).toBeLessThan(
+        sut.partnerCompanyExternService.cancel.mock.invocationCallOrder[0],
+      );
+      expect(sut.deliveryCancelIntentService.markExternalCancelled).toHaveBeenCalledWith('intent-1', slot);
+      expect(sut.deliveryCancelIntentService.markDbApplied).not.toHaveBeenCalled();
+      expect(sut.deliveryCancelIntentService.markReconciling).toHaveBeenCalledWith(
+        'intent-1',
+        expect.stringContaining('CS_DISCARD_FLOW_FAILED'),
+      );
+    });
+
+    it('외부 호출 전 확정 가능한 유효성 실패는 intent와 슬롯을 만들지 않는다', async () => {
+      const orderDelivery = buildOrderDelivery(OrderDeliveryCouponStatus.EXPIRED);
+      const sut = makeSut(orderDelivery);
+      sut.getPartnerType = jest.fn().mockReturnValue('GIFT_SHOW');
+      sut.deliveryWorkflowSlotService = { acquire: jest.fn() };
+      sut.deliveryCancelIntentService = { create: jest.fn() };
+
+      await expect(
+        sut.execDiscard(operator, orderDelivery.id, OrderDeliveryCouponStatus.REFUND_CANCEL),
+      ).rejects.toThrow('현재 변경을 할 수 없는 핀상태입니다.');
+
+      expect(sut.cutoverGuard.isCutover).not.toHaveBeenCalled();
+      expect(sut.deliveryWorkflowSlotService.acquire).not.toHaveBeenCalled();
+      expect(sut.deliveryCancelIntentService.create).not.toHaveBeenCalled();
+    });
+  });
+
   describe('(C) bulkDiscard — 조건부 UPDATE(CAS) 사용 검증', () => {
     // 운영자: authorityList 에 CUSTOMER_GENERAL_COUPON 부여 → 권한검사 통과
     const operatorEntity = {
@@ -239,6 +326,9 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
       sut.restoreBalanceOnDiscard = jest.fn().mockResolvedValue(undefined);
       sut.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
 
+    // P6 정산: flag off mock
+    sut.settleFlag = { isEnabled: false, isEnabledFor: () => false };
+    sut.settleProducer = { findReversibleEntries: jest.fn().mockResolvedValue([]) };
       // 변형 lease (D3-55 후속): acquire=createQueryBuilder CAS, release=update
       const leaseQb: any = {
         update: jest.fn(() => leaseQb),

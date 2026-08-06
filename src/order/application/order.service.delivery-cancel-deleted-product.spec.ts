@@ -61,6 +61,10 @@ describe('OrderService.deliveryCancel — 삭제된 상품 포함 주문', () =>
     sut.userCompanyRepository = userCompanyRepository;
     sut.ssgEventService = { restoreEventBalance: jest.fn() };
     sut.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(false) };
+    sut.legacyWalletCreditSyncService = {
+      syncCredit: jest.fn().mockResolvedValue(undefined),
+      syncDeposit: jest.fn().mockResolvedValue(undefined),
+    };
     return { sut, orderRepository, userRepository };
   };
 

@@ -56,6 +56,7 @@ export class AutoOrderPayloadBuilder {
       // EMAIL이면 발신주소(등록/기본계정 주입)+발송타입 URL 기본. 그 외 채널은 미사용(null).
       fromEmail: isEmail ? (input.fromEmail ?? null) : null,
       emailSendType: isEmail ? OrderEmailSendType.URL : null,
+      emailFinalSendMethod: null,
       useEmailContent: null,
       encourageDay: null,
       orderDeliveryList: group.map((r) => this.toDelivery(header.sendMethod, r)),

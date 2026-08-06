@@ -173,6 +173,8 @@ describe('partner company service test', () => {
         bankNumber: 'string',
         settleDay: 10,
         type: null,
+        // 미지정 시 기본값 true (유효기간 익일 시작)
+        validityStartsNextDay: true,
       });
     });
   });

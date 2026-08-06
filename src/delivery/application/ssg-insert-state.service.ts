@@ -5,7 +5,43 @@ import { Propagation, Transactional } from 'typeorm-transactional';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliverySsgInsertStateEntity } from '../../entity/order.delivery.ssg.insert.state.entity';
 import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
+import { SsgIssueLogKeyCollisionError } from '../../partner_company_extern/infra/ssg.issue';
 import { MarkAttemptedResult, SsgInsertState } from '../interface/ssg.insert.state';
+
+/**
+ * ssg_issue_log 후보 유일성 인덱스. 이 두 개의 위반만 typed 충돌로 승격한다.
+ * docs/plans/2026-08-04-ssg-issue-log-unique-typed-collision.md §3-3.
+ */
+const SSG_ISSUE_LOG_UNIQUE_KEYS: ReadonlyArray<{ index: string; key: 'bar_code' | 'personal_code' }> = [
+  { index: 'uq_ssg_issue_log_bar_code', key: 'bar_code' },
+  { index: 'uq_ssg_issue_log_personal_code', key: 'personal_code' },
+];
+
+/**
+ * driver 오류가 ssg_issue_log 후보 유일성 위반인지 판정한다.
+ *
+ * errno=1062 만으로는 부족하다. ER_DUP_ENTRY 이면서 위반 키 이름이 위 두 인덱스 중 하나여야 한다.
+ * 키 이름 포맷은 엔진마다 다르므로 양쪽을 모두 수용한다:
+ *   MySQL 8    : Duplicate entry '...' for key 'ssg_issue_log.uq_ssg_issue_log_bar_code'
+ *   MariaDB 10 : Duplicate entry '...' for key 'uq_ssg_issue_log_bar_code'
+ *
+ * 그 외 unique 충돌·DB 오류는 null 을 반환해 원본 그대로 전파시킨다.
+ * (오분류하면 다른 고객의 PIN 복구 분기로 진입할 수 있다.)
+ *
+ * export 이유: 실 엔진이 만드는 sqlMessage 포맷을 db-integration 테스트가 직접 검증한다.
+ */
+export function classifySsgIssueLogCollision(e: unknown): 'bar_code' | 'personal_code' | null {
+  const driver = (e as { driverError?: unknown })?.driverError ?? e;
+  const code = (driver as { code?: unknown })?.code;
+  if (code !== 'ER_DUP_ENTRY') {
+    return null;
+  }
+  const message = [(driver as { sqlMessage?: unknown })?.sqlMessage, (driver as { message?: unknown })?.message]
+    .filter((v): v is string => typeof v === 'string')
+    .join(' ');
+  const matched = SSG_ISSUE_LOG_UNIQUE_KEYS.find(({ index }) => message.includes(index));
+  return matched?.key ?? null;
+}
 
 /**
  * markAttempted 입력: INSERT 시도 시점의 PIN/메타.
@@ -87,6 +123,11 @@ export class SsgInsertStateService {
    *   4) 두 단계 모두 affected=0 이면 현재 state를 조회해 ACTIVE / TERMINAL 결과로 구분.
    *      caller는 결과에 따라 typed error를 throw해 외부 INSERT 호출을 막아야 한다.
    *      (plans/ssg-balance-refactor.md PR2 — silently skip + caller 진행은 "state 없는 INSERT" 위험.)
+   *
+   * ssg_issue_log 후보 유일성(uq_ssg_issue_log_bar_code / _personal_code) 위반은
+   * SsgIssueLogKeyCollisionError 로 승격한다. 이 REQUIRES_NEW 트랜잭션이 통째로 롤백되므로
+   * state 전이도 함께 되감기고, 호출자는 다음 PIN 후보로 안전하게 진행할 수 있다.
+   * docs/plans/2026-08-04-ssg-issue-log-unique-typed-collision.md
    */
   @Transactional({ propagation: Propagation.REQUIRES_NEW })
   async markAttempted(orderDeliveryId: number, payload: SsgAttemptPayload): Promise<MarkAttemptedResult> {
@@ -118,11 +159,22 @@ export class SsgInsertStateService {
     }
 
     if (transitioned) {
-      await this.issueLogRepository.insert({
-        orderDeliveryId,
-        insertedAt: new Date(),
-        ...payload,
-      });
+      try {
+        await this.issueLogRepository.insert({
+          orderDeliveryId,
+          insertedAt: new Date(),
+          ...payload,
+        });
+      } catch (e) {
+        const collidedKey = classifySsgIssueLogCollision(e);
+        if (!collidedKey) {
+          throw e;
+        }
+        this.logger.warn(
+          `[SSG] 후보 PIN 유일성 충돌(${collidedKey}) - orderDeliveryId=${orderDeliveryId}, barCode=${payload.barCode}, personalCode=${payload.personalCode}. 다음 후보로 진행.`,
+        );
+        throw new SsgIssueLogKeyCollisionError(orderDeliveryId, collidedKey, e);
+      }
       return MarkAttemptedResult.TRANSITIONED;
     }
 
