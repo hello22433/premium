@@ -101,6 +101,8 @@ describe('OrderService deliveryCancel wallet PR2-005 branch', () => {
     const managedManager = {
       findOne: jest.fn().mockResolvedValue(allocation ?? null),
     };
+    // 소유권(조회범위) 검증은 order.service.cancel-ownership.spec 에서 다룬다 — 여기선 통과시킨다.
+    service.assertOrderInViewScope = jest.fn().mockResolvedValue(undefined);
 
     service.orderRepository = {
       createQueryBuilder: jest.fn().mockReturnValue({

@@ -62,6 +62,8 @@ describe('OrderService.deliveryCancel — 삭제된 상품 포함 주문', () =>
     const userCompanyRepository = { save: jest.fn() };
 
     const sut: any = Object.create(OrderService.prototype);
+    // 소유권(조회범위) 검증은 order.service.cancel-ownership.spec 에서 다룬다 — 여기선 통과시킨다.
+    sut.assertOrderInViewScope = jest.fn().mockResolvedValue(undefined);
     sut.orderRepository = orderRepository;
     sut.userRepository = userRepository;
     sut.orderDeliveryRepository = orderDeliveryRepository;

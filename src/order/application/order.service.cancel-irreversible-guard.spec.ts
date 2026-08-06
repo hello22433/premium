@@ -61,6 +61,8 @@ describe('OrderService.deliveryCancel — 되돌릴 수 없는 발송건 가드'
 
     const getCount = jest.fn(async () => irreversibleCount);
     const sut: any = Object.create(OrderService.prototype);
+    // 소유권(조회범위) 검증은 order.service.cancel-ownership.spec 에서 다룬다 — 여기선 통과시킨다.
+    sut.assertOrderInViewScope = jest.fn().mockResolvedValue(undefined);
 
     sut.orderRepository = {
       createQueryBuilder: jest.fn(() => {

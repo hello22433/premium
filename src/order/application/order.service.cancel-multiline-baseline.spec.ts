@@ -79,6 +79,8 @@ describe('OrderService.deliveryCancel — 다중 상품행 주문 현행 동작 
     const externalManager = { findOne: jest.fn().mockResolvedValue(allocation) };
 
     const sut: any = Object.create(OrderService.prototype);
+    // 소유권(조회범위) 검증은 order.service.cancel-ownership.spec 에서 다룬다 — 여기선 통과시킨다.
+    sut.assertOrderInViewScope = jest.fn().mockResolvedValue(undefined);
     sut.orderRepository = {
       createQueryBuilder: jest.fn(() => {
         const b: any = {

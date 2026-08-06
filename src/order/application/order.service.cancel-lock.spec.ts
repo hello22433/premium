@@ -49,6 +49,8 @@ describe('OrderService.deliveryCancel — 주문 행 잠금', () => {
     });
 
     const sut: any = Object.create(OrderService.prototype);
+    // 소유권(조회범위) 검증은 order.service.cancel-ownership.spec 에서 다룬다 — 여기선 통과시킨다.
+    sut.assertOrderInViewScope = jest.fn().mockResolvedValue(undefined);
     sut.orderRepository = { createQueryBuilder };
     return { sut, builders, createQueryBuilder };
   };

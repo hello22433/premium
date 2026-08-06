@@ -5827,9 +5827,11 @@ export class OrderService {
    *   지금은 발송 경로들이 claimed_at/actual_send_at 을 먼저 채워 간접 차단되지만 그것은 타 모듈의
    *   암묵 불변식이다. 이 문장이 "돈을 되돌려도 되는가" 의 마지막 관문이므로 남에게 기대지 않는다.
    *
-   * sendRequestAt(10분 규칙)만 여기서 다시 검사하지 않는다. 시간은 되돌아가지 않으므로
-   * 조회 시점에 통과했다면 갱신 시점에도 통과한다 — 오히려 여유가 줄어들 뿐이고,
-   * 그 구간의 실질 방어는 claimed_at 이 담당한다.
+   * sendRequestAt(10분 규칙)도 **DB NOW() 기준으로** 다시 본다. 앱에서 계산한 now 를 넘기면
+   * 조회 때 쓴 값과 같아 재검증이 되지 않으므로 SQL 함수를 쓴다. 조회~갱신 사이에 send_request_at 이
+   * 다른 흐름(유효기간 변경·재발행)으로 앞당겨진 행을 배제하고, "발송 10분 전까지" 규칙을 갱신
+   * 시점에도 그대로 지킨다. (미발송 자체는 위 상태 신호들이 보장한다 — 배치는 send_request_at 이
+   * 지난 행만 집고 집는 순간 claimed_at 이 차므로, 이 조건은 규칙 준수용이지 유일한 근거가 아니다.)
    */
   private async cancelDeliveriesIfStillWaiting(
     orderId: number,
@@ -5880,6 +5882,16 @@ export class OrderService {
       .andWhere('couponIssuedAt IS NULL')
       .andWhere('barCode IS NULL')
       .andWhere('reportState IS NULL')
+      // ★ 컷오프도 갱신 시점에 **DB 현재시각 기준**으로 다시 본다 (관리자 리뷰 P1).
+      //   앱에서 계산한 now 를 파라미터로 넘기면 조회 때 쓴 값과 같아 재검증이 되지 않으므로
+      //   NOW() 를 쓴다. 조회~갱신 사이에 send_request_at 이 다른 흐름(유효기간 변경·재발행)으로
+      //   앞당겨져 발송이 임박해진 행을 여기서 배제한다.
+      //   ※ 이 조건이 없어도 "이미 나간 건" 은 위 4개 신호가 막는다(배치는 send_request_at 이
+      //     지난 행만 집고, 집는 순간 claimed_at 이 찬다). 즉 이 조건은 10분 규칙 자체를 갱신
+      //     시점에도 지키기 위한 것이지 미발송 보장의 유일한 근거가 아니다.
+      .andWhere('send_request_at >= DATE_ADD(NOW(), INTERVAL :cutoffMinutes MINUTE)', {
+        cutoffMinutes: DELIVERY_CANCEL_CUTOFF_MS / 60_000,
+      })
       .andWhere('deletedAt IS NULL')
       .execute();
 
@@ -6055,13 +6067,6 @@ export class OrderService {
     //   같은 키가 되어 재시도 멱등이 유지된다.
     const requestDigest = createHash('sha1').update(requested.join(',')).digest('hex').slice(0, 16);
 
-    // 재원별 복구액은 RefundEventResult 에 없으므로 allocation 의 누적 복구액 차이로 읽는다.
-    // 레거시 미러(회사 예치금 / 여신)를 전체취소와 같은 방식으로 되돌리려면 이 분해가 필요하다.
-    const allocationBefore = await externalManager.findOne(OrderPaymentAllocationEntity, { where: { orderId } });
-    if (!allocationBefore) {
-      throw new InternalServerErrorException(`wallet-managed but allocation row missing for orderId=${orderId}`);
-    }
-
     const refundResult = await this.refundPoolService.refund(
       {
         orderId,
@@ -6104,13 +6109,14 @@ export class OrderService {
     // 레거시 미러 역복원 (전체취소·외부API취소와 동일). RefundPoolService 는 legacy 컬럼을 건드리지
     // 않으므로 이중복원이 아니다. 이게 빠져 있으면 지갑 잔액은 맞는데 고객사 화면·정산 화면의
     // 예치금/여신이 취소 전 값에 멈춰 서로 어긋난다.
-    const allocationAfter = await externalManager.findOne(OrderPaymentAllocationEntity, { where: { orderId } });
-    if (!allocationAfter) {
-      throw new InternalServerErrorException(`allocation row disappeared during refund for orderId=${orderId}`);
-    }
-    const depositRefunded = allocationAfter.depositRestoredAmount - allocationBefore.depositRestoredAmount;
-    const creditRefunded = allocationAfter.creditUsedRestoredAmount - allocationBefore.creditUsedRestoredAmount;
-    const excessRefunded = allocationAfter.creditExcessRestoredAmount - allocationBefore.creditExcessRestoredAmount;
+    //
+    // ★ 재원별 금액은 refund 가 **락 안에서 계산해 돌려준 이번 호출의 몫**을 그대로 쓴다.
+    //   종전에는 `allocation(after) - allocation(before)` 로 역산했는데, before 를 락 없이 읽은 뒤
+    //   refund 가 wallet/allocation 락을 잡기 때문에 그 사이 같은 주문의 **다른 발송건을 CS 폐기 등이
+    //   환불하면 그 몫까지 차액에 섞였다**. CS 쪽은 자기 몫을 이미 레거시 미러에 반영하므로,
+    //   부분취소가 남의 환불분을 한 번 더 회사 예치금/여신에 적립하는 과다적립이 났다(관리자 리뷰 P1).
+    const { deposit: depositRefunded, creditUsed: creditRefunded, creditExcess: excessRefunded } =
+      refundResult.restoredByResource;
 
     const billingUserId = getBillingUserId(lockedOrder);
     const billingUser = await this.userRepository.findOneOrFail({
@@ -6297,6 +6303,16 @@ export class OrderService {
   @Transactional()
   async deliveryCancel(user: ILoginUserInfo, getBody: OrderDeliveryCancelReqDto) {
     const { id, cancelReason, deliveryIds } = getBody;
+
+    // ★ 소유권(조회범위) 검증 — 이 엔드포인트는 클래스 가드가 JWT 유효성만 보고, 서비스의
+    //   order.userId 조건도 주석 처리돼 있어 **인증된 아무나 주문 id 만 알면 타 테넌트의 예약
+    //   발송을 취소**시킬 수 있었다(관리자 리뷰 P1 보안). 자금·비가역 경로이므로 조회 API 와
+    //   같은 기준(applyViewScopeFilter)으로 막는다.
+    //   ※ canTransitionDelivery(발송확정 권한)를 쓰지 않는 이유: 그 술어는 SUPER/OPERATION 전용이라
+    //     자기 주문을 취소하던 고객사(CORPORATE_ADMIN)가 전부 막혀 동작이 바뀐다. 여기서 필요한 것은
+    //     "남의 주문을 못 건드린다" 이므로 조회범위 기준이 정확하고 기존 동작을 보존한다.
+    //   ※ 전체취소·부분취소 **양쪽 앞**에 둔다 — 부분취소는 user 를 받지도 않아 검사 자체가 없었다.
+    await this.assertOrderInViewScope(user, id);
 
     // deliveryIds 를 준 요청은 부분취소 경로로 보낸다.
     // 주지 않으면 아래 전체취소가 종전과 동일하게 동작한다 — 기존 프론트는 영향을 받지 않는다.

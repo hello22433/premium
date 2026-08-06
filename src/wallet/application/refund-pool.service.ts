@@ -40,7 +40,28 @@ export interface RefundEventResult {
   //  - true : 멱등 retry — 기존 ledger 결과만 반환, 잔액 미변경 (no-op).
   // caller 가 legacy mirror 같은 ledger 외 부수효과를 멱등하게 가드하는 데 쓴다.
   alreadyRefunded: boolean;
+  /**
+   * ★ **이번 호출이** 복구한 재원별 금액. allocation 의 누적값이 아니라 이 호출의 델타다.
+   *
+   * caller 가 legacy mirror(회사 예치금/유저 여신)를 되돌릴 때 쓴다. 종전에는 호출부가
+   * `allocation(after) - allocation(before)` 로 역산했는데, before 를 **락 없이** 읽은 뒤
+   * refund 가 wallet/allocation 락을 잡기 때문에 그 사이 같은 주문의 다른 발송건을 CS 폐기 등이
+   * 환불하면 그 몫까지 차액에 섞였다. CS 쪽은 자기 몫을 이미 legacy mirror 에 반영하므로
+   * 부분취소가 남의 환불분을 한 번 더 적립하는 **과다적립**이 났다.
+   * 락 안에서 계산한 이 값을 쓰면 호출부는 자기 몫만 정확히 반영한다.
+   *
+   * 멱등 retry(alreadyRefunded=true)면 이번 호출은 잔액을 안 건드렸으므로 전부 0 이다.
+   */
+  restoredByResource: {
+    deposit: number;
+    creditUsed: number;
+    creditExcess: number;
+    point: number;
+  };
 }
+
+/** 멱등 retry 등 "이번 호출이 잔액을 바꾸지 않은" 경우의 재원별 복구액(전부 0). */
+const NO_RESOURCE_RESTORE = { deposit: 0, creditUsed: 0, creditExcess: 0, point: 0 } as const;
 
 /**
  * Cross-Cutting Invariants §8 환불 알고리즘 구현 (풀 기반 + ledger).
@@ -98,7 +119,12 @@ export class RefundPoolService {
         (s, e) => s + e.refundedDepositAmount + e.refundedPointAmount,
         0,
       );
-      return { ledgerIds: existingForPrefix.map((e) => e.id), totalRefundedAmount, alreadyRefunded: true };
+      return {
+        ledgerIds: existingForPrefix.map((e) => e.id),
+        totalRefundedAmount,
+        alreadyRefunded: true,
+        restoredByResource: { ...NO_RESOURCE_RESTORE },
+      };
     }
 
     const peekAlloc = await manager.findOne(OrderPaymentAllocationEntity, {
@@ -141,7 +167,12 @@ export class RefundPoolService {
         (s, e) => s + e.refundedDepositAmount + e.refundedPointAmount,
         0,
       );
-      return { ledgerIds: existingAfterLock.map((e) => e.id), totalRefundedAmount, alreadyRefunded: true };
+      return {
+        ledgerIds: existingAfterLock.map((e) => e.id),
+        totalRefundedAmount,
+        alreadyRefunded: true,
+        restoredByResource: { ...NO_RESOURCE_RESTORE },
+      };
     }
 
     const activeEvents = await manager.find(OrderPaymentRefundEventEntity, {
@@ -235,6 +266,14 @@ export class RefundPoolService {
       ledgerIds: [ledger.id],
       totalRefundedAmount: depositRefundAmount + pointRefund.restored,
       alreadyRefunded: false,
+      // 이 경로는 alloc 을 += 로 증분하므로 그 증분값이 곧 이번 호출의 재원별 복구액이다
+      // (정산완료 폐기환불은 예치금·포인트만 건드리고 여신/신용초과는 손대지 않는다).
+      restoredByResource: {
+        deposit: depositRefundAmount,
+        creditUsed: 0,
+        creditExcess: 0,
+        point: pointRefund.restored,
+      },
     };
   }
 
@@ -306,7 +345,12 @@ export class RefundPoolService {
       .getMany();
     if (existingForPrefix.length > 0) {
       const totalRefundedAmount = existingForPrefix.reduce((s, e) => s + this.refundedAmountForRetry(e), 0);
-      return { ledgerIds: existingForPrefix.map((e) => e.id), totalRefundedAmount, alreadyRefunded: true };
+      return {
+        ledgerIds: existingForPrefix.map((e) => e.id),
+        totalRefundedAmount,
+        alreadyRefunded: true,
+        restoredByResource: { ...NO_RESOURCE_RESTORE },
+      };
     }
 
     // Plan §3 lock 순서: wallet_account → allocation → wallet_transaction.
@@ -352,7 +396,12 @@ export class RefundPoolService {
       .getMany();
     if (existingAfterLock.length > 0) {
       const totalRefundedAmount = existingAfterLock.reduce((s, e) => s + this.refundedAmountForRetry(e), 0);
-      return { ledgerIds: existingAfterLock.map((e) => e.id), totalRefundedAmount, alreadyRefunded: true };
+      return {
+        ledgerIds: existingAfterLock.map((e) => e.id),
+        totalRefundedAmount,
+        alreadyRefunded: true,
+        restoredByResource: { ...NO_RESOURCE_RESTORE },
+      };
     }
 
     // already_refunded 체크 (different prefix — 진짜 중복 요청)
@@ -597,6 +646,17 @@ export class RefundPoolService {
       totalRefund += thisGrossBase + thisSurcharge;
     }
 
+    // ★ 이번 호출의 재원별 복구액 = (최종 누적) - (락 획득 후 읽은 baseline).
+    //   러닝 총액 변수들은 alloc(FOR UPDATE 로 읽은 최신값)에서 출발하므로, 그 차이가 정확히
+    //   이 호출의 몫이다. 호출부가 after-before 로 역산하면 락 밖 구간에 끼어든 남의 환불이
+    //   섞여 legacy mirror 가 과다적립된다(그래서 값을 여기서 계산해 넘긴다).
+    const restoredByResource = {
+      deposit: depositRestoredTotal - alloc.depositRestoredAmount,
+      creditUsed: creditUsedRestoredTotal - alloc.creditUsedRestoredAmount,
+      creditExcess: creditExcessRestoredTotal - alloc.creditExcessRestoredAmount,
+      point: pointRestoredTotal - alloc.pointRestoredAmount,
+    };
+
     // allocation 누적 갱신
     alloc.pointRestoredAmount = pointRestoredTotal;
     alloc.creditExcessRestoredAmount = creditExcessRestoredTotal;
@@ -605,7 +665,7 @@ export class RefundPoolService {
     alloc.pointSkippedExpiredAmount = pointSkippedTotal;
     await manager.save(OrderPaymentAllocationEntity, alloc);
 
-    return { ledgerIds, totalRefundedAmount: totalRefund, alreadyRefunded: false };
+    return { ledgerIds, totalRefundedAmount: totalRefund, alreadyRefunded: false, restoredByResource };
   }
 
   private async runRefundFromResendDeductTransactions(
@@ -806,7 +866,18 @@ export class RefundPoolService {
       reversedByWalletTransactionId: null,
     });
 
-    return { ledgerIds: [ledger.id], totalRefundedAmount: refundedPayable, alreadyRefunded: false };
+    // 이 경로는 alloc 을 += 로 증분하므로 그 증분값이 곧 이번 호출의 재원별 복구액이다.
+    return {
+      ledgerIds: [ledger.id],
+      totalRefundedAmount: refundedPayable,
+      alreadyRefunded: false,
+      restoredByResource: {
+        deposit: refundDeposit,
+        creditUsed: refundCredit,
+        creditExcess: refundExcess,
+        point: restoredPoint,
+      },
+    };
   }
 
   private parseResendPointGrantId(tx: WalletTransactionEntity, attemptId: string): { grantId: string } {

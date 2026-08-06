@@ -62,6 +62,8 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       authority?: string;
       survivingMappings?: any[];
       cardSurchargeApplied?: boolean;
+      /** 우리 환불과 같은 구간에 남(CS 폐기 등)이 올린 allocation 누적 증가분 — 이중반영 재현용 */
+      concurrentDepositRefund?: number;
     } = {},
   ) => {
     const order = {
@@ -197,23 +199,41 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       }),
     };
 
+    // 소유권(조회범위) 검증은 별도 스펙(order.service.cancel-ownership.spec)에서 다루므로 여기선 통과시킨다.
+    // 이 스펙의 관심사는 취소·환불 흐름이고, view_scope 쿼리까지 모킹하면 builder 가 비대해진다.
+    sut.assertOrderInViewScope = jest.fn().mockResolvedValue(undefined);
     sut.walletManagedPredicate = { isWalletManaged: jest.fn(async () => over.isWalletManaged ?? true) };
-    // 실제 RefundPoolService 는 allocation 의 누적 복구액을 올린다 — 재원별 복구액을 그 차이로 읽으므로
-    // 목도 같은 부수효과를 내야 레거시 미러 검증이 의미를 갖는다.
+    // 실제 RefundPoolService 는 allocation 누적을 올리고, **이번 호출의 재원별 복구액**을
+    // restoredByResource 로 돌려준다(락 안에서 계산). 호출부는 그 값만 써야 하며 allocation 차액을
+    // 역산하면 안 된다 — 락 밖 구간에 끼어든 남의 환불이 섞이기 때문(관리자 리뷰 P1).
+    // 목도 같은 계약을 지킨다: 누적은 올리되, 반환하는 재원별 값은 이번 호출 몫만.
     sut.refundPoolService = {
       // 원장은 라인당 1개 → 정상 흐름은 요청 건수만큼 반환(커버리지 가드 통과).
       refund: jest.fn(async (input: any) => {
         const ledgerIds = (input.targetDeliveryIds as number[]).map((id) => `l-${id}`);
         if (over.alreadyRefunded) {
-          return { alreadyRefunded: true, ledgerIds, totalRefundedAmount: 0 };
+          return {
+            alreadyRefunded: true,
+            ledgerIds,
+            totalRefundedAmount: 0,
+            restoredByResource: { deposit: 0, creditUsed: 0, creditExcess: 0, point: 0 },
+          };
         }
-        allocation.depositRestoredAmount += refundBreakdown.deposit;
+        // ★ 동시성 재현: 같은 주문의 다른 발송건을 CS 폐기 등이 이 사이에 환불하면 allocation 누적이
+        //   우리 몫보다 더 오른다. 호출부가 차액을 역산하면 그 몫까지 레거시 미러에 얹힌다.
+        allocation.depositRestoredAmount += refundBreakdown.deposit + (over.concurrentDepositRefund ?? 0);
         allocation.creditUsedRestoredAmount += refundBreakdown.credit;
         allocation.creditExcessRestoredAmount += refundBreakdown.excess;
         return {
           alreadyRefunded: false,
           ledgerIds,
           totalRefundedAmount: refundBreakdown.deposit + refundBreakdown.credit + refundBreakdown.excess,
+          restoredByResource: {
+            deposit: refundBreakdown.deposit,
+            creditUsed: refundBreakdown.credit,
+            creditExcess: refundBreakdown.excess,
+            point: 0,
+          },
         };
       }),
     };
@@ -589,6 +609,23 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       // 엔티티 값을 고쳐 되쓰지 않는다 — 고쳤다면 lost update 방식으로 되돌아간 것이다.
       expect(company.balance).toBe(50000);
       expect(sut.userCompanyRepository.save).not.toHaveBeenCalled();
+    });
+
+    // ★ 관리자 리뷰 P1 — allocation 차액 역산 금지.
+    //   환불 구간에 같은 주문의 다른 발송건을 CS 폐기 등이 환불하면 allocation 누적은 그 몫까지 오른다.
+    //   호출부가 `after - before` 로 역산하면 남의 환불분이 레거시 미러에 한 번 더 얹혀 과다적립이 된다
+    //   (CS 쪽은 자기 몫을 이미 반영했다). refund 가 락 안에서 계산해 준 이번 호출 몫만 써야 한다.
+    it('환불 중 남이 같은 주문을 환불해 allocation 누적이 더 올라도 우리 몫만 미러에 반영한다', async () => {
+      const { sut, companyUpdates } = buildSut({
+        refundBreakdown: { deposit: 30000, credit: 0, excess: 0 },
+        concurrentDepositRefund: 50000, // 우리 환불 구간에 남이 5만원을 더 복구시킴
+      });
+
+      await call(sut, CANCELABLE);
+
+      expect(companyUpdates).toHaveLength(1);
+      // 차액 역산이었다면 80000(=30000+50000)이 찍힌다.
+      expect(companyUpdates[0].params).toEqual({ depositRefunded: 30000 });
     });
 
     it('여신·신용초과 복구분은 all_settle_amount 를 DB 증감식으로 내린다', async () => {
