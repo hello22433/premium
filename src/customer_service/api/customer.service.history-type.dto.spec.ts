@@ -55,6 +55,37 @@ describe('CustomerServiceHistoryReqDto.type 검증 (M-3 @IsIn)', () => {
   });
 });
 
+describe('CustomerServiceHistoryReqDto.refundRatio 검증', () => {
+  it.each([1, 50, 100])('유효 환불률 %d는 숫자로 변환되어 통과한다', async (refundRatio) => {
+    expect(
+      await validatePayload(CustomerServiceHistoryReqDto, {
+        orderDeliveryId: 1,
+        type: '환불폐기',
+        refundRatio: String(refundRatio),
+      }),
+    ).toEqual([]);
+  });
+
+  it('환불률은 선택값이다', async () => {
+    expect(
+      await validatePayload(CustomerServiceHistoryReqDto, {
+        orderDeliveryId: 1,
+        type: '환불폐기',
+      }),
+    ).toEqual([]);
+  });
+
+  it.each([0, 101])('범위를 벗어난 환불률 %d는 거부한다', async (refundRatio) => {
+    expect(
+      await validatePayload(CustomerServiceHistoryReqDto, {
+        orderDeliveryId: 1,
+        type: '환불폐기',
+        refundRatio,
+      }),
+    ).not.toEqual([]);
+  });
+});
+
 describe('CS_HISTORY_TYPES ↔ PII_BEARING_HISTORY_TYPES 파티션 (D3-36)', () => {
   // beforeChange/afterChange 에 PII(수신처·핀번호)를 담지 않음이 확인된 type 목록.
   // CS_HISTORY_TYPES 에 새 type 을 추가할 때 반드시 이 목록 또는 PII_BEARING_HISTORY_TYPES 에도 추가해야 한다.
