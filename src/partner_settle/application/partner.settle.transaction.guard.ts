@@ -1,4 +1,4 @@
-import { ObjectLiteral, Repository } from 'typeorm';
+import { EntityManager, ObjectLiteral, Repository } from 'typeorm';
 
 /**
  * 정산 원장 경로의 트랜잭션 선행조건 가드.
@@ -25,8 +25,12 @@ export class MissingTransactionError extends Error {
   }
 }
 
-export function assertInTransaction<T extends ObjectLiteral>(repository: Repository<T>, operation: string): void {
-  if (!repository.manager?.queryRunner?.isTransactionActive) {
+export function assertInTransaction<T extends ObjectLiteral>(
+  source: Repository<T> | EntityManager,
+  operation: string,
+): void {
+  const manager = source instanceof EntityManager ? source : source.manager;
+  if (!manager?.queryRunner?.isTransactionActive) {
     throw new MissingTransactionError(operation);
   }
 }

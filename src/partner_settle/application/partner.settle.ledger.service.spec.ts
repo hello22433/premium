@@ -158,7 +158,7 @@ describe('PartnerSettleLedgerService.lockForAppend', () => {
     await service.lockForAppend(4, 100);
 
     // 순서가 producer 마다 갈리면 일일 배치와 push 수신이 교차 데드락에 걸린다.
-    expect(pricingResolver.lockPolicyForRead).toHaveBeenCalledWith(4);
+    expect(pricingResolver.lockPolicyForRead).toHaveBeenCalledWith(4, undefined);
     expect(ledgerRepository.query.mock.calls[0][0]).toContain('order_delivery');
     expect(ledgerRepository.query.mock.calls[0][0]).toContain('FOR UPDATE');
     expect(ledgerRepository.query.mock.calls[0][1]).toEqual([100]);

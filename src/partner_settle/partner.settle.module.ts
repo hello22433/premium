@@ -25,6 +25,8 @@ import {
   GiftShowBalanceInquiryStub,
 } from './application/partner.balance.inquiry.stub';
 import { PARTNER_BALANCE_INQUIRIES } from './application/partner.balance.inquiry.token';
+import { PartnerSettleFeatureFlag } from './application/partner.settle.feature.flag';
+import { PartnerSettleProducerService } from './application/partner.settle.producer.service';
 import { UserDiscountEntity } from '../entity/user.discount.entity';
 import { AuthModule } from '../auth/auth.module';
 import { CreditConfigController } from './api/credit.config.controller';
@@ -77,6 +79,8 @@ import { CreditListController } from './api/credit.list.controller';
       ],
       inject: [GiftShowBalanceInquiryStub, GalaxiaBalanceInquiryStub],
     },
+    PartnerSettleFeatureFlag,
+    PartnerSettleProducerService,
   ],
   exports: [
     PartnerDiscountHistoryService,
@@ -88,6 +92,8 @@ import { CreditListController } from './api/credit.list.controller';
     PartnerProviderEventInboxService,
     PartnerCreditConfigService,
     PartnerCreditListService,
+    PartnerSettleFeatureFlag,
+    PartnerSettleProducerService,
   ],
 })
 export class PartnerSettleModule {}

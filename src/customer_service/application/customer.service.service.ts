@@ -114,6 +114,10 @@ import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
 import * as fs from 'fs';
 import { createExportTempPath } from '../../util/file.util';
+import { PartnerSettleFeatureFlag } from '../../partner_settle/application/partner.settle.feature.flag';
+import { PartnerSettleProducerService } from '../../partner_settle/application/partner.settle.producer.service';
+import { buildSettlementContext } from '../../partner_settle/application/partner.settle.context.builder';
+import { fromDate } from '../../partner_settle/domain/settle.time';
 
 const dayjs = require('dayjs');
 const timezone = require('dayjs/plugin/timezone');
@@ -169,6 +173,8 @@ export class CustomerServiceService {
     private readonly refundAttemptExecutor: RefundAttemptExecutorService,
     private readonly deliveryWorkflowSlotService: DeliveryWorkflowSlotService,
     private readonly deliveryCancelIntentService: DeliveryCancelIntentService,
+    private readonly settleFlag: PartnerSettleFeatureFlag,
+    private readonly settleProducer: PartnerSettleProducerService,
   ) {}
 
   /**
@@ -1764,6 +1770,11 @@ export class CustomerServiceService {
           savedHistoryId = saved.id;
         }
 
+        // ── P6 정산 원장 (B14 §4 P6 — CS 폐기 역분개) ──────────────────────────
+        // 폐기 = 원본 원장의 역분개. flag off 면 완전 no-op(§4.6 회귀 요건).
+        // queryRunner.manager 를 전달해 same-tx 요건(§6.5)을 만족한다.
+        await this.recordCsDiscardSettlement(orderDelivery, tx1.manager);
+
         await tx1.commitTransaction();
         discardSlot = null;
       } catch (error) {
@@ -2001,6 +2012,28 @@ export class CustomerServiceService {
           afterChange: history.afterChange,
         });
         await qr.manager.save(OrderHistoryEntity, historyEntity);
+      }
+
+      // ── P6 정산 원장 (B14 §4 P6 — 핀상태변경 역분개) ──────────────────────────
+      // CANCEL/REFUND_CANCEL 전이만 역분개 대상. flag off 면 no-op.
+      if (
+        (set.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
+          set.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL) &&
+        this.settleFlag.isEnabled
+      ) {
+        const od = await this.orderDeliveryRepository.findOne({
+          where: { id: orderDeliveryId },
+          relations: [
+            'orderProductMapping',
+            'orderProductMapping.product',
+            'orderProductMapping.product.partnerCompany',
+            'choiceSelectProduct',
+            'choiceSelectProduct.partnerCompany',
+          ],
+        });
+        if (od) {
+          await this.recordCsDiscardSettlement(od, qr.manager);
+        }
       }
 
       await qr.commitTransaction();
@@ -3427,6 +3460,45 @@ export class CustomerServiceService {
     );
   }
 
+  /**
+   * P6 정산 원장 — CS 폐기/환불 역분개.
+   *
+   * flag off 면 즉시 리턴(DB 접근 0). flag on 이면 기존 원장의 역분개를 만든다.
+   * 잔여 금액 0 인 원장과 NEEDS_REVIEW 원장은 역분개 대상에서 제외한다.
+   * base key: `EXC:CS_DISCARD:{orderDeliveryId}`.
+   * 호출부의 queryRunner.manager 를 전달받아 same-tx(§6.5)를 만족한다.
+   */
+  private async recordCsDiscardSettlement(
+    orderDelivery: OrderDeliveryEntity,
+    manager: import('typeorm').EntityManager,
+  ): Promise<void> {
+    const provider = this.getPartnerType(orderDelivery);
+    if (!provider || !this.settleFlag.isEnabledFor(provider)) return;
+
+    const ctx = buildSettlementContext(orderDelivery, provider);
+    if (!ctx) return;
+
+    // 역분개할 기존 원장 조회 — findReversibleEntries 가 잔여>0·정상 상태만 돌려준다.
+    const reversibles = await this.settleProducer.findReversibleEntries(orderDelivery.id, manager);
+    if (reversibles.length === 0) return;
+
+    const baseKey = `EXC:CS_DISCARD:${orderDelivery.id}`;
+    const occurredAt = fromDate(new Date());
+
+    for (const entry of reversibles) {
+      await this.settleProducer.recordCancellation(
+        ctx,
+        {
+          kind: entry.sourceType as 'ISSUANCE' | 'EXCHANGE' | 'USAGE',
+          reversesLedgerId: entry.id,
+          baseIdempotencyKey: baseKey,
+          occurredAt,
+        },
+        manager,
+      );
+    }
+  }
+
   private async calculateSettledDiscardRestoreAmount(
     orderDelivery: OrderDeliveryEntity,
     queryRunner: QueryRunner,
@@ -3766,6 +3838,9 @@ export class CustomerServiceService {
                 restoreAmount,
               });
               await queryRunner.manager.save(OrderHistoryEntity, history);
+
+              // ── P6 정산 원장 (B14 §4 P6 — CS 일괄폐기 역분개) ──────────────────
+              await this.recordCsDiscardSettlement(orderDelivery, queryRunner.manager);
 
               await queryRunner.commitTransaction();
             } catch (txError) {
