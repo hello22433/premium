@@ -1585,7 +1585,7 @@ export class CustomerServiceService {
     orderDeliveryId: number,
     couponStatus: OrderDeliveryCouponStatus,
     historyData?: { type: string; content: string },
-    options?: { skipBalanceRestore?: boolean },
+    options?: { skipBalanceRestore?: boolean; refundRatio?: number | null },
   ): Promise<{
     orderDelivery: OrderDeliveryEntity;
     beforeChange: string;
@@ -1631,6 +1631,14 @@ export class CustomerServiceService {
 
     // 외부 부작용 전에 판정 가능한 도메인 검증은 슬롯·intent 생성보다 먼저 끝낸다.
     this.validateDiscardRequest(partnerType, beforeChange, couponStatus);
+    // 환불폐기는 refundRatio(1~100) 필수 — 없으면 환불금액 0원 계산 위험.
+    // 정산정보 입력 화면에서 미리 세팅하거나, 호출자가 options.refundRatio 로 전달해야 한다.
+    if (couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL) {
+      const effectiveRatio = options?.refundRatio ?? orderDelivery.refundRatio;
+      if (effectiveRatio == null || effectiveRatio < 1 || effectiveRatio > 100) {
+        throw new BadRequestException('환불폐기 처리를 위해서는 환불율(1~100)이 필요합니다. 정산정보에서 환불율을 먼저 설정해 주세요.');
+      }
+    }
 
     const isCutover = await this.cutoverGuard.isCutover(orderDelivery.id);
     let discardSlot: DeliverySlot | null = null;
@@ -1715,10 +1723,25 @@ export class CustomerServiceService {
         // 상태 전이는 조건부 UPDATE(CAS)로 저장 — coupon_status 가 아직 beforeChange 일 때만 반영.
         // 동시 폐기 요청 시 둘 다 save 로 덮어쓰는 레이스를 affected=0 으로 감지·차단(멱등).
         // (코드베이스 관례: settle.service 상태전이, ssg-insert-state.markAttempted 와 동일 패턴)
+        //
+        // 환불폐기(REFUND_CANCEL)일 때는 refundStatus·refundRegisterAt·refundRatio 도 같은 CAS UPDATE 에
+        // 포함하여 원자화한다. 종전에는 프론트에서 별도 PUT /customer-service/refund 를 fire-and-forget 으로
+        // 호출했으나, 실패 시 refundStatus=NULL 이 되어 환불관리 조회에서 누락되는 버그가 있었다.
+        const isRefundCancel = couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL;
+        const setPayload: Partial<OrderDeliveryEntity> = {
+          couponStatus,
+          discardedAt: orderDelivery.discardedAt,
+          ...(isRefundCancel && {
+            refundStatus: OrderDeliveryRefundStatusEnum.PROGRESS,
+            refundRegisterAt: orderDelivery.discardedAt,
+            refundRatio: options?.refundRatio ?? orderDelivery.refundRatio,
+          }),
+        };
+
         const transition = await tx1.manager
           .createQueryBuilder()
           .update(OrderDeliveryEntity)
-          .set({ couponStatus, discardedAt: orderDelivery.discardedAt })
+          .set(setPayload)
           .where('id = :id AND coupon_status = :before', { id: orderDelivery.id, before: beforeChange })
           .execute();
 
@@ -3229,7 +3252,13 @@ export class CustomerServiceService {
         break;
       }
       case CS_HISTORY_TYPE.REFUND_DISCARD: {
-        const result = await this.execDiscard(map.user, map.orderDeliveryId, OrderDeliveryCouponStatus.REFUND_CANCEL);
+        const result = await this.execDiscard(
+          map.user,
+          map.orderDeliveryId,
+          OrderDeliveryCouponStatus.REFUND_CANCEL,
+          undefined, // historyData — 공통 말미 saveCsHistory 가 저장
+          { refundRatio: map.orderDelivery.refundRatio },
+        );
         afterChange = result.orderDelivery.couponStatus;
         discardDestroyAmount = result.destroyAmount;
         discardRestoreAmount = result.restoreAmount;

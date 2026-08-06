@@ -23,6 +23,7 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
     ({
       id: 7001,
       couponStatus,
+      refundRatio: 80,
       orderProductMapping: { product: { type: 'GENERAL' }, order: { cardSurchargeApplied: false } },
     }) as any;
 
