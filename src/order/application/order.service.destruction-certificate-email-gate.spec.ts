@@ -57,9 +57,25 @@ const makeOrder = (deliveries: ReturnType<typeof makeDelivery>[], status = IOrde
 
 const setupService = (order: any) => {
   const service = Object.create(OrderService.prototype) as any;
-  service.orderRepository = { findOne: jest.fn().mockResolvedValue(order) };
+  const queryBuilder = {
+    innerJoinAndSelect: jest.fn().mockReturnThis(),
+    leftJoinAndSelect: jest.fn().mockReturnThis(),
+    withDeleted: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    andWhere: jest.fn().mockReturnThis(),
+    getOne: jest.fn().mockResolvedValue(order),
+  };
+  service.orderRepository = {
+    findOne: jest.fn().mockResolvedValue(order),
+    createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
+  };
+  service.userRepository = {
+    findOne: jest.fn().mockResolvedValue({ id: BASE_USER.id, companyId: 1, departmentId: 1 }),
+  };
+  service.userViewScopeRepository = { findOne: jest.fn().mockResolvedValue(null) };
   service.mailSendSmtp = { send: jest.fn().mockResolvedValue({ success: true, messageId: 'mid', error: null }) };
   service.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
+  service.__queryBuilder = queryBuilder;
   return service;
 };
 
@@ -101,7 +117,7 @@ describe('OrderService sendDestructionCertificateReportEmail — 발행 게이�
 
     await expect(
       service.sendDestructionCertificateReportEmail(makeEmailBody(), BASE_USER, '127.0.0.1'),
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).rejects.toThrow('발송 완료된 건에 대해서만 발행 가능합니다.');
     expect(service.mailSendSmtp.send).not.toHaveBeenCalled();
   });
 
@@ -128,10 +144,12 @@ describe('OrderService sendDestructionCertificateReportEmail — 발행 게이�
 
     await service.sendDestructionCertificateReportEmail(makeEmailBody(), BASE_USER, '127.0.0.1');
 
-    // 첫 호출 = 게이트 조회(withDeleted). (이후 sendReportEmail 이 존재확인용으로 한 번 더 조회한다)
-    const findOneArg = service.orderRepository.findOne.mock.calls[0][0];
-    expect(findOneArg.withDeleted).toBe(true);
-    expect(findOneArg.relations).toEqual(expect.arrayContaining(['orderProductMappings.orderDeliveries']));
+    expect(service.__queryBuilder.withDeleted).toHaveBeenCalled();
+    expect(service.__queryBuilder.andWhere).toHaveBeenCalledWith('order.deletedAt IS NULL');
+    expect(service.__queryBuilder.leftJoinAndSelect).toHaveBeenCalledWith(
+      'orderProductMappings.orderDeliveries',
+      'orderDeliveries',
+    );
   });
 });
 
@@ -170,8 +188,8 @@ describe('OrderService destructionCertificatePdf — 발행 게이트', () => {
   it('발송 완료 상태가 아니면 BadRequestException 을 던진다', async () => {
     const service = setupService(makeOrder([makeDelivery('-')], IOrderStatus.DELIVERY_REQUEST));
 
-    await expect(service.destructionCertificatePdf({ id: 1 } as any, BASE_USER, '127.0.0.1')).rejects.toBeInstanceOf(
-      BadRequestException,
+    await expect(service.destructionCertificatePdf({ id: 1 } as any, BASE_USER, '127.0.0.1')).rejects.toThrow(
+      '발송 완료된 건에 대해서만 발행 가능합니다.',
     );
     expect(service.activityLogService.createLog).not.toHaveBeenCalled();
   });
@@ -198,8 +216,11 @@ describe('OrderService destructionCertificatePdf — 발행 게이트', () => {
 
     await service.destructionCertificatePdf({ id: 1 } as any, BASE_USER, '127.0.0.1');
 
-    const findOneArg = service.orderRepository.findOne.mock.calls[0][0];
-    expect(findOneArg.withDeleted).toBe(true);
-    expect(findOneArg.relations).toEqual(expect.arrayContaining(['orderProductMappings.orderDeliveries']));
+    expect(service.__queryBuilder.withDeleted).toHaveBeenCalled();
+    expect(service.__queryBuilder.andWhere).toHaveBeenCalledWith('order.deletedAt IS NULL');
+    expect(service.__queryBuilder.leftJoinAndSelect).toHaveBeenCalledWith(
+      'orderProductMappings.orderDeliveries',
+      'orderDeliveries',
+    );
   });
 });

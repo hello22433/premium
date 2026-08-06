@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Repository } from 'typeorm';
 import { UserEntity } from '../../entity/user.entity';
+import { UserCompanyEntity } from '../../entity/user.company.entity';
 import { WalletAccountEntity } from '../../entity/wallet.account.entity';
 import { OrderEntity } from '../../entity/order.entity';
 import { PointGrantEntity } from '../../entity/point.grant.entity';
@@ -81,7 +82,8 @@ interface ManagerFixture {
   existingTx?: { amount: number; balanceAfter: number | null } | null;
   walletByCode?: Record<string, Partial<WalletAccountEntity> | null>;
   companylessUsers?: { id: number }[];
-  outstandingOrderRows?: { id: number; uid: number }[];
+  outstandingOrderRows?: { id: number; uid: number; status?: string; settleStatus?: string | null }[];
+  companyRow?: { id: number } | null;
 }
 
 interface Captured {
@@ -188,6 +190,9 @@ function makeManager(fx: ManagerFixture, cap: Captured) {
       if (e === UserEntity) return userRepoTx;
       if (e === OrderEntity) return orderRepo;
       if (e === PointGrantEntity) return pointRepo;
+      if (e === UserCompanyEntity) {
+        return { findOne: async () => (fx.companyRow !== undefined ? fx.companyRow : { id: 7 }) };
+      }
       return {};
     },
   };
@@ -290,6 +295,20 @@ describe('SettlementCodeAdminService', () => {
       const [, params] = manager.query.mock.calls[0];
       expect(params).toEqual(['company-7', 7, 5000, 'PRE_PAYMENT', 'CARD']);
     });
+    it('cardSurchargeApplied 미지정 → 컬럼을 INSERT 에서 제외해 DB 기본값(true) 적용', async () => {
+      const manager: any = { query: jest.fn().mockResolvedValue({ affectedRows: 1 }) };
+      await sut.ensureSettlementCodeWallet(7, 'company-7', 0, manager);
+      const [sql, params] = manager.query.mock.calls[0];
+      expect(sql).not.toMatch(/card_surcharge_applied/);
+      expect(params).toHaveLength(5);
+    });
+    it('cardSurchargeApplied 지정 → 컬럼 포함 + boolean → 0/1 파라미터', async () => {
+      const manager: any = { query: jest.fn().mockResolvedValue({ affectedRows: 1 }) };
+      await sut.ensureSettlementCodeWallet(7, 'company-7', 0, manager, 'POST_PAYMENT', 'CARD', false);
+      const [sql, params] = manager.query.mock.calls[0];
+      expect(sql).toMatch(/card_surcharge_applied/);
+      expect(params).toEqual(['company-7', 7, 0, 'POST_PAYMENT', 'CARD', 0]);
+    });
     it('중복(affectedRows=0) → log.warn + 성공', async () => {
       const manager: any = { query: jest.fn().mockResolvedValue({ affectedRows: 0 }) };
       const warnSpy = jest.spyOn((sut as any).logger, 'warn');
@@ -341,6 +360,56 @@ describe('SettlementCodeAdminService', () => {
       // SOURCE wallet 은 NOWAIT 로 잠갔다.
       expect(cap.setLockModes).toContain('pessimistic_write_or_fail');
       expect(cap.userUpdate).toHaveLength(0);
+    });
+
+    // ── 구조화 게이트 오류 (A-4-1) ─────────────────────────────────────────
+    it('all_settle != 0 → OUTSTANDING_CREDIT_BALANCE 구조화 오류(실제 잔차 포함)', async () => {
+      const moving = { id: 1, settlementCode: 'company-7', companyId: 7 };
+      lockResult = { user: moving, companyUsers: [moving] };
+      fx.movingUserAllSettle = -3000;
+      fx.walletGetOne = { id: 'w-t', depositBalance: 0, creditUsedAmount: 0, creditExcessAmount: 0 } as any;
+      const err = await sut.assignUserToCode(1, 'company-7-1').catch((e) => e);
+      expect(err).toBeInstanceOf(BadRequestException);
+      expect(err.getResponse()).toMatchObject({ code: 'OUTSTANDING_CREDIT_BALANCE', allSettleAmount: -3000 });
+    });
+
+    it('진행 중/미정산 주문 → OUTSTANDING_ORDER_EXISTS 구조화 오류(차단 주문 상태 포함)', async () => {
+      const moving = { id: 1, settlementCode: 'company-7', companyId: 7 };
+      lockResult = { user: moving, companyUsers: [moving] };
+      fx.outstandingCount = 37;
+      fx.outstandingOrderRows = [
+        { id: 12345, uid: 1, status: 'DELIVERY_REQUEST', settleStatus: null },
+        { id: 12344, uid: 1, status: 'DELIVERY_CONFIRMED', settleStatus: null },
+      ];
+      fx.walletGetOne = { id: 'w-t', depositBalance: 0, creditUsedAmount: 0, creditExcessAmount: 0 } as any;
+      const err = await sut.assignUserToCode(1, 'company-7-1').catch((e) => e);
+      expect(err).toBeInstanceOf(BadRequestException);
+      expect(err.getResponse()).toMatchObject({
+        code: 'OUTSTANDING_ORDER_EXISTS',
+        blockingOrderCount: 37,
+        blockingOrderIds: [12345, 12344],
+        blockingOrders: [
+          { orderId: 12345, status: 'DELIVERY_REQUEST', settleStatus: null },
+          { orderId: 12344, status: 'DELIVERY_CONFIRMED', settleStatus: null },
+        ],
+        blockingUserIds: [1],
+      });
+    });
+
+    it('pool-orphan → SOURCE_POOL_NOT_EMPTY 구조화 오류(잔액/여신/포인트 항목)', async () => {
+      const moving = { id: 1, settlementCode: 'company-7', companyId: 7 };
+      lockResult = { user: moving, companyUsers: [moving] };
+      fx.walletGetOne = { id: 'w-7', depositBalance: 50000, creditUsedAmount: 0, creditExcessAmount: 0 };
+      const err = await sut.assignUserToCode(1, 'company-7-1').catch((e) => e);
+      expect(err).toBeInstanceOf(BadRequestException);
+      expect(err.getResponse()).toMatchObject({
+        code: 'SOURCE_POOL_NOT_EMPTY',
+        settlementCode: 'company-7',
+        depositBalance: 50000,
+        creditUsedAmount: 0,
+        creditExcessAmount: 0,
+        hasPoints: false,
+      });
     });
 
     it('마지막 사용자 + SOURCE 풀 비어있음 → 통과, settlement_code field 만 갱신 (자금 이동 없음)', async () => {
@@ -424,6 +493,58 @@ describe('SettlementCodeAdminService', () => {
       });
       const code = await sut.issueNewCode(1);
       expect(code).toBe('company-7-1');
+      expect(dataSource.transaction).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // ── createCodeForCompany (계정 배정 없이 코드만 생성) ─────────────────────
+  describe('createCodeForCompany', () => {
+    it('회사 잠금 하 채번 + wallet 생성, user.settlement_code 는 건드리지 않는다', async () => {
+      fx.issuedOwnerRows = [{ ownerId: 'company-7-1' }, { ownerId: 'company-7-2' }];
+      const code = await sut.createCodeForCompany(7);
+      expect(code).toBe('company-7-3');
+      expect(billingScopeLock.lockByCompany).toHaveBeenCalledWith(7, expect.anything());
+      // 정책/한도 기본값(POST_PAYMENT/CASH/creditLimit=0) + cardSurchargeApplied 미지정 → 컬럼 제외.
+      expect(cap.queries[0].params).toEqual(['company-7-3', 7, 0, 'POST_PAYMENT', 'CASH']);
+      expect(cap.userUpdate).toHaveLength(0);
+      expect(billingScopeLock.lock).not.toHaveBeenCalled();
+    });
+
+    it('정산조건/정산방법/카드할증/여신한도를 wallet 생성과 단일 TX 로 반영한다', async () => {
+      await sut.createCodeForCompany(7, {
+        settleCondition: 'PRE_PAYMENT',
+        settleMethod: 'CARD',
+        cardSurchargeApplied: false,
+        creditLimit: 5000,
+      });
+      expect(cap.queries).toHaveLength(1); // 생성 후 별도 정책 설정 호출 없음(원자성).
+      expect(cap.queries[0].sql).toMatch(/card_surcharge_applied/);
+      expect(cap.queries[0].params).toEqual(['company-7-1', 7, 5000, 'PRE_PAYMENT', 'CARD', 0]);
+    });
+
+    it('회사 미존재 → BadRequest (wallet 생성 없음)', async () => {
+      fx.companyRow = null;
+      await expect(sut.createCodeForCompany(999)).rejects.toBeInstanceOf(BadRequestException);
+      expect(cap.queries).toHaveLength(0);
+    });
+
+    it('creditLimit 음수 → BadRequest', async () => {
+      await expect(sut.createCodeForCompany(7, { creditLimit: -1 })).rejects.toBeInstanceOf(BadRequestException);
+      expect(cap.queries).toHaveLength(0);
+    });
+
+    it('uq_wallet_owner 충돌 시 1회 재시도한다', async () => {
+      let calls = 0;
+      dataSource.transaction.mockImplementation(async (cb: any) => {
+        calls += 1;
+        if (calls === 1) {
+          const e: any = new Error('Duplicate entry');
+          e.errno = 1062;
+          throw e;
+        }
+        return cb(makeManager(fx, cap));
+      });
+      expect(await sut.createCodeForCompany(7)).toBe('company-7-1');
       expect(dataSource.transaction).toHaveBeenCalledTimes(2);
     });
   });

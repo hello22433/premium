@@ -18,16 +18,18 @@ const setupService = () => {
   const service = Object.create(OrderService.prototype) as any;
   const order: any = {
     id: 14,
+    // findDeliveryCompleteOrderInViewScope 가 상태 게이트도 본다(develop #43).
+    status: 'DELIVERY_COMPLETE',
     deliveryCompleteReportCount: 0,
     deliveryReportLastSource: null,
     orderCompleteReportCount: 0,
     transactionStatementLastSource: null,
   };
 
-  // 두 메서드는 본체 조회 전에 assertOrderInViewScope 를 부른다(IDOR 방지).
-  // 그 메서드도 orderRepository.createQueryBuilder 를 쓰므로 innerJoin/withDeleted/getCount
-  // 까지 갖춘 스텁이 필요하다. 여기서는 "범위 안"(getCount=1)을 전제로 두고,
-  // 범위 밖 거부는 order.service.report-pdf-view-scope.spec.ts 가 따로 고정한다.
+  // 두 메서드는 본체 조회를 findDeliveryCompleteOrderInViewScope 로 한다(IDOR 방지).
+  // 그 헬퍼가 innerJoin/withDeleted 를 쓰므로 스텁을 그만큼 갖춰야 한다. 여기서는
+  // "범위 안 + 발송완료"를 전제로 두고, 거부 경로는
+  // order.service.report-pdf-view-scope.spec.ts 가 따로 고정한다.
   service.orderRepository = {
     createQueryBuilder: jest.fn(() => ({
       innerJoin: jest.fn().mockReturnThis(),

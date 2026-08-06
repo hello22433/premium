@@ -37,9 +37,34 @@ import {
   MUTATION_CLAIM_STALE_MS,
   UNSENDABLE_COUPON_STATUSES,
 } from '../../delivery/interface/order.delivery.mutation.claim';
+import { DeliveryWorkflowEntity } from '../../entity/delivery.workflow.entity';
+import { DeliveryWorkflowStatus } from '../../delivery/interface/delivery.workflow.status';
+import {
+  DeliveryFailureSotReader,
+  DeliveryFailureSotView,
+  FAILURE_LIST_WORKFLOW_STATUSES,
+  RESEND_ATTEMPT_TYPES,
+} from './delivery.failure.sot.reader';
 
 // 재발송 가능한 실패 상태 목록
 const RESENDABLE_FAIL_STATUSES = [IOrderDeliveryStatus.FAIL, IOrderDeliveryStatus.FAIL_SMS];
+
+// ── 화면 SoT 고정(§8) ───────────────────────────────────────────────────────
+// 컷오버 전환 건(`cutover_migrated_at IS NOT NULL`)은 delivery_workflow 가 유일 SoT 다.
+// 미전환 건만 legacy `order_delivery.status` 를 SoT 로 읽는다. 목록 필터·버튼 활성화는
+// 어떤 경우에도 전환 건의 legacy 미러를 근거로 하지 않는다.
+const MIGRATED_PREDICATE = '`wf`.`cutover_migrated_at` IS NOT NULL';
+const NOT_MIGRATED_PREDICATE = '`wf`.`cutover_migrated_at` IS NULL';
+
+// 전환 건의 "재발송완료" 판정 — 자동(AUTO_504)·수동(MANUAL_RESEND) 시도가 존재하는 체인.
+const HAS_RESEND_ATTEMPT_PREDICATE =
+  'EXISTS (SELECT 1 FROM message_attempt ma WHERE ma.order_delivery_id = `orderDelivery`.`id` ' +
+  `AND ma.attempt_type IN (${RESEND_ATTEMPT_TYPES.map((t) => `'${t}'`).join(', ')}))`;
+
+// 전환 건은 workflow 상태 진입 시각, 미전환 건은 기존 legacy 시각을 목록 기준 일시로 쓴다.
+const LIST_DATE_EXPR =
+  'COALESCE(CASE WHEN `wf`.`cutover_migrated_at` IS NOT NULL THEN `wf`.`state_entered_at` END, ' +
+  '`orderDelivery`.`actual_send_at`, `orderDelivery`.`failed_at`, `orderDelivery`.`updated_at`)';
 
 // claim self-heal 임계(ms). 크래시로 finally 못 탄 stale claim 만 재claim 허용.
 // claim 게이트(재claim 조건)와 거부 사유 판정(처리중 여부)이 동일 경계를 쓰도록 공유한다.
@@ -73,10 +98,15 @@ export class PartnerCompanyExternHistoryService {
     private readonly partnerCompanyExternService: PartnerCompanyExternService,
     private readonly ssgInsertStateService: SsgInsertStateService,
     private readonly cutoverGuard: DeliveryCutoverGuardService,
+    private readonly sotReader: DeliveryFailureSotReader,
   ) {}
 
   /**
-   * 공통 필터 쿼리빌더 생성
+   * 공통 필터 쿼리빌더 생성.
+   *
+   * 컷오버 전환 건과 미전환 건을 **각자의 SoT 로만** 필터한다(§8).
+   * - 전환 건: `delivery_workflow.workflow_status` (실패·운영확인 종결) 또는 재발송을 거친 전달 완료
+   * - 미전환 건: 기존 `order_delivery.status`/`resendAt`
    */
   private createFilteredQueryBuilder(filter: GetPartnerCompanyExternHistoryFilterReqDto) {
     const { startAt, endAt, type, searchKeyword } = filter;
@@ -87,18 +117,26 @@ export class PartnerCompanyExternHistoryService {
       .leftJoinAndSelect('orderProductMapping.order', 'order')
       .leftJoinAndSelect('orderProductMapping.product', 'product')
       .leftJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoin(DeliveryWorkflowEntity, 'wf', 'wf.orderDeliveryId = orderDelivery.id')
       .withDeleted()
       .where('orderDelivery.deletedAt IS NULL')
-      .andWhere('(orderDelivery.status IN (:...statuses) OR orderDelivery.resendAt IS NOT NULL)', {
-        statuses: RESENDABLE_FAIL_STATUSES,
-      });
+      .andWhere(
+        `((${MIGRATED_PREDICATE} AND (wf.workflowStatus IN (:...wfFailStatuses)` +
+          ` OR (wf.workflowStatus = :wfCompleted AND ${HAS_RESEND_ATTEMPT_PREDICATE})))` +
+          ` OR (${NOT_MIGRATED_PREDICATE}` +
+          ' AND (orderDelivery.status IN (:...statuses) OR orderDelivery.resendAt IS NOT NULL)))',
+        {
+          wfFailStatuses: FAILURE_LIST_WORKFLOW_STATUSES,
+          wfCompleted: DeliveryWorkflowStatus.COMPLETED,
+          statuses: RESENDABLE_FAIL_STATUSES,
+        },
+      );
 
-    const dateColumn = 'COALESCE(orderDelivery.actualSendAt, orderDelivery.failedAt, orderDelivery.updatedAt)';
     if (startAt) {
-      queryBuilder.andWhere(`${dateColumn} >= :startAt`, { startAt: `${startAt} 00:00:00` });
+      queryBuilder.andWhere(`${LIST_DATE_EXPR} >= :startAt`, { startAt: `${startAt} 00:00:00` });
     }
     if (endAt) {
-      queryBuilder.andWhere(`${dateColumn} <= :endAt`, { endAt: `${endAt} 23:59:59` });
+      queryBuilder.andWhere(`${LIST_DATE_EXPR} <= :endAt`, { endAt: `${endAt} 23:59:59` });
     }
 
     if (type) {
@@ -115,24 +153,33 @@ export class PartnerCompanyExternHistoryService {
   }
 
   /**
-   * 발송 실패 내역 목록 조회
-   * orderDelivery.status = FAIL 기준으로 조회 (중복 없이 최종 실패 건만)
+   * 발송 실패 내역 목록 조회.
+   *
+   * 전환 건은 `delivery_workflow`(+하위 시도), 미전환 건은 legacy `order_delivery.status` 를
+   * 각각 SoT 로 읽어 렌더한다. 전환 건의 legacy 미러와 workflow 판정이 어긋나면 workflow 를
+   * 채택하고 불일치 건수를 `mirrorMismatchCount` 로 노출한다(§10 3단계 PASS 지표).
    */
   async getHistoryList(
     dto: GetPartnerCompanyExternHistoryListReqDto,
   ): Promise<GetPartnerCompanyExternHistoryListResDto> {
     const { page, take } = dto;
 
-    const dateCoalesceExpr =
-      'COALESCE(`orderDelivery`.`actual_send_at`, `orderDelivery`.`failed_at`, `orderDelivery`.`updated_at`)';
-    const queryBuilder = this.createFilteredQueryBuilder(dto).addSelect(dateCoalesceExpr, 'sortDate');
+    const queryBuilder = this.createFilteredQueryBuilder(dto).addSelect(LIST_DATE_EXPR, 'sortDate');
 
-    // 발송상태 필터
+    // 발송상태 필터 — 전환 건은 workflow, 미전환 건은 legacy 기준으로 각각 판정한다.
     if (dto.sendStatus === 'FAIL') {
-      queryBuilder.andWhere('orderDelivery.status IN (:...failStatuses)', { failStatuses: RESENDABLE_FAIL_STATUSES });
-      queryBuilder.andWhere('orderDelivery.resendAt IS NULL');
+      queryBuilder.andWhere(
+        `((${MIGRATED_PREDICATE} AND wf.workflowStatus IN (:...failWfStatuses))` +
+          ` OR (${NOT_MIGRATED_PREDICATE} AND orderDelivery.status IN (:...failStatuses)` +
+          ' AND orderDelivery.resendAt IS NULL))',
+        { failWfStatuses: FAILURE_LIST_WORKFLOW_STATUSES, failStatuses: RESENDABLE_FAIL_STATUSES },
+      );
     } else if (dto.sendStatus === 'RESEND') {
-      queryBuilder.andWhere('orderDelivery.resendAt IS NOT NULL');
+      queryBuilder.andWhere(
+        `((${MIGRATED_PREDICATE} AND wf.workflowStatus = :resendWfCompleted AND ${HAS_RESEND_ATTEMPT_PREDICATE})` +
+          ` OR (${NOT_MIGRATED_PREDICATE} AND orderDelivery.resendAt IS NOT NULL))`,
+        { resendWfCompleted: DeliveryWorkflowStatus.COMPLETED },
+      );
     }
 
     // 페이징 및 정렬
@@ -141,16 +188,16 @@ export class PartnerCompanyExternHistoryService {
 
     const [orderDeliveries, totalCount] = await queryBuilder.getManyAndCount();
 
-    // 최신 history를 배치로 한번에 조회 (N+1 방지)
+    // 최신 history + 전환 건 SoT 를 배치로 한번에 조회 (N+1 방지)
     const odIds = orderDeliveries.map((od) => od.id);
-    const latestHistoryMap =
+    const [latestHistoryMap, sotMap] =
       odIds.length > 0
-        ? await this.batchFetchLatestHistories(odIds)
-        : new Map<number, PartnerCompanyExternHistoryEntity>();
+        ? await Promise.all([this.batchFetchLatestHistories(odIds), this.sotReader.loadMigrated(odIds)])
+        : [new Map<number, PartnerCompanyExternHistoryEntity>(), new Map<number, DeliveryFailureSotView>()];
 
-    // DTO 변환 (배치로 가져온 history 전달)
+    // DTO 변환 (배치로 가져온 history/SoT 전달)
     const list: PartnerCompanyExternHistoryViewDto[] = orderDeliveries.map((od) =>
-      this.parseOrderDeliveryView(od, latestHistoryMap.get(od.id) ?? null),
+      this.parseOrderDeliveryView(od, latestHistoryMap.get(od.id) ?? null, sotMap.get(od.id) ?? null),
     );
 
     return {
@@ -158,15 +205,20 @@ export class PartnerCompanyExternHistoryService {
       totalCount,
       totalPage: Math.ceil(totalCount / take),
       currentPage: page,
+      mirrorMismatchCount: list.filter((row) => row.mirrorMismatch).length,
     };
   }
 
   /**
-   * 재발송 대상 orderDelivery ID 목록 조회
-   * 현재 필터 조건에 해당하는 실패 건(재발송 완료 제외)의 ID만 반환
+   * 재발송 대상 orderDelivery ID 목록 조회.
+   *
+   * 현재 필터 조건에 해당하는 실패 건(재발송 완료 제외)의 ID만 반환한다.
+   * **컷오버 전환 건은 제외**한다 — 이 화면의 일괄 재발송은 legacy claim 경로이며,
+   * 전환 건은 `MANUAL_RESEND` 슬롯 경로로만 재발송한다(§9 인벤토리 #2, cutover guard 와 동일 경계).
    */
   async getResendTargetIds(dto: GetPartnerCompanyExternHistoryFilterReqDto): Promise<GetResendTargetIdsResDto> {
     const queryBuilder = this.createFilteredQueryBuilder(dto)
+      .andWhere(NOT_MIGRATED_PREDICATE)
       .andWhere('orderDelivery.status IN (:...failStatuses)', { failStatuses: RESENDABLE_FAIL_STATUSES })
       .andWhere('orderDelivery.resendAt IS NULL');
 
@@ -214,12 +266,16 @@ export class PartnerCompanyExternHistoryService {
   }
 
   /**
-   * orderDelivery를 View DTO로 변환
-   * 배치로 가져온 latestHistory를 인자로 받아 추가 DB 쿼리 없이 변환
+   * orderDelivery를 View DTO로 변환.
+   *
+   * 배치로 가져온 latestHistory / 전환 건 SoT 를 인자로 받아 추가 DB 쿼리 없이 변환한다.
+   * `sot` 가 있으면(=컷오버 전환 건) 발송상태·실패코드·확정시각·버튼 활성화는 **workflow SoT 만**
+   * 근거로 하고, legacy 값은 미러 불일치 지표 계산에만 쓴다(§8 화면 SoT 고정).
    */
   private parseOrderDeliveryView(
     orderDelivery: OrderDeliveryEntity,
     latestHistory: PartnerCompanyExternHistoryEntity | null,
+    sot: DeliveryFailureSotView | null,
   ): PartnerCompanyExternHistoryViewDto {
     // 협력사 타입
     const partnerCompanyType = orderDelivery.orderProductMapping?.product?.partnerCompany?.type || null;
@@ -248,7 +304,7 @@ export class PartnerCompanyExternHistoryService {
     // 가장 최근 history에서 에러 정보 가져오기
     let errorCode: string | null = null;
     let errorMessage: string | null = null;
-    let transactionId: string | null = orderDelivery.transactionId || null;
+    const transactionId: string | null = orderDelivery.transactionId || null;
     let context: string | null = null;
 
     if (latestHistory) {
@@ -287,25 +343,91 @@ export class PartnerCompanyExternHistoryService {
       errorMessage = '문자/알림톡 발송 실패';
     }
 
-    const displayDate = orderDelivery.actualSendAt ?? orderDelivery.failedAt ?? orderDelivery.updatedAt;
+    const legacyDisplayDate = orderDelivery.actualSendAt ?? orderDelivery.failedAt ?? orderDelivery.updatedAt;
+
+    if (!sot) {
+      return {
+        id: orderDelivery.id,
+        createdAt: legacyDisplayDate ? format(legacyDisplayDate, DateFormatStr) : '',
+        type: partnerCompanyType,
+        typeKo: partnerCompanyType ? PartnerCompanyTypeKo[partnerCompanyType] || partnerCompanyType : null,
+        failType,
+        failTypeKo,
+        errorCode,
+        errorMessage,
+        transactionId,
+        context,
+        orderDeliveryId: orderDelivery.id,
+        orderCode,
+        eventName,
+        deliveryTarget,
+        pinIssued,
+        resendAt: orderDelivery.resendAt ? format(orderDelivery.resendAt, DateFormatStr) : null,
+        sotSource: 'LEGACY',
+        workflowStatus: null,
+        workflowStatusKo: null,
+        opsReviewReason: null,
+        channel: null,
+        sendReason: null,
+        autoResendCount: 0,
+        manualResendCount: 0,
+        failureCodeDescription: null,
+        opsAction: null,
+        lastResolvedAt: null,
+        resendable: failType !== 'RESEND',
+        resendBlockReason: failType === 'RESEND' ? '이미 재발송이 완료된 건입니다.' : null,
+        mirrorMismatch: false,
+      };
+    }
+
+    // ── 전환 건: workflow SoT 렌더 ───────────────────────────────────────────
+    const sotResent = sot.resent && sot.workflowStatus === DeliveryWorkflowStatus.COMPLETED;
+    const sotFailType: FailType | 'RESEND' = sotResent
+      ? 'RESEND'
+      : sot.pinIssueFailed
+        ? FailType.PIN_ISSUE_FAIL
+        : FailType.SEND_FAIL;
+    const sotFailTypeKo = sotResent ? '재발송완료' : sot.pinIssueFailed ? '핀발급실패' : '발송실패';
+    const sotDisplayDate = sot.lastResolvedAt ?? legacyDisplayDate;
+
+    // 미러 불일치(§10 3단계 지표): workflow 는 실패로 종결했는데 legacy 미러가 실패가 아니거나,
+    // workflow 는 전달 완료인데 legacy 미러가 아직 실패로 남아 있는 경우.
+    const legacyIsFail = RESENDABLE_FAIL_STATUSES.includes(orderDelivery.status);
+    const workflowIsFail = FAILURE_LIST_WORKFLOW_STATUSES.includes(sot.workflowStatus);
+    const mirrorMismatch = workflowIsFail !== legacyIsFail;
 
     return {
       id: orderDelivery.id,
-      createdAt: displayDate ? format(displayDate, DateFormatStr) : '',
+      createdAt: sotDisplayDate ? format(sotDisplayDate, DateFormatStr) : '',
       type: partnerCompanyType,
       typeKo: partnerCompanyType ? PartnerCompanyTypeKo[partnerCompanyType] || partnerCompanyType : null,
-      failType,
-      failTypeKo,
-      errorCode,
-      errorMessage,
+      failType: sotFailType,
+      failTypeKo: sotFailTypeKo,
+      errorCode: sot.failureCode?.code ?? null,
+      errorMessage: sot.failureCode?.description ?? null,
       transactionId,
       context,
       orderDeliveryId: orderDelivery.id,
       orderCode,
       eventName,
       deliveryTarget,
-      pinIssued,
-      resendAt: orderDelivery.resendAt ? format(orderDelivery.resendAt, DateFormatStr) : null,
+      pinIssued: sot.pinIssued,
+      resendAt: sot.deliveredAt ? format(sot.deliveredAt, DateFormatStr) : null,
+      sotSource: 'WORKFLOW',
+      workflowStatus: sot.workflowStatus,
+      workflowStatusKo: sot.workflowStatusKo,
+      opsReviewReason: sot.opsReviewReason,
+      channel: sot.channel,
+      sendReason: sot.sendReason,
+      autoResendCount: sot.autoResendCount,
+      manualResendCount: sot.manualResendCount,
+      failureCodeDescription: sot.failureCode?.description ?? null,
+      opsAction: sot.failureCode?.opsAction ?? null,
+      lastResolvedAt: sot.lastResolvedAt ? format(sot.lastResolvedAt, DateFormatStr) : null,
+      // 전환 건의 재발송은 이 화면의 legacy claim 경로가 아니라 MANUAL_RESEND 슬롯 경로 소관이다.
+      resendable: false,
+      resendBlockReason: '컷오버 전환 건은 운영 재발송(MANUAL_RESEND) 슬롯 경로로만 처리합니다.',
+      mirrorMismatch,
     };
   }
 

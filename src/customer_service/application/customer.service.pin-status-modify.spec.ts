@@ -43,6 +43,9 @@ describe('CustomerServiceService.execPinStatusModify — terminal / CAS / 트랜
     sut.orderHistoryRepository = { create: jest.fn(() => ({})) };
     sut.partnerCompanyExternService = { cancel: jest.fn().mockResolvedValue({ message: cancelMessage }) };
     sut.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    // P6 정산: flag off mock (기존 동작 불변 검증)
+    sut.settleFlag = { isEnabled: false, isEnabledFor: () => false };
+    sut.settleProducer = {};
 
     // 변형 lease (D3-55 후속): acquire=createQueryBuilder CAS, release=update
     const leaseQb: any = {

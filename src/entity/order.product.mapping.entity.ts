@@ -7,6 +7,7 @@ import { IOrderSettleDiscountType } from '../order/interface/order.settle.discou
 import { IPriceAdjustment } from '../user_discount/interface/price.adjustment';
 import { IOrderSendMethod } from '../order/interface/order.send.method';
 import { OrderEmailSendType } from '../order/domain/order.email.send.type';
+import { OrderEmailFinalSendMethod } from '../order/domain/order.email.final.send.method';
 
 @Entity('order_product_mapping')
 export class OrderProductMappingEntity extends BaseEntity {
@@ -104,6 +105,9 @@ export class OrderProductMappingEntity extends BaseEntity {
   @Column({ type: 'varchar', nullable: true, length: 100, comment: 'QR: QR, URL: URL' })
   emailSendType: OrderEmailSendType | null;
 
+  @Column({ type: 'varchar', nullable: true, length: 100, comment: '이메일 쿠폰 최종 발신 수단(ALIM_TALK|MMS). NULL=레거시(현행 알림톡 우선)' })
+  emailFinalSendMethod: OrderEmailFinalSendMethod | null;
+
   @Column({ type: 'text', nullable: true, comment: '이메일 시 사용 방법' })
   useEmailContent: string | null;
 
@@ -130,6 +134,14 @@ export class OrderProductMappingEntity extends BaseEntity {
 
   @Column({ type: 'varchar', length: 255, nullable: true, comment: '[snapshot] 주문 시점 브랜드명' })
   snapshotProductBrandName: string | null;
+
+  // 협력사 매입 정산조건 매칭(findMatchingDiscount)이 상품군·카테고리를 요구한다.
+  // 레거시 row 는 live product 로 채우지 않는다 — 상품이 바뀌면 과거 정산이 따라 움직인다.
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '[snapshot] 주문 시점 상품군(product.category)' })
+  snapshotProductCategory: string | null;
+
+  @Column({ type: 'int', nullable: true, comment: '[snapshot] 주문 시점 카테고리(product.classificationId)' })
+  snapshotProductClassificationId: number | null;
 
   @Column({ type: 'int', nullable: true, comment: '[snapshot] 주문 시점 유효기간 일수' })
   snapshotProductExpireDay: number | null;

@@ -131,6 +131,8 @@ describe('OrderService deliveryConfirmed wallet PR2-005 gating', () => {
     service.logger = { debug: jest.fn(), warn: jest.fn(), log: jest.fn() };
     service.cryptoCipher = { safeDecryptDeliveryTarget: (v: string) => v };
     service.ssgEventService = { confirmEventBalance: jest.fn() };
+    // 정산 할인/할증 변경이력 기록(logSettleDiscountChange) — 발송확정 경로에서 호출된다.
+    service.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
 
     service.walletCutoverConfig = {
       get pr2DeliveryLifecycleMode() {

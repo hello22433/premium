@@ -6,9 +6,14 @@ import { AuthModule } from '../auth/auth.module';
 import { UserDiscountEntity } from '../entity/user.discount.entity';
 import { UserEntity } from '../entity/user.entity';
 import { ClassificationEntity } from '../entity/classification.entity';
+import { PartnerSettleModule } from '../partner_settle/partner.settle.module';
 
 @Module({
-  imports: [AuthModule, TypeOrmModule.forFeature([UserDiscountEntity, UserEntity, ClassificationEntity])],
+  imports: [
+    AuthModule,
+    PartnerSettleModule,
+    TypeOrmModule.forFeature([UserDiscountEntity, UserEntity, ClassificationEntity]),
+  ],
   controllers: [UserDiscountController],
   providers: [UserDiscountService],
 })

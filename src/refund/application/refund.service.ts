@@ -22,6 +22,7 @@ import { ActivityLogService } from '../../activity_log/application/activity.log.
 import { ActivityLogActionType } from '../../activity_log/interface/activity.log.action.type';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
+import { readLineProductView } from '../../order/util/order.snapshot.builder';
 
 export type RefundGetListAuditContext = {
   user: ILoginUserInfo;
@@ -93,18 +94,25 @@ export class RefundService {
 
     const resultList: RefundListViewDto[] = orderDeliveryList.map((orderDelivery) => {
       const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? '';
+      // D3-69: 라인 표시값을 주문시점 박제값으로 통일 — live product.*(가변)를 읽으면 상품 정보가
+      // 수정될 때 환불목록이 주문시점 액면가·상품명과 다르게 표시된다.
+      //  ※ price 뿐 아니라 name 까지 같은 view 에서 뽑는다(리뷰 반영). 가격만 박제하면 상품명 변경 시
+      //    "새 상품명 + 옛 가격" 이 한 행에 섞여 담당자가 금액 오류로 오인할 수 있다. 환불율을 실제로
+      //    설정하는 정산정보입력 화면(order.service readLineProductView)도 이미 snapshot 상품명을 쓴다.
+      //  ※ deliveryPrice/refundPrice 는 '주문시점 액면가' 기준이다(할인·카드할증 반영 전이라 실납부액과 다름).
+      const lineView = readLineProductView(orderDelivery.orderProductMapping!);
 
       return {
         id: orderDelivery.id,
         refundRegisterAt: format(orderDelivery.refundRegisterAt!, DateFormatStr),
         userBusinessName: orderDelivery.orderProductMapping!.order!.user!.company?.businessName ?? '',
-        productName: orderDelivery.orderProductMapping!.product.name,
-        deliveryPrice: orderDelivery.orderProductMapping!.product.price,
+        productName: lineView.name,
+        deliveryPrice: lineView.price,
         sendRequestAt: format(orderDelivery.sendRequestAt, DateFormatStr),
         personalCode: orderDelivery.personalCode ? MaskingUtil.maskPersonalCode(orderDelivery.personalCode) : '-',
         deliveryTarget: decryptedDeliveryTarget,
         refundRatio: orderDelivery.refundRatio!,
-        refundPrice: (orderDelivery.orderProductMapping!.product.price * orderDelivery.refundRatio!) / 100,
+        refundPrice: (lineView.price * orderDelivery.refundRatio!) / 100,
         bankAccountOwner: orderDelivery.bankAccountOwner,
         bankName: orderDelivery.bankName,
         bankAccount: this.cryptoCipher.safeDecryptAccountNumber(orderDelivery.bankAccount) ?? orderDelivery.bankAccount,

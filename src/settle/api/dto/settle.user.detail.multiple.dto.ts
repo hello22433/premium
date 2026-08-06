@@ -59,6 +59,11 @@ export class SettleUserDetailMultipleDto {
   orderIds: number[];
 
   @ApiProperty({
+    description: '선택된 주문 중 발송완료 상태인 order id 목록',
+  })
+  deliveryCompleteOrderIds: number[];
+
+  @ApiProperty({
     description: '고객사 user id (첫번째 주문 기준, 하위호환용)',
   })
   userId: number;

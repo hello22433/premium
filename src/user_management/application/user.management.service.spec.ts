@@ -42,6 +42,7 @@ import { IUserStatus } from '../../user/interface/user.status';
 import { IExternalApiSsgRequestStatus } from '../../external_api/interface/external.api.ssg.request.status';
 import { IUserBusinessType } from '../../user/interface/user.business.type';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
+import { ActivityLogActionType } from '../../activity_log/interface/activity.log.action.type';
 import { ConfigService } from '@nestjs/config';
 import { WalletLedgerService } from '../../wallet/application/wallet-ledger.service';
 import { WalletAccountResolverService } from '../../wallet/application/wallet-account-resolver.service';
@@ -660,13 +661,26 @@ describe('user management service test', () => {
     });
 
     it('issueCredential: 기존 활성키 유지하며 추가 credential 발급(평문 1회), deactivate 미호출(다중키)', async () => {
-      const res = await sut.issueCredential('acc-1');
+      const res = await sut.issueCredential('acc-1', OPERATION_ADMIN_USER);
       expect(res.apiKey).toEqual(expect.any(String));
       expect(res.credentialId).toBe('cred-new');
       expect(apiCredentialRepository.create).toHaveBeenCalledWith(
         expect.objectContaining({ apiAppId: 'app-1', isActive: true }),
       );
       expect(apiCredentialRepository.update).not.toHaveBeenCalled();
+      expect(activityLogService.createLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: OPERATION_ADMIN_USER.id,
+          userEmail: OPERATION_ADMIN_USER.email,
+          actionType: ActivityLogActionType.API_ACCESS_CONFIG_MODIFY,
+          requestParams: expect.objectContaining({
+            operation: 'CREDENTIAL_ISSUE',
+            accountId: 'acc-1',
+            apiAppId: 'app-1',
+            credentialId: 'cred-new',
+          }),
+        }),
+      );
     });
 
     it('issueCredential: app 미존재 → 예외', async () => {
@@ -687,9 +701,22 @@ describe('user management service test', () => {
 
     it('revokeCredential: 특정 credential 비활성화', async () => {
       apiCredentialRepository.findOne.mockResolvedValue({ id: 'c1', apiAppId: 'app-1', isActive: true });
-      await sut.revokeCredential('acc-1', 'c1');
+      await sut.revokeCredential('acc-1', 'c1', OPERATION_ADMIN_USER);
       expect(apiCredentialRepository.save).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'c1', isActive: false, revokedAt: expect.any(Date) }),
+      );
+      expect(activityLogService.createLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actionType: ActivityLogActionType.API_ACCESS_CONFIG_MODIFY,
+          requestParams: expect.objectContaining({
+            operation: 'CREDENTIAL_REVOKE',
+            accountId: 'acc-1',
+            apiAppId: 'app-1',
+            credentialId: 'c1',
+            beforeIsActive: true,
+            afterIsActive: false,
+          }),
+        }),
       );
     });
 
@@ -697,6 +724,7 @@ describe('user management service test', () => {
       apiCredentialRepository.findOne.mockResolvedValue({ id: 'c1', apiAppId: 'app-1', isActive: false });
       await sut.revokeCredential('acc-1', 'c1');
       expect(apiCredentialRepository.save).not.toHaveBeenCalled();
+      expect(activityLogService.createLog).not.toHaveBeenCalled();
     });
 
     it('revokeCredential: 미존재 credential → 예외', async () => {
@@ -705,7 +733,7 @@ describe('user management service test', () => {
     });
 
     it('rotateCredential: 기존 활성 전부 회수 + 신규 발급(평문 1회)', async () => {
-      const res = await sut.rotateCredential('acc-1');
+      const res = await sut.rotateCredential('acc-1', OPERATION_ADMIN_USER);
       expect(apiCredentialRepository.update).toHaveBeenCalledWith(
         { apiAppId: 'app-1', isActive: true },
         expect.objectContaining({ isActive: false }),
@@ -714,6 +742,18 @@ describe('user management service test', () => {
         expect.objectContaining({ apiAppId: 'app-1', isActive: true }),
       );
       expect(res.apiKey).toEqual(expect.any(String));
+      expect(activityLogService.createLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actionType: ActivityLogActionType.API_ACCESS_CONFIG_MODIFY,
+          requestParams: expect.objectContaining({
+            operation: 'CREDENTIAL_ROTATE',
+            accountId: 'acc-1',
+            apiAppId: 'app-1',
+            credentialId: 'cred-new',
+            revokedActiveCredentialCount: 1,
+          }),
+        }),
+      );
     });
   });
 
@@ -727,12 +767,30 @@ describe('user management service test', () => {
     });
 
     it('createCustomerMapping: billingUser 검증 후 매핑 생성', async () => {
-      const res = await sut.createCustomerMapping('acc-1', { externalCustomerId: 'wisead-c1', billingUserId: 99 });
+      const res = await sut.createCustomerMapping(
+        'acc-1',
+        { externalCustomerId: 'wisead-c1', billingUserId: 99 },
+        OPERATION_ADMIN_USER,
+      );
       expect(res).toEqual(
         expect.objectContaining({ apiAppId: 'app-1', externalCustomerId: 'wisead-c1', billingUserId: 99 }),
       );
       expect(apiCustomerMappingRepository.create).toHaveBeenCalledWith(
         expect.objectContaining({ apiAppId: 'app-1', externalCustomerId: 'wisead-c1', billingUserId: 99 }),
+      );
+      expect(activityLogService.createLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actionType: ActivityLogActionType.API_ACCESS_CONFIG_MODIFY,
+          requestParams: expect.objectContaining({
+            operation: 'CUSTOMER_MAPPING_CREATE',
+            accountId: 'acc-1',
+            apiAppId: 'app-1',
+            mappingId: 'map-1',
+            externalCustomerId: 'wisead-c1',
+            beforeBillingUserId: null,
+            afterBillingUserId: 99,
+          }),
+        }),
       );
     });
 
@@ -781,10 +839,24 @@ describe('user management service test', () => {
         externalCustomerId: 'c1',
         billingUserId: 1,
       });
-      const res = await sut.updateCustomerMapping('acc-1', 'm1', { billingUserId: 99 });
+      const res = await sut.updateCustomerMapping('acc-1', 'm1', { billingUserId: 99 }, OPERATION_ADMIN_USER);
       expect(res.billingUserId).toBe(99);
       expect(apiCustomerMappingRepository.save).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'm1', billingUserId: 99 }),
+      );
+      expect(activityLogService.createLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actionType: ActivityLogActionType.API_ACCESS_CONFIG_MODIFY,
+          requestParams: expect.objectContaining({
+            operation: 'CUSTOMER_MAPPING_UPDATE',
+            accountId: 'acc-1',
+            apiAppId: 'app-1',
+            mappingId: 'm1',
+            externalCustomerId: 'c1',
+            beforeBillingUserId: 1,
+            afterBillingUserId: 99,
+          }),
+        }),
       );
     });
 
@@ -794,9 +866,28 @@ describe('user management service test', () => {
     });
 
     it('deleteCustomerMapping: soft-delete', async () => {
-      apiCustomerMappingRepository.findOne.mockResolvedValue({ id: 'm1', apiAppId: 'app-1' });
-      await sut.deleteCustomerMapping('acc-1', 'm1');
+      apiCustomerMappingRepository.findOne.mockResolvedValue({
+        id: 'm1',
+        apiAppId: 'app-1',
+        externalCustomerId: 'c1',
+        billingUserId: 99,
+      });
+      await sut.deleteCustomerMapping('acc-1', 'm1', OPERATION_ADMIN_USER);
       expect(apiCustomerMappingRepository.softRemove).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1' }));
+      expect(activityLogService.createLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actionType: ActivityLogActionType.API_ACCESS_CONFIG_MODIFY,
+          requestParams: expect.objectContaining({
+            operation: 'CUSTOMER_MAPPING_DELETE',
+            accountId: 'acc-1',
+            apiAppId: 'app-1',
+            mappingId: 'm1',
+            externalCustomerId: 'c1',
+            beforeBillingUserId: 99,
+            afterBillingUserId: null,
+          }),
+        }),
+      );
     });
 
     it('deleteCustomerMapping: 미존재 매핑 → 거부', async () => {

@@ -9,7 +9,7 @@ import {
   DELIVERY_CUTOVER_LEGACY_BLOCKED,
   LegacyDeliveryEntryPoint,
 } from '../interface/legacy.delivery.entry.point';
-import { DeliveryExclusiveOp } from '../interface/delivery.workflow.status';
+import { DeliveryExclusiveOp, DeliveryWorkflowStatus } from '../interface/delivery.workflow.status';
 import { REFUND_EXECUTING_STATUSES } from '../interface/refund.attempt.status';
 
 export interface LegacySplitResult {
@@ -18,6 +18,19 @@ export interface LegacySplitResult {
   /** 전환 건 — legacy 경로에서 제외한다. 신규 workflow 경로가 처리한다. */
   blocked: number[];
 }
+
+/**
+ * 전환 건에서 "직전 발송이 실패로 남아 있다"고 보는 workflow 업무 상태 (§5.1·§8.1 A).
+ *
+ * legacy `status IN (FAIL, FAIL_SMS)` 의 workflow 대응물이다. `OPS_REVIEW_REQUIRED` 는 미종결이지만
+ * 실패내역에 노출돼 수동 재발송 대상이므로 포함한다. `PENDING_RECONCILE`(결과 미확정)은 제외한다 —
+ * 아직 실패로 확정되지 않았고, 그 상태에서 재발송을 최초 발송처럼 다루면 이중 발송이 된다.
+ */
+const WORKFLOW_RESEND_SOURCE_STATUSES: DeliveryWorkflowStatus[] = [
+  DeliveryWorkflowStatus.FAILED_FINAL,
+  DeliveryWorkflowStatus.OPS_REVIEW_REQUIRED,
+  DeliveryWorkflowStatus.RESOLVED_MANUALLY_FAILED,
+];
 
 /**
  * `refund_attempt` 실행 단계임을 증명하는 3중 fencing (§6.1 `ownerToken`+`generation`+`workflowVersion`).
@@ -162,6 +175,32 @@ export class DeliveryCutoverGuardService {
   }
 
   /**
+   * **발송 진입점의 "실패 재발송인가" 판별 SoT** (§8 화면/판정 SoT 고정, HIGH 4).
+   *
+   * 발송 진입점(`oneSend` 등)은 지금까지 `order_delivery.status IN (FAIL, FAIL_SMS)` 로 최초/재발송을
+   * 갈랐다. **미전환 건에서는 이 값이 파생 미러가 아니라 실제 SoT 라 옳다.** 그러나 컷오버 마크가
+   * 서는 순간 `status` 는 legacy 호환 표시용 미러로 격하되므로, 같은 판별을 계속 쓰면 최초/재발송이
+   * 뒤집힌다 — 재발송을 최초로 오인하면 환불 복구(`reverseRefundForResend`)와 `RESEND` attempt
+   * 선발급이 통째로 누락되고, 최초를 재발송으로 오인하면 있지도 않은 환불을 되감는다.
+   *
+   * @returns `null` 이면 **미전환 건** — 호출자가 종전대로 legacy `status` 로 판단한다(동작 불변).
+   *          `boolean` 이면 전환 건이며, workflow 업무 상태로 판정한 재발송 여부다.
+   */
+  async isWorkflowResend(orderDeliveryId: number, manager?: EntityManager): Promise<boolean | null> {
+    const repository = manager ? manager.getRepository(DeliveryWorkflowEntity) : this.workflowRepository;
+    const workflow = await repository.findOne({
+      where: { orderDeliveryId },
+      select: ['id', 'workflowStatus', 'cutoverMigratedAt'],
+    });
+
+    if (!workflow?.cutoverMigratedAt) {
+      return null;
+    }
+
+    return WORKFLOW_RESEND_SOURCE_STATUSES.includes(workflow.workflowStatus);
+  }
+
+  /**
    * 환불 실행 게이트 (§9 인벤토리 #12 — ledger claim 의 `refund_attempt` 종속).
    *
    * 전환 건의 환불은 `refund_attempt` 단일 in-flight 가 **상위 게이트**이고 ledger claim 은 그
@@ -180,10 +219,7 @@ export class DeliveryCutoverGuardService {
    *
    * 미전환 건은 애초에 신규 모델 대상이 아니므로 이 검사를 하지 않는다.
    */
-  async assertRefundExecutionAllowed(
-    input: RefundExecutionGateInput,
-    manager?: EntityManager,
-  ): Promise<void> {
+  async assertRefundExecutionAllowed(input: RefundExecutionGateInput, manager?: EntityManager): Promise<void> {
     const { orderDeliveryId, fencing } = input;
 
     const workflow = await this.repo(manager).findOne({

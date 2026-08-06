@@ -1,3 +1,12 @@
+// 트랜잭션 경계는 실DB 통합테스트(user.discount.service.partner-scope.db-integration-test.ts)에서 검증한다.
+// 여기서는 데코레이터를 통과시켜 서비스 로직만 본다.
+jest.mock('typeorm-transactional', () => ({
+  Transactional: () => (_t: unknown, _k: unknown, descriptor: unknown) => descriptor,
+  Propagation: { REQUIRED: 'REQUIRED', REQUIRES_NEW: 'REQUIRES_NEW' },
+  initializeTransactionalContext: jest.fn(),
+  addTransactionalDataSources: jest.fn(),
+}));
+
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { ForbiddenException, BadRequestException } from '@nestjs/common';
@@ -13,6 +22,7 @@ import { UserDiscountCreateReqDto } from '../api/user.discount.req.dto';
 import { IUserDiscountMethod } from '../interface/user.discount.method';
 import { IUserDiscountCategory } from '../interface/user.discount.category';
 import { IPriceAdjustment } from '../interface/price.adjustment';
+import { PartnerDiscountHistoryService } from '../../partner_settle/application/partner.discount.history.service';
 
 describe('UserDiscountService', () => {
   let sut: UserDiscountService;
@@ -28,6 +38,16 @@ describe('UserDiscountService', () => {
         { provide: getRepositoryToken(UserDiscountEntity), useValue: createMockRepositoryMethod() },
         { provide: getRepositoryToken(UserEntity), useValue: createMockRepositoryMethod() },
         { provide: getRepositoryToken(ClassificationEntity), useValue: createMockRepositoryMethod() },
+        // 협력사 정산조건 이력 훅. 이 스펙은 사용자 할인(user scope)만 다루므로 호출되지 않는다.
+        {
+          provide: PartnerDiscountHistoryService,
+          useValue: {
+            lockPolicy: jest.fn(),
+            recordCreate: jest.fn(),
+            recordDelete: jest.fn(),
+            bumpEpoch: jest.fn(),
+          },
+        },
       ],
     }).compile();
 

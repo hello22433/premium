@@ -282,6 +282,16 @@ describe('LoggerMiddleware 마스킹', () => {
       expect(maskUrl('/x?EncryptKey=abc')).toBe('/x?EncryptKey=***');
     });
 
+    // 입금내역 화면의 입금처 검색어는 예금주 실명이다. activity_log 에는 마스킹해서 남기는데
+    // 여기서 빠뜨리면 HTTP 접근 로그에 실명이 평문으로 남아 그 마스킹이 옆 채널에서 무력화된다.
+    test('depositor(예금주 실명) 검색어를 이름 마스킹한다', () => {
+      expect(maskUrl('/deposit/list?depositor=두성종이&page=1')).toBe('/deposit/list?depositor=두***&page=1');
+    });
+
+    test('depositorRaw 도 함께 마스킹된다 (부분일치 규칙)', () => {
+      expect(maskUrl('/deposit/list?depositorRaw=한빛문구')).toBe('/deposit/list?depositorRaw=한***');
+    });
+
     test('경로(path)는 보존한다', () => {
       expect(maskUrl('/order/receive/email?token=abc')).toContain('/order/receive/email?');
     });

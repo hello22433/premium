@@ -75,7 +75,8 @@ type SetupOptions = {
 
 const setupService = ({
   sendSuccess = true,
-  order = { id: 6142 },
+  // status 는 findDeliveryCompleteOrderInViewScope 의 상태 게이트가 본다(develop #43).
+  order = { id: 6142, status: 'DELIVERY_COMPLETE' },
   counterUpdateFails = false,
   unknownColumn = false,
   createLogFails = false,
@@ -118,9 +119,25 @@ const setupService = ({
     return qb;
   };
 
+  // sendReportEmail 은 발송 전에 findDeliveryCompleteOrderInViewScope 로 주문을 잡는다
+  // (develop #43 의 IDOR 방지). 그 헬퍼도 orderRepository.createQueryBuilder 를 쓰므로,
+  // 같은 스텁이 **조회 QB 와 원자 UPDATE QB 두 역할**을 모두 해야 한다.
+  // 조회는 getOne, 갱신은 execute 로 갈라지므로 한 객체에 둘 다 달아 둔다.
+  const makeQb = () => {
+    const qb: any = makeUpdateQb();
+    qb.innerJoin = jest.fn().mockReturnValue(qb);
+    qb.innerJoinAndSelect = jest.fn().mockReturnValue(qb);
+    qb.leftJoinAndSelect = jest.fn().mockReturnValue(qb);
+    qb.withDeleted = jest.fn().mockReturnValue(qb);
+    qb.andWhere = jest.fn().mockReturnValue(qb);
+    qb.getCount = jest.fn().mockResolvedValue(order ? 1 : 0);
+    qb.getOne = jest.fn().mockResolvedValue(order);
+    return qb;
+  };
+
   service.orderRepository = {
     findOne: jest.fn().mockResolvedValue(order),
-    createQueryBuilder: jest.fn(() => makeUpdateQb()),
+    createQueryBuilder: jest.fn(() => makeQb()),
     metadata: {
       // 실제 SnakeNamingStrategy 와 같은 형태를 흉내낸다. unknownColumn 이면 TypeORM 이
       // 미등록 프로퍼티에 대해 하는 것과 동일하게 undefined 를 돌려준다.
@@ -133,6 +150,8 @@ const setupService = ({
     save: jest.fn().mockResolvedValue(undefined),
   };
   service.updateCalls = updateCalls;
+  service.userRepository = { findOne: jest.fn().mockResolvedValue({ id: 7, companyId: 1, departmentId: null }) };
+  service.userViewScopeRepository = { findOne: jest.fn().mockResolvedValue({ scopeType: 'ALL' }) };
   service.mailSendSmtp = {
     send: jest
       .fn()
@@ -281,8 +300,10 @@ describe('sendDestructionCertificateReportEmail — 카운터 대상 아님', ()
     const result = await service.sendDestructionCertificateReportEmail(makeEmailBody(), BASE_USER, IP);
 
     expect(result.success).toBe(true);
+    // createQueryBuilder 자체는 호출된다 — findDeliveryCompleteOrderInViewScope 가 주문을
+    // 잡는 데 쓰기 때문이다(develop #43). "카운터를 안 건드린다"는 UPDATE 가 한 번도
+    // 실행되지 않았다는 것으로 확인한다.
     expect(service.updateCalls).toHaveLength(0);
-    expect(service.orderRepository.createQueryBuilder).not.toHaveBeenCalled();
   });
 
   it('카운터를 갱신하지 않아도 activity_log 는 남긴다', async () => {

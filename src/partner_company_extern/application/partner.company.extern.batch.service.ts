@@ -26,7 +26,13 @@ import {
 import { GalaxiaBarcodeLogEntity } from '../../entity/galaxia.barcode.log.entity';
 import { GiftielExchangeHistoryEntity, GiftielExchangeMatchedBy } from '../../entity/giftiel.exchange.history.entity';
 import { GiftielExchangeReqDto } from '../api/dto/giftiel.exchange.req.dto';
-import { Propagation, Transactional } from 'typeorm-transactional';
+import { Propagation, runInTransaction, Transactional } from 'typeorm-transactional';
+import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
+import { PartnerSettleFeatureFlag } from '../../partner_settle/application/partner.settle.feature.flag';
+import { PartnerSettleProducerService } from '../../partner_settle/application/partner.settle.producer.service';
+import { buildSettlementContext } from '../../partner_settle/application/partner.settle.context.builder';
+import { fromDate, KstInstant } from '../../partner_settle/domain/settle.time';
+import { buildProviderTransitionKey, buildUsageKey } from '../../partner_settle/domain/settle.idempotency.key';
 
 // ===== 상수 정의 =====
 const PARTNER_COMPANY_TYPES = {
@@ -66,6 +72,8 @@ export class PartnerCompanyExternBatchService {
     private giftielExchangeHistoryRepository: Repository<GiftielExchangeHistoryEntity>,
     private configService: ConfigService,
     private cryptoCipher: CryptoCipher,
+    private readonly settleFlag: PartnerSettleFeatureFlag,
+    private readonly settleProducer: PartnerSettleProducerService,
   ) {
     this.galaxiaEncKey = this.configService.getOrThrow('GALAXIA_ENCKEY');
     this.galaxiaEncIv = this.configService.getOrThrow('GALAXIA_ENCIV');
@@ -648,7 +656,7 @@ export class PartnerCompanyExternBatchService {
 
   // ===== 데이터 조회 (Keyset 페이지네이션) =====
   private async fetchBatch(lastId: number, limit: number): Promise<OrderDeliveryEntity[]> {
-    return this.orderDeliveryRepository
+    const qb = this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
       .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
@@ -658,11 +666,37 @@ export class PartnerCompanyExternBatchService {
       .leftJoinAndSelect('orderDelivery.ssgEvent', 'ssgEvent')
       .where('orderDelivery.id < :lastId', { lastId })
       .andWhere('orderDelivery.status LIKE :status', { status: DELIVERY_STATUS_PATTERN })
-      .andWhere('orderDelivery.couponStatus = :couponStatus', {
-        couponStatus: OrderDeliveryCouponStatus.NOT_USED,
-      })
       .andWhere('(partnerCompany.type IS NOT NULL OR orderDelivery.choiceSelectProductId IS NOT NULL)')
-      .andWhere('orderDelivery.barCode IS NOT NULL')
+      .andWhere('orderDelivery.barCode IS NOT NULL');
+
+    if (this.settleFlag.isEnabled) {
+      // B15 — 미정산 원장이 존재하는 USED 건도 재확인 대상에 유지한다(§7.1).
+      // settle_batch_id IS NULL = 아직 확정 배치에 귀속되지 않은 원장. 확정(PR1D)되면 일일 추적 종료.
+      qb.andWhere(
+        new Brackets((sub) =>
+          sub
+            .where('orderDelivery.couponStatus = :notUsed', {
+              notUsed: OrderDeliveryCouponStatus.NOT_USED,
+            })
+            .orWhere(
+              `(orderDelivery.couponStatus = :used AND EXISTS (
+                SELECT 1 FROM partner_settle_ledger psl
+                WHERE psl.order_delivery_id = orderDelivery.id
+                  AND psl.reverses_ledger_id IS NULL
+                  AND psl.settle_batch_id IS NULL
+              ))`,
+              { used: OrderDeliveryCouponStatus.USED },
+            ),
+        ),
+      );
+    } else {
+      // flag off — 기존 동작 그대로. SQL 바이트 동일(§4.6 회귀 요건).
+      qb.andWhere('orderDelivery.couponStatus = :couponStatus', {
+        couponStatus: OrderDeliveryCouponStatus.NOT_USED,
+      });
+    }
+
+    return qb
       .orderBy('orderDelivery.id', 'DESC')
       .take(limit)
       .getMany();
@@ -733,7 +767,7 @@ export class PartnerCompanyExternBatchService {
           } else {
             // 즉시 DB update
             try {
-              await this.updateOrderDelivery(apiResult);
+              await this.applyOrderDeliveryUpdate(apiResult, item, group.type);
               stats.success++;
             } catch (dbError) {
               this.logger.error(`[processGroup] DB update 실패: id=${item.id}`);
@@ -788,6 +822,70 @@ export class PartnerCompanyExternBatchService {
     }
 
     await this.orderDeliveryRepository.update({ id: result.id }, updateData);
+  }
+
+  /**
+   * P2 배치 교환분 래퍼 — A2 옵션 (PR1B 명세 §4 · §6.5 · approved plan).
+   *
+   * `settlementEvidence` 가 있고 `isSettlementTarget` 이면 `runInTransaction` 으로
+   * 상태 write + producer call 을 같은 트랜잭션으로 묶는다.
+   * 없거나 정산 대상이 아니면 기존 `updateOrderDelivery` 만 호출한다(flag off 동일 경로).
+   *
+   * 외부 HTTP 는 이 메서드 **바깥**(phase 1)에서 이미 끝났으므로 tx 안에 외부 호출이 없다(AC9).
+   */
+  private async applyOrderDeliveryUpdate(
+    apiResult: ApiCallResult,
+    orderDelivery: OrderDeliveryEntity,
+    type: PartnerCompanyType,
+  ): Promise<void> {
+    // B15 write-guard — USED 재수집 건은 컬럼 불변(§7.1). flag on + 이미 USED 인 건만 해당.
+    // 협력사 응답은 정산 증적으로 쓰되, 기존 상태(USED, tradeAt 등)를 덮어쓰지 않는다.
+    const b15Recollected =
+      this.settleFlag.isEnabled && orderDelivery.couponStatus === OrderDeliveryCouponStatus.USED;
+
+    const evidence = apiResult.settlementEvidence;
+    if (!evidence) {
+      if (!b15Recollected) await this.updateOrderDelivery(apiResult);
+      return;
+    }
+
+    const provider = type as unknown as IPartnerCompanyType;
+    const ctx = buildSettlementContext(orderDelivery, provider);
+    if (!ctx || !this.settleProducer.isSettlementTarget(ctx, evidence.observedKind)) {
+      if (!b15Recollected) await this.updateOrderDelivery(apiResult);
+      return;
+    }
+
+    // 정산 대상 — 상태 write 와 원장 append 를 같은 트랜잭션으로 묶는다.
+    await runInTransaction(async () => {
+      if (!b15Recollected) await this.updateOrderDelivery(apiResult);
+
+      if (evidence.isCancellation) {
+        // CANCEL 관측 → 기존 원장 역분개 (GIFT_SHOW '07' · DAOU '02')
+        const reversibles = await this.settleProducer.findReversibleEntries(orderDelivery.id);
+        const baseKey = evidence.providerEvidenceRef
+          ? buildProviderTransitionKey(provider, 'EXCHANGE', evidence.providerEvidenceRef)
+          : `EXC:${provider}:CANCEL:${orderDelivery.id}`;
+        for (const entry of reversibles) {
+          await this.settleProducer.recordCancellation(ctx, {
+            kind: evidence.observedKind,
+            reversesLedgerId: entry.id,
+            baseIdempotencyKey: baseKey,
+            occurredAt: evidence.occurredAt ? fromDate(evidence.occurredAt) : fromDate(new Date()),
+          });
+        }
+      } else {
+        // 교환 확정 → record
+        const sourceEventId = evidence.providerEvidenceRef ?? `${provider}:${orderDelivery.id}`;
+        await this.settleProducer.record(ctx, {
+          kind: evidence.observedKind,
+          idempotencyKey: buildProviderTransitionKey(provider, 'EXCHANGE', sourceEventId),
+          occurredAt: evidence.occurredAt ? fromDate(evidence.occurredAt) : null,
+          baseAmount: evidence.baseAmount ?? null,
+          providerEvidenceRef: evidence.providerEvidenceRef,
+        });
+      }
+    });
   }
 
   /** 협력사 사용/환불 동기화(갤럭시아 daily·push, 컬처랜드 daily)가 order_delivery 에 쓰는 컬럼의 전부. updateOrderDelivery 와 같은 어휘다. */
@@ -998,6 +1096,29 @@ export class PartnerCompanyExternBatchService {
         } else if (pinStatusCd === '01') {
           result.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
         }
+
+        // P2 정산 증적 (GIFT_SHOW 활성 — §4.1: 02=교환, 07=취소)
+        if (pinStatusCd === '02' || (pinStatusCd === '11' && exchDtm)) {
+          result.settlementEvidence = {
+            observedKind: 'EXCHANGE',
+            occurredAt: exchDtm ? parseDateString(exchDtm) : null,
+            baseAmount: orderDelivery.orderProductMapping?.snapshotProductPrice != null
+              ? BigInt(orderDelivery.orderProductMapping.snapshotProductPrice)
+              : null,
+            providerEvidenceRef: `${orderDelivery.transactionId}|${pinStatusCd}|${exchDtm ?? ''}`,
+            transactionId: orderDelivery.transactionId,
+            pinStatusCd,
+          };
+        } else if (pinStatusCd === '07') {
+          result.settlementEvidence = {
+            observedKind: 'EXCHANGE',
+            isCancellation: true,
+            occurredAt: null,
+            providerEvidenceRef: `${orderDelivery.transactionId}|${pinStatusCd}`,
+            transactionId: orderDelivery.transactionId,
+            pinStatusCd,
+          };
+        }
       }
     }
 
@@ -1076,6 +1197,18 @@ export class PartnerCompanyExternBatchService {
           result.tradeAt = new Date(executeDate);
         }
       }
+
+      // P2 정산 증적 (SSG 활성 — §4.1: 교환확인 전용, 취소 없음)
+      if (isExchanged) {
+        result.settlementEvidence = {
+          observedKind: 'EXCHANGE',
+          occurredAt: result.tradeAt ?? null,
+          baseAmount: orderDelivery.orderProductMapping?.snapshotProductPrice != null
+            ? BigInt(orderDelivery.orderProductMapping.snapshotProductPrice)
+            : null,
+          providerEvidenceRef: `${orderDelivery.ssgEvent!.no}|${orderDelivery.ssgEvent!.order}|${orderDelivery.personalCode}`,
+        };
+      }
     }
 
     // DAOU 처리
@@ -1104,6 +1237,25 @@ export class PartnerCompanyExternBatchService {
           result.couponStatus = OrderDeliveryCouponStatus.CANCEL;
           result.discardedAt = new Date();
         }
+
+        // P2 정산 증적 (DAOU 활성 — §4.1: 01/03=사용, 02=취소. snapshot-only: evidence=INBOX:{id})
+        if (daouCheckOut.cpnStatus === '01' || daouCheckOut.cpnStatus === '03') {
+          result.settlementEvidence = {
+            observedKind: 'EXCHANGE',
+            occurredAt: daouCheckOut.useDate ? parseDateString(daouCheckOut.useDate) : null,
+            baseAmount: orderDelivery.orderProductMapping?.snapshotProductPrice != null
+              ? BigInt(orderDelivery.orderProductMapping.snapshotProductPrice)
+              : null,
+            cpnStatus: daouCheckOut.cpnStatus,
+          };
+        } else if (daouCheckOut.cpnStatus === '02') {
+          result.settlementEvidence = {
+            observedKind: 'EXCHANGE',
+            isCancellation: true,
+            occurredAt: null,
+            cpnStatus: daouCheckOut.cpnStatus,
+          };
+        }
       }
     }
 
@@ -1126,7 +1278,7 @@ export class PartnerCompanyExternBatchService {
         const apiResult = await this.callExternalApiWithTimeout(item, type);
 
         if (!apiResult.skipped) {
-          await this.updateOrderDelivery(apiResult);
+          await this.applyOrderDeliveryUpdate(apiResult, item, type);
           success++;
           this.logger.log(`[retryFailedItems] 재시도 성공: id=${item.id}`);
         }
@@ -1210,6 +1362,19 @@ export class PartnerCompanyExternBatchService {
           }
 
           // 사용내역 중복 체크 후 저장 (별도 try-catch로 tradePlace 업데이트에 영향 주지 않도록)
+          let existingLog: GalaxiaBarcodeLogEntity | null = null;
+          const logData = {
+            orderDeliveryId: orderDelivery.id,
+            barcode: transaction.barcode,
+            appDiv: transaction.appDiv,
+            appDay: transaction.appDay,
+            appTime: transaction.appTime,
+            amount: parseInt(transaction.amount, 10),
+            appNo: transaction.appNo ?? null,
+            appStore: transaction.appStore?.trim() || null,
+            giftKind,
+          };
+
           try {
             const dedupQuery = this.galaxiaBarcodeLogRepository
               .createQueryBuilder('log')
@@ -1224,24 +1389,59 @@ export class PartnerCompanyExternBatchService {
               dedupQuery.andWhere('log.appNo IS NULL');
             }
 
-            const existingLog = await dedupQuery.getOne();
+            existingLog = await dedupQuery.getOne();
 
             if (!existingLog) {
-              await this.galaxiaBarcodeLogRepository.save({
-                orderDeliveryId: orderDelivery.id,
-                barcode: transaction.barcode,
-                appDiv: transaction.appDiv,
-                appDay: transaction.appDay,
-                appTime: transaction.appTime,
-                amount: parseInt(transaction.amount, 10),
-                appNo: transaction.appNo ?? null,
-                appStore: transaction.appStore?.trim() || null,
-                giftKind,
-              });
+              // ── P3 정산 원장 (B14 §4 P3 — 갤럭시아 일대사 USAGE) ──────────────
+              // 바코드 로그 저장 직후, 인식된 거래구분이면 원장을 만든다.
+              // 81 은 아래 상태 보정 분기에서 persistPartnerSync 와 함께 same-tx 로 처리.
+              // 바코드 로그 + 원장을 단일 트랜잭션으로 묶어 실패 시 롤백 → 재시도 가능(§6.5).
+
+              const shouldSettle =
+                this.settleFlag.isEnabledFor(IPartnerCompanyType.GALAXIA) &&
+                (transaction.appDiv === '10' || transaction.appDiv === '20' || transaction.appDiv === '25');
+
+              if (shouldSettle) {
+                await runInTransaction(async () => {
+                  const savedLog = await this.galaxiaBarcodeLogRepository.save(logData);
+                  await this.recordGalaxiaUsageSettlement(
+                    orderDelivery.id,
+                    savedLog.id,
+                    giftKind,
+                    transaction.appDiv,
+                    this.parseGalaxiaDateTime(transaction.appDay, transaction.appTime),
+                    parseInt(transaction.amount, 10),
+                  );
+                });
+              } else if (transaction.appDiv === '81' && this.settleFlag.isEnabledFor(IPartnerCompanyType.GALAXIA)) {
+                // 81 환불: 로그 저장은 아래 81 블록의 트랜잭션 안에서 수행한다 (§6.5 atomicity).
+              } else {
+                await this.galaxiaBarcodeLogRepository.save(logData);
+              }
 
               this.logger.log(
                 `[checkGalaxiaDaily] ${giftKind} 사용내역 저장: orderDeliveryId=${orderDelivery.id}, appDiv=${transaction.appDiv}, appDay=${transaction.appDay}, amount=${transaction.amount}`,
               );
+            } else {
+              // ── 잔존 데이터 복구: 로그만 남고 원장이 누락된 경우 ──────────────
+              // 이전 결함 버전에서 로그 저장 후 원장 생성이 실패한 데이터가 있을 수 있다.
+              // existingLog.id 기반 멱등키이므로, 이미 원장이 존재하면 appendLedger 가 no-op 수렴한다.
+              const shouldRecoverSettle =
+                this.settleFlag.isEnabledFor(IPartnerCompanyType.GALAXIA) &&
+                (transaction.appDiv === '10' || transaction.appDiv === '20' || transaction.appDiv === '25');
+
+              if (shouldRecoverSettle) {
+                await runInTransaction(async () => {
+                  await this.recordGalaxiaUsageSettlement(
+                    orderDelivery.id,
+                    existingLog!.id,
+                    giftKind,
+                    transaction.appDiv,
+                    this.parseGalaxiaDateTime(transaction.appDay, transaction.appTime),
+                    parseInt(transaction.amount, 10),
+                  );
+                });
+              }
             }
           } catch (logError) {
             this.logger.error(
@@ -1263,7 +1463,40 @@ export class PartnerCompanyExternBatchService {
             orderDelivery.galaxiaBalance = 0;
             // save(orderDelivery) 금지 — merge 는 협력사 조회 시점 스냅샷으로 행 전체를 써
             // 그 사이 CS 재발행·폐기가 쓴 mutation_claimed_at/deleted_at 까지 되돌린다(D3-60).
-            await this.persistPartnerSync(orderDelivery, ['couponStatus', 'discardedAt', 'galaxiaBalance']);
+
+            // P3 정산: 81 환불 → 로그 저장 + 상태 보정 + 역분개를 same-tx(§6.5)로 묶는다.
+            // 로그를 트랜잭션 밖에서 먼저 저장하면, 역분개 실패 시 고아 로그가 남아 재시도 안전성이 깨진다.
+            if (this.settleFlag.isEnabledFor(IPartnerCompanyType.GALAXIA) && !existingLog) {
+              await runInTransaction(async () => {
+                const savedLog = await this.galaxiaBarcodeLogRepository.save(logData);
+                await this.persistPartnerSync(orderDelivery, ['couponStatus', 'discardedAt', 'galaxiaBalance']);
+                await this.recordGalaxiaUsageSettlement(
+                  orderDelivery.id,
+                  savedLog.id,
+                  giftKind,
+                  '81',
+                  this.parseGalaxiaDateTime(transaction.appDay, transaction.appTime),
+                  parseInt(transaction.amount, 10),
+                );
+              });
+            } else if (this.settleFlag.isEnabledFor(IPartnerCompanyType.GALAXIA) && existingLog) {
+              // ── 잔존 데이터 복구: 로그만 남고 원장이 누락된 81 환불 ──────────────
+              // existingLog.id 기반 멱등키이므로, 이미 역분개 원장이 있으면 no-op 수렴.
+              await runInTransaction(async () => {
+                await this.persistPartnerSync(orderDelivery, ['couponStatus', 'discardedAt', 'galaxiaBalance']);
+                await this.recordGalaxiaUsageSettlement(
+                  orderDelivery.id,
+                  existingLog!.id,
+                  giftKind,
+                  '81',
+                  this.parseGalaxiaDateTime(transaction.appDay, transaction.appTime),
+                  parseInt(transaction.amount, 10),
+                );
+              });
+            } else {
+              // settle OFF — 상태 보정만
+              await this.persistPartnerSync(orderDelivery, ['couponStatus', 'discardedAt', 'galaxiaBalance']);
+            }
 
             this.logger.log(
               `[checkGalaxiaDaily] ${giftKind} 81 환불 상태 보정: orderDeliveryId=${orderDelivery.id} → REFUND_CANCEL`,
@@ -1360,8 +1593,8 @@ export class PartnerCompanyExternBatchService {
       return 'skipped';
     }
 
-    // 6. galaxia_barcode_log 저장
-    await this.galaxiaBarcodeLogRepository.save({
+    // 6. galaxia_barcode_log 데이터 준비 (트랜잭션 안에서 저장하기 위해 분리)
+    const logData = {
       orderDeliveryId: orderDelivery.id,
       barcode,
       appDiv: raw.appdiv,
@@ -1371,7 +1604,7 @@ export class PartnerCompanyExternBatchService {
       appNo: appNo ?? null,
       appStore: storename?.trim() || null,
       giftKind: giftKind ?? 'cpn',
-    });
+    };
 
     // 7. orderDelivery 상태 업데이트
     const galaxiaBalance = parseInt(remainprice, 10);
@@ -1408,9 +1641,33 @@ export class PartnerCompanyExternBatchService {
         break;
     }
 
-    // 알 수 없는 거래구분이면 switch 가 아무것도 안 바꾼다 → 빈 UPDATE 를 쏘지 않는다.
-    if (touched.length > 0) {
-      await this.persistPartnerSync(orderDelivery, touched);
+    // ── P3 정산 원장 (B14 §4 P3 — 갤럭시아 push USAGE) ──────────────────────────
+    // flag off: 기존 persistPartnerSync 만 호출한다(§4.6 회귀 요건).
+    // flag on: 바코드 로그 + 상태 write + 원장 append 를 같은 트랜잭션으로 묶는다(§6.5).
+    // 로그가 tx 밖이면 실패 시 dedup 이 재시도를 차단해 영구 미정산이 된다.
+    const isGalaxiaSettlement =
+      this.settleFlag.isEnabledFor(IPartnerCompanyType.GALAXIA) &&
+      ['10', '20', '25', '81'].includes(raw.appdiv);
+
+    if (isGalaxiaSettlement) {
+      await runInTransaction(async () => {
+        const savedLog = await this.galaxiaBarcodeLogRepository.save(logData);
+        if (touched.length > 0) await this.persistPartnerSync(orderDelivery, touched);
+        await this.recordGalaxiaUsageSettlement(
+          orderDelivery.id,
+          savedLog.id,
+          giftKind ?? 'cpn',
+          raw.appdiv,
+          this.parseGalaxiaDateTime(raw.appday, raw.apptime),
+          parseInt(amount, 10),
+        );
+      });
+    } else {
+      await this.galaxiaBarcodeLogRepository.save(logData);
+      // 알 수 없는 거래구분이면 switch 가 아무것도 안 바꾼다 → 빈 UPDATE 를 쏘지 않는다.
+      if (touched.length > 0) {
+        await this.persistPartnerSync(orderDelivery, touched);
+      }
     }
 
     this.logger.log(
@@ -1978,17 +2235,17 @@ export class PartnerCompanyExternBatchService {
     const usedAmount = previousBalance - currentBalance;
     const appNo = `chk${orderDelivery.barCode!.slice(-5)}${appTime}${this.randomString(3)}`;
 
-    await this.galaxiaBarcodeLogRepository.save({
+    const logData = {
       orderDeliveryId: orderDelivery.id,
       barcode: orderDelivery.barCode!,
-      appDiv: '10',
+      appDiv: '10' as const,
       appDay,
       appTime,
       amount: usedAmount,
       appNo,
       appStore: null,
-      giftKind: 'dept',
-    });
+      giftKind: 'dept' as const,
+    };
 
     // 6. orderDelivery 업데이트
     const updateData: Partial<OrderDeliveryEntity> = {
@@ -2003,8 +2260,28 @@ export class PartnerCompanyExternBatchService {
       updateData.tradeAt = parseDateString(galaxiaOut.giftCertificate.usedDate);
     }
 
-    // CANCEL/INACTIVE는 위 2-1에서 이미 early-return 처리됨. 여기는 정상 사용(ACTIVE) 경로만 도달.
-    await this.orderDeliveryRepository.update({ id: orderDelivery.id }, updateData);
+    // ── P3 정산 원장 (B14 §4 P3 — 갤럭시아 dept 사용감지 USAGE) ──────────────
+    // flag off: 기존 update 만 호출한다(§4.6 회귀 요건).
+    // flag on: 바코드 로그 + 상태 write + 원장 append 를 같은 트랜잭션으로 묶는다(§6.5).
+    // 로그가 tx 밖이면 실패 시 dedup 이 재시도를 차단해 영구 미정산이 된다.
+    if (this.settleFlag.isEnabledFor(IPartnerCompanyType.GALAXIA)) {
+      await runInTransaction(async () => {
+        const savedLog = await this.galaxiaBarcodeLogRepository.save(logData);
+        await this.orderDeliveryRepository.update({ id: orderDelivery.id }, updateData);
+        await this.recordGalaxiaUsageSettlement(
+          orderDelivery.id,
+          savedLog.id,
+          'dept',
+          '10',
+          now,
+          usedAmount,
+        );
+      });
+    } else {
+      await this.galaxiaBarcodeLogRepository.save(logData);
+      // CANCEL/INACTIVE는 위 2-1에서 이미 early-return 처리됨. 여기는 정상 사용(ACTIVE) 경로만 도달.
+      await this.orderDeliveryRepository.update({ id: orderDelivery.id }, updateData);
+    }
 
     this.logger.log(
       `[checkGalaxiaDeptUsage] 사용 감지: id=${orderDelivery.id}, ` +
@@ -2278,6 +2555,12 @@ export class PartnerCompanyExternBatchService {
         : { couponStatus: OrderDeliveryCouponStatus.NOT_USED, tradeAt: null, tradePlace: null };
     await this.orderDeliveryRepository.update({ id: orderDelivery.id }, update);
 
+    // ── P4 정산 원장 (B14 §4 P4 — GIFTIEL push) ──────────────────────────
+    // L1 = 교환 → record(EXCHANGE), L2 = 교환취소 → recordCancellation.
+    // check 경로(check API 일대사)는 원장 no-op (§4.2 D4 — GIFTIEL check 경로).
+    // 이미 @Transactional 안이므로 same-tx 요건(§6.5)을 만족한다.
+    await this.recordGiftielPushSettlement(orderDelivery, req, authDate);
+
     return 'saved';
   }
 
@@ -2286,6 +2569,127 @@ export class PartnerCompanyExternBatchService {
       where: { orderDeliveryId },
       order: { authDate: 'DESC' },
     });
+  }
+
+  /**
+   * P4 정산 원장 — GIFTIEL push L1(교환)/L2(교환취소).
+   *
+   * flag off 면 즉시 리턴(DB 접근 0). flag on 이면 조인 재조회 → producer 호출.
+   * 이 메서드는 processGiftielPush 의 @Transactional 안에서 호출되므로 same-tx(§6.5).
+   */
+  private async recordGiftielPushSettlement(
+    orderDelivery: OrderDeliveryEntity,
+    req: GiftielExchangeReqDto,
+    authDate: Date,
+  ): Promise<void> {
+    if (!this.settleFlag.isEnabledFor(IPartnerCompanyType.GIFTIEL)) return;
+
+    // processGiftielPush 의 findOne 은 조인 없이 가져오므로 정산 맥락용으로 재조회한다.
+    const od = await this.loadOrderDeliveryForSettlement(orderDelivery.id);
+    if (!od) return;
+
+    const ctx = buildSettlementContext(od, IPartnerCompanyType.GIFTIEL);
+    if (!ctx) return;
+
+    const occurredAt: KstInstant = fromDate(authDate);
+    const sourceEventId = `${req.TrID}|${req.CmdType}|${req.AuthDate}`;
+
+    if (req.CmdType === 'L1') {
+      // L1 교환 확정 → record
+      await this.settleProducer.record(ctx, {
+        kind: 'EXCHANGE',
+        idempotencyKey: buildProviderTransitionKey(IPartnerCompanyType.GIFTIEL, 'EXCHANGE', sourceEventId),
+        occurredAt,
+        baseAmount: od.orderProductMapping.snapshotProductPrice != null
+          ? BigInt(od.orderProductMapping.snapshotProductPrice)
+          : null,
+        providerEvidenceRef: sourceEventId,
+      });
+    } else {
+      // L2 교환 취소 → recordCancellation
+      const reversibles = await this.settleProducer.findReversibleEntries(orderDelivery.id);
+      for (const entry of reversibles) {
+        await this.settleProducer.recordCancellation(ctx, {
+          kind: 'EXCHANGE',
+          reversesLedgerId: entry.id,
+          baseIdempotencyKey: buildProviderTransitionKey(IPartnerCompanyType.GIFTIEL, 'EXCHANGE', sourceEventId),
+          occurredAt,
+        });
+      }
+    }
+  }
+
+  /**
+   * 정산 맥락 구성용 재조회. orderProductMapping.product.partnerCompany + choiceSelectProduct 조인.
+   * fetchBatch 와 동일한 조인이지만, 단건이므로 배치 쿼리에 영향을 주지 않는다.
+   */
+  private loadOrderDeliveryForSettlement(orderDeliveryId: number): Promise<OrderDeliveryEntity | null> {
+    return this.orderDeliveryRepository.findOne({
+      where: { id: orderDeliveryId },
+      relations: [
+        'orderProductMapping',
+        'orderProductMapping.product',
+        'orderProductMapping.product.partnerCompany',
+        'orderProductMapping.product.brand',
+        'choiceSelectProduct',
+        'choiceSelectProduct.partnerCompany',
+      ],
+    });
+  }
+
+  /**
+   * P3 정산 원장 — 갤럭시아 USAGE(±).
+   *
+   * flag on + 인식된 appDiv(10/20/25/81)일 때만 호출된다.
+   * appDiv 10 = 양수(사용 record), 20/25/81 = 음수(역분개 recordCancellation).
+   * 호출부의 runInTransaction 안에서 실행되므로 same-tx(§6.5).
+   */
+  private async recordGalaxiaUsageSettlement(
+    orderDeliveryId: number,
+    galaxiaBarcodeLogId: number,
+    giftKind: 'cpn' | 'dept',
+    appDiv: string,
+    occurredAtDate: Date,
+    amountInt: number,
+  ): Promise<void> {
+    const od = await this.loadOrderDeliveryForSettlement(orderDeliveryId);
+    if (!od) return;
+
+    const ctx = buildSettlementContext(od, IPartnerCompanyType.GALAXIA);
+    if (!ctx) return;
+
+    // GALAXIA subItem 보강 — buildSettlementContext 는 giftKind/brandCode 를 null 로 둔다.
+    ctx.subItem.giftKind = giftKind;
+    if (giftKind === 'dept') {
+      ctx.subItem.brandCode = od.orderProductMapping?.product?.brand?.code ?? null;
+    }
+
+    if (!this.settleProducer.isSettlementTarget(ctx, 'USAGE')) return;
+
+    const occurredAt: KstInstant = fromDate(occurredAtDate);
+
+    if (appDiv === '10') {
+      // 사용 → 양수 원장
+      await this.settleProducer.record(ctx, {
+        kind: 'USAGE',
+        idempotencyKey: buildUsageKey(galaxiaBarcodeLogId),
+        occurredAt,
+        baseAmount: BigInt(amountInt),
+        galaxiaBarcodeLogId,
+      });
+    } else {
+      // 20/25/81 → 역분개
+      const reversibles = await this.settleProducer.findReversibleEntries(orderDeliveryId);
+      for (const entry of reversibles) {
+        await this.settleProducer.recordCancellation(ctx, {
+          kind: 'USAGE',
+          reversesLedgerId: entry.id,
+          baseIdempotencyKey: buildUsageKey(galaxiaBarcodeLogId),
+          occurredAt,
+          galaxiaBarcodeLogId,
+        });
+      }
+    }
   }
 
   /**

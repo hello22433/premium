@@ -3,12 +3,12 @@ import { IPartnerCompanySettleMethod } from '../../../partner_company/interface/
 
 export class SettlePartnerCompanyListViewDto {
   @ApiProperty({
-    description: '정산 order id',
+    description: '정산 발송건 order_delivery id',
   })
   id: number;
 
   @ApiProperty({
-    description: '등록일자 ex)yyyy-MM-ddTHH:mm:ss',
+    description: '발송일자 ex)yyyy-MM-ddTHH:mm:ss',
   })
   registeredAt: string;
 

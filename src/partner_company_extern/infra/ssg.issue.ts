@@ -95,6 +95,27 @@ export class SsgIssueAlreadyConfirmedError extends Error {
 }
 
 /**
+ * ssg_issue_log 의 PIN 후보 유일성 제약 위반 — 이 후보는 이미 다른 발송 건이 선점했다.
+ * docs/plans/2026-08-04-ssg-issue-log-unique-typed-collision.md
+ *
+ * `uq_ssg_issue_log_bar_code` / `uq_ssg_issue_log_personal_code` 위반만 이 에러로 승격된다.
+ * 그 외 unique 충돌과 DB 오류는 원본 그대로 전파한다 (오분류 시 남의 PIN 을 이 발송 건에 부착할 위험).
+ *
+ * 발생 시점은 SSG INSERT **이전**(markAttempted 구간)이므로 벤더 HTTP 호출은 0 이다.
+ * 호출자(PartnerCompanyExternService.issue)는 이 에러를 받아 다음 PIN 후보로 진행한다.
+ */
+export class SsgIssueLogKeyCollisionError extends Error {
+  constructor(
+    public readonly orderDeliveryId: number,
+    public readonly collidedKey: 'bar_code' | 'personal_code',
+    public readonly cause?: unknown,
+  ) {
+    super(`ssg_issue_log ${collidedKey} 후보 충돌. orderDeliveryId=${orderDeliveryId}`);
+    this.name = 'SsgIssueLogKeyCollisionError';
+  }
+}
+
+/**
  * GetSsgTry.do(cust_info 시도내역 조회) 호출 자체 실패 (검증 거절, 네트워크/파싱 오류 등).
  * "제출 여부 미확정" 시그널 — 호출자는 보수적으로 보류(새 INSERT/재사용 모두 금지)해야 한다.
  */
@@ -244,11 +265,19 @@ export class SsgIssue implements ISsgIssue {
     const sendUrl = `${this.url}/GetSsgTry.do?${data.toString()}`;
     this.logger.log(sendUrl);
 
-    const response = await firstValueFrom(this.httpService.get(sendUrl));
-    this.logger.log(response.data);
+    let resultToJson: ISsgTryOut;
+    try {
+      const response = await firstValueFrom(this.httpService.get(sendUrl));
+      this.logger.log(response.data);
 
-    const resultToJson = (await this.parser.parseStringPromise(response.data)) as unknown as ISsgTryOut;
-    this.logger.log(resultToJson);
+      resultToJson = (await this.parser.parseStringPromise(response.data)) as unknown as ISsgTryOut;
+      this.logger.log(resultToJson);
+    } catch (e) {
+      // 네트워크·파싱 실패도 "제출 여부 미확정" 이라는 점에서 응답 이상(tryYn 없음)과 같은 의미다.
+      // 종전에는 raw 에러가 그대로 새어나가 호출자가 조회 실패를 한 타입으로 다룰 수 없었다.
+      // 발송 배치의 2-pass 보류 판정(§10 구현명세)이 이 타입 하나만 보면 되도록 통일한다.
+      throw new SsgTryError(`SSG 시도내역 조회 호출 실패: ${e instanceof Error ? e.message : String(e)}`);
+    }
 
     const tryYn = resultToJson?.response?.value?.[0]?.tryYn?.[0];
     if (tryYn !== 'Y' && tryYn !== 'N') {

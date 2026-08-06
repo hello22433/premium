@@ -5,6 +5,7 @@ import {
 } from 'typeorm-transactional';
 import { OrderService } from './order.service';
 import { BillingScopeLockService } from '../../wallet/application/billing-scope-lock.service';
+import { WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
 import { IOrderStatus } from '../interface/order.status';
 import { IOrderType } from '../interface/order.type';
 import { IUserAuthority } from '../../user/interface/user.authority';
@@ -198,6 +199,8 @@ describe('OrderService billing lock — lockBillingScope', () => {
       service.userCompanyRepository,
     );
     service.logger = { log: jest.fn(), debug: jest.fn() };
+    // deliveryConfirmed 진입부에서 wallet 전용 파라미터 게이트가 모드를 참조한다.
+    service.walletCutoverConfig = { pr2DeliveryLifecycleMode: WalletCutoverMode.LEGACY };
 
     // lockBillingScope 내부 QB 호출은 위 mock으로 검증하되,
     // 이후 로직(잔여한도·wallet)은 stub 예외로 조기 종료

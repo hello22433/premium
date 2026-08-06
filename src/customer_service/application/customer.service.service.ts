@@ -114,6 +114,10 @@ import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
 import * as fs from 'fs';
 import { createExportTempPath } from '../../util/file.util';
+import { PartnerSettleFeatureFlag } from '../../partner_settle/application/partner.settle.feature.flag';
+import { PartnerSettleProducerService } from '../../partner_settle/application/partner.settle.producer.service';
+import { buildSettlementContext } from '../../partner_settle/application/partner.settle.context.builder';
+import { fromDate } from '../../partner_settle/domain/settle.time';
 
 const dayjs = require('dayjs');
 const timezone = require('dayjs/plugin/timezone');
@@ -169,6 +173,8 @@ export class CustomerServiceService {
     private readonly refundAttemptExecutor: RefundAttemptExecutorService,
     private readonly deliveryWorkflowSlotService: DeliveryWorkflowSlotService,
     private readonly deliveryCancelIntentService: DeliveryCancelIntentService,
+    private readonly settleFlag: PartnerSettleFeatureFlag,
+    private readonly settleProducer: PartnerSettleProducerService,
   ) {}
 
   /**
@@ -1579,7 +1585,7 @@ export class CustomerServiceService {
     orderDeliveryId: number,
     couponStatus: OrderDeliveryCouponStatus,
     historyData?: { type: string; content: string },
-    options?: { skipBalanceRestore?: boolean },
+    options?: { skipBalanceRestore?: boolean; refundRatio?: number | null },
   ): Promise<{
     orderDelivery: OrderDeliveryEntity;
     beforeChange: string;
@@ -1625,6 +1631,14 @@ export class CustomerServiceService {
 
     // 외부 부작용 전에 판정 가능한 도메인 검증은 슬롯·intent 생성보다 먼저 끝낸다.
     this.validateDiscardRequest(partnerType, beforeChange, couponStatus);
+    // 환불폐기는 refundRatio(1~100) 필수 — 없으면 환불금액 0원 계산 위험.
+    // 정산정보 입력 화면에서 미리 세팅하거나, 호출자가 options.refundRatio 로 전달해야 한다.
+    if (couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL) {
+      const effectiveRatio = options?.refundRatio ?? orderDelivery.refundRatio;
+      if (effectiveRatio == null || effectiveRatio < 1 || effectiveRatio > 100) {
+        throw new BadRequestException('환불폐기 처리를 위해서는 환불율(1~100)이 필요합니다. 정산정보에서 환불율을 먼저 설정해 주세요.');
+      }
+    }
 
     const isCutover = await this.cutoverGuard.isCutover(orderDelivery.id);
     let discardSlot: DeliverySlot | null = null;
@@ -1709,10 +1723,25 @@ export class CustomerServiceService {
         // 상태 전이는 조건부 UPDATE(CAS)로 저장 — coupon_status 가 아직 beforeChange 일 때만 반영.
         // 동시 폐기 요청 시 둘 다 save 로 덮어쓰는 레이스를 affected=0 으로 감지·차단(멱등).
         // (코드베이스 관례: settle.service 상태전이, ssg-insert-state.markAttempted 와 동일 패턴)
+        //
+        // 환불폐기(REFUND_CANCEL)일 때는 refundStatus·refundRegisterAt·refundRatio 도 같은 CAS UPDATE 에
+        // 포함하여 원자화한다. 종전에는 프론트에서 별도 PUT /customer-service/refund 를 fire-and-forget 으로
+        // 호출했으나, 실패 시 refundStatus=NULL 이 되어 환불관리 조회에서 누락되는 버그가 있었다.
+        const isRefundCancel = couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL;
+        const setPayload: Partial<OrderDeliveryEntity> = {
+          couponStatus,
+          discardedAt: orderDelivery.discardedAt,
+          ...(isRefundCancel && {
+            refundStatus: OrderDeliveryRefundStatusEnum.PROGRESS,
+            refundRegisterAt: orderDelivery.discardedAt,
+            refundRatio: options?.refundRatio ?? orderDelivery.refundRatio,
+          }),
+        };
+
         const transition = await tx1.manager
           .createQueryBuilder()
           .update(OrderDeliveryEntity)
-          .set({ couponStatus, discardedAt: orderDelivery.discardedAt })
+          .set(setPayload)
           .where('id = :id AND coupon_status = :before', { id: orderDelivery.id, before: beforeChange })
           .execute();
 
@@ -1763,6 +1792,11 @@ export class CustomerServiceService {
           const saved = await tx1.manager.save(OrderHistoryEntity, history);
           savedHistoryId = saved.id;
         }
+
+        // ── P6 정산 원장 (B14 §4 P6 — CS 폐기 역분개) ──────────────────────────
+        // 폐기 = 원본 원장의 역분개. flag off 면 완전 no-op(§4.6 회귀 요건).
+        // queryRunner.manager 를 전달해 same-tx 요건(§6.5)을 만족한다.
+        await this.recordCsDiscardSettlement(orderDelivery, tx1.manager);
 
         await tx1.commitTransaction();
         discardSlot = null;
@@ -2001,6 +2035,28 @@ export class CustomerServiceService {
           afterChange: history.afterChange,
         });
         await qr.manager.save(OrderHistoryEntity, historyEntity);
+      }
+
+      // ── P6 정산 원장 (B14 §4 P6 — 핀상태변경 역분개) ──────────────────────────
+      // CANCEL/REFUND_CANCEL 전이만 역분개 대상. flag off 면 no-op.
+      if (
+        (set.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
+          set.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL) &&
+        this.settleFlag.isEnabled
+      ) {
+        const od = await this.orderDeliveryRepository.findOne({
+          where: { id: orderDeliveryId },
+          relations: [
+            'orderProductMapping',
+            'orderProductMapping.product',
+            'orderProductMapping.product.partnerCompany',
+            'choiceSelectProduct',
+            'choiceSelectProduct.partnerCompany',
+          ],
+        });
+        if (od) {
+          await this.recordCsDiscardSettlement(od, qr.manager);
+        }
       }
 
       await qr.commitTransaction();
@@ -2273,6 +2329,7 @@ export class CustomerServiceService {
       content: getBody.content || '',
       beforeChange: beforeChange || '',
       afterChange: getBody.afterChange || '',
+      refundRatio: getBody.refundRatio,
       sendMethod,
       orderDelivery,
     };
@@ -3196,7 +3253,13 @@ export class CustomerServiceService {
         break;
       }
       case CS_HISTORY_TYPE.REFUND_DISCARD: {
-        const result = await this.execDiscard(map.user, map.orderDeliveryId, OrderDeliveryCouponStatus.REFUND_CANCEL);
+        const result = await this.execDiscard(
+          map.user,
+          map.orderDeliveryId,
+          OrderDeliveryCouponStatus.REFUND_CANCEL,
+          undefined, // historyData — 공통 말미 saveCsHistory 가 저장
+          { refundRatio: map.refundRatio ?? map.orderDelivery.refundRatio },
+        );
         afterChange = result.orderDelivery.couponStatus;
         discardDestroyAmount = result.destroyAmount;
         discardRestoreAmount = result.restoreAmount;
@@ -3425,6 +3488,45 @@ export class CustomerServiceService {
       orderDelivery.choiceSelectProduct?.partnerCompany?.type ??
       orderDelivery.orderProductMapping?.product?.partnerCompany?.type
     );
+  }
+
+  /**
+   * P6 정산 원장 — CS 폐기/환불 역분개.
+   *
+   * flag off 면 즉시 리턴(DB 접근 0). flag on 이면 기존 원장의 역분개를 만든다.
+   * 잔여 금액 0 인 원장과 NEEDS_REVIEW 원장은 역분개 대상에서 제외한다.
+   * base key: `EXC:CS_DISCARD:{orderDeliveryId}`.
+   * 호출부의 queryRunner.manager 를 전달받아 same-tx(§6.5)를 만족한다.
+   */
+  private async recordCsDiscardSettlement(
+    orderDelivery: OrderDeliveryEntity,
+    manager: import('typeorm').EntityManager,
+  ): Promise<void> {
+    const provider = this.getPartnerType(orderDelivery);
+    if (!provider || !this.settleFlag.isEnabledFor(provider)) return;
+
+    const ctx = buildSettlementContext(orderDelivery, provider);
+    if (!ctx) return;
+
+    // 역분개할 기존 원장 조회 — findReversibleEntries 가 잔여>0·정상 상태만 돌려준다.
+    const reversibles = await this.settleProducer.findReversibleEntries(orderDelivery.id, manager);
+    if (reversibles.length === 0) return;
+
+    const baseKey = `EXC:CS_DISCARD:${orderDelivery.id}`;
+    const occurredAt = fromDate(new Date());
+
+    for (const entry of reversibles) {
+      await this.settleProducer.recordCancellation(
+        ctx,
+        {
+          kind: entry.sourceType as 'ISSUANCE' | 'EXCHANGE' | 'USAGE',
+          reversesLedgerId: entry.id,
+          baseIdempotencyKey: baseKey,
+          occurredAt,
+        },
+        manager,
+      );
+    }
   }
 
   private async calculateSettledDiscardRestoreAmount(
@@ -3766,6 +3868,9 @@ export class CustomerServiceService {
                 restoreAmount,
               });
               await queryRunner.manager.save(OrderHistoryEntity, history);
+
+              // ── P6 정산 원장 (B14 §4 P6 — CS 일괄폐기 역분개) ──────────────────
+              await this.recordCsDiscardSettlement(orderDelivery, queryRunner.manager);
 
               await queryRunner.commitTransaction();
             } catch (txError) {
