@@ -410,52 +410,96 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
   /**
    * 감사 로그 절단 — 상한을 넘는 분량이 있을 때만 관측되는 경로다.
    *
-   * 다른 케이스의 픽스처가 전부 1~2행이라 이 블록이 없으면 청크 로직이 **한 줄도 실행되지 않은 채**
-   * 그린이 된다. 그러면 누군가 `slice(0, N)` 상한으로 되돌려도 전부 통과한다(리뷰 5차 M-A/HIGH-1).
+   * 다른 케이스의 픽스처가 전부 1~2행이라 이 블록이 없으면 절단 로직이 **한 줄도 실행되지 않은 채**
+   * 그린이 된다. 그러면 누군가 생략 표기를 지우거나 slice 를 map 뒤로 되돌려도 전부 통과한다.
    *
-   * restamp 축과 unknown 축은 **계약이 다르다**:
-   *   · restamp  — 덮어쓰면 복구 불가 → **전량 보존**(여러 줄로 분할)
-   *   · unknown  — 각인하지 않아 다음 회차가 재보고 → 상한 + 생략 표시로 충분
+   * 고정하는 계약은 넷이다:
+   *   ① 상세는 상한에서 자르되 **생략 건수와 비가역성**을 명시한다
+   *   ② **요약은 전량**에서 낸다 — 잘린 부분의 윤곽(범위·출처 분포)은 남는다
+   *   ③ **로그 줄 수는 건수와 무관하게 일정**하다 — 대량 회차에서 폭주하지 않는다(PR#52 P1)
+   *   ④ **어떤 값이 와도 throw 하지 않는다** — Invalid Date 포함(PR#52 P2)
+   *
+   * restamp 축과 unknown 축은 잘린 분의 성격이 다르다:
+   *   · restamp  — 덮어쓰므로 **영구 소실**  → 그 사실을 로그에 적는다
+   *   · unknown  — 각인하지 않아 다음 회차가 재보고 → 생략 표시만
    * 상수 값(50)에 의존하지 않도록, 고정하는 것은 값이 아니라 위 계약이다.
    */
-  describe('감사 로그 — 청크 분할과 상한', () => {
+  describe('감사 로그 — 상한·요약·비가역 표기', () => {
     const first = new Date('2026-01-31T00:00:00');
     const rows = (n: number, make: (id: number) => any) => Array.from({ length: n }, (_, i) => make(101 + i));
 
-    it('★ 청크 크기를 넘어도 이전 파기일을 하나도 버리지 않는다 (전량 보존)', async () => {
+    it('★ 상한을 넘으면 상세는 자르되 생략 건수와 비가역성을 명시한다', async () => {
       const sut = makeSut(makeSelectQb(rows(51, (id) => emailRevivedRow(id, first))));
 
       await sut.deliveryDeliveryTargetDestroy();
 
       const warned = sut.logger.warn.mock.calls.map((c: any[]) => String(c[0])).join('\n');
       expect(warned).toContain('51건');
-      // 핵심 계약 — 51번째(id 151)가 로그에 실제로 있어야 한다. 종전에는 여기서 버려졌다.
-      expect(warned).toContain('151:');
-      // 51건 전부가 빠짐없이 남는지 id 단위로 확인한다(한 건이라도 새면 실패).
-      for (let id = 101; id <= 151; id++) expect(warned).toContain(`${id}:`);
-      // 'N건 생략' 은 restamp 축에 있으면 안 된다(그 문구가 살아 있으면 상한으로 되돌아간 것).
-      expect(warned).not.toContain('건 생략');
+      expect(warned).toContain('외 1건 로그 생략');
+      // 잘린 분이 되돌아오지 않는다는 사실이 로그에 있어야 한다 — 없으면 "나중에 조회하면
+      // 되겠지"로 오독한다.
+      expect(warned).toContain('영구 소실');
+      // 51번째는 실제로 상세에서 빠져야 한다(생략 표시만 붙고 전량이 나오면 거짓말이다).
+      expect(warned).not.toContain('151:');
+      // 로그를 잘라도 각인은 51건 전부에 대해 이뤄진다 — 표기가 처리 범위를 줄이면 안 된다.
       expect(sut.__stampQb.calls.where[0][1].ids).toHaveLength(51);
     });
 
-    it('여러 줄로 나뉠 때 (k/total) 을 붙인다 — 줄이 유실되면 셀 수 있어야 한다', async () => {
-      const sut = makeSut(makeSelectQb(rows(51, (id) => emailRevivedRow(id, first))));
+    it('★ 로그 줄 수는 건수와 무관하게 일정하다 — 대량 회차에서 로그 폭주를 만들지 않는다', async () => {
+      // 청크 분할로 되돌리면 이 케이스가 21줄이 되어 실패한다(PR#52 리뷰 P1 회귀 방지).
+      const sut = makeSut(makeSelectQb(rows(1000, (id) => emailRevivedRow(id, first))));
+
+      await sut.deliveryDeliveryTargetDestroy();
+
+      expect(sut.logger.warn).toHaveBeenCalledTimes(1);
+    });
+
+    it('★ 요약은 잘리지 않는다 — 전량의 파기일 범위와 출처 분포를 담는다', async () => {
+      // 상세가 상한에서 잘려도 "무엇을 잃었는지"의 윤곽은 남아야 한다.
+      const older = new Date('2026-01-01T00:00:00');
+      const newer = new Date('2026-03-01T00:00:00');
+      const sut = makeSut(
+        makeSelectQb([
+          ...rows(50, (id) => emailRevivedRow(id, newer, 'BATCH')),
+          emailRevivedRow(999, older, 'BACKFILL_ESTIMATE'), // 상세 상한 밖 — 요약에는 잡혀야 한다
+        ]),
+      );
 
       await sut.deliveryDeliveryTargetDestroy();
 
       const warned = sut.logger.warn.mock.calls.map((c: any[]) => String(c[0])).join('\n');
-      expect(warned).toContain('(1/2)');
-      expect(warned).toContain('(2/2)');
+      expect(warned).not.toContain('999:'); // 상세에는 없고
+      expect(warned).toContain(older.toISOString()); // 요약 범위에는 있다
+      expect(warned).toContain('BACKFILL_ESTIMATE=1');
+      expect(warned).toContain('BATCH=50');
     });
 
-    it('청크 크기 이하면 한 줄로만 남는다 (불필요한 분할 없음)', async () => {
+    it('상한 이하면 생략 문구를 붙이지 않는다 (경계: "외 0건 생략" 금지)', async () => {
       const sut = makeSut(makeSelectQb(rows(50, (id) => emailRevivedRow(id, first))));
 
       await sut.deliveryDeliveryTargetDestroy();
 
       const warned = sut.logger.warn.mock.calls.map((c: any[]) => String(c[0])).join('\n');
-      expect(warned).toContain('(1/1)');
-      expect(warned).not.toContain('(2/');
+      expect(warned).toContain('50건');
+      expect(warned).not.toContain('생략');
+    });
+
+    it('★ Invalid Date 가 섞여도 throw 하지 않고 invalid-date 로 기록한다', async () => {
+      // optional call(?.) 은 메서드 부재만 막는다. Invalid Date 의 toISOString() 은
+      // RangeError 를 던져 그 회차 파기 트랜잭션 전체를 롤백시킨다(PR#52 리뷰 P2).
+      const sut = makeSut(
+        makeSelectQb([emailRevivedRow(7, new Date('nope')), emailRevivedRow(8, new Date('2026-02-01T00:00:00'))]),
+      );
+
+      await expect(sut.deliveryDeliveryTargetDestroy()).resolves.not.toThrow();
+
+      const warned = sut.logger.warn.mock.calls.map((c: any[]) => String(c[0])).join('\n');
+      expect(warned).toContain('7:invalid-date/');
+      // 'null'(값이 없었다)과 구분돼야 한다 — 감사 흔적에서 둘은 다른 사실이다.
+      expect(warned).not.toContain('7:null/');
+      expect(warned).toContain('읽을 수 없는 값 1건');
+      // 깨진 값 하나가 나머지 행의 각인을 막지 않는다.
+      expect(sut.__stampQb.calls.where[0][1].ids).toEqual([7, 8]);
     });
 
     it('시각 미상 error 로그도 같은 계약을 지킨다 (두 로그가 갈라지지 않게)', async () => {

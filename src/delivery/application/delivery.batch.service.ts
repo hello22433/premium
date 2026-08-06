@@ -101,18 +101,29 @@ import { RefundPoolService } from '../../wallet/application/refund-pool.service'
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 
 /**
- * 재각인(restamp) 감사 로그를 여러 줄로 나눌 때의 **한 줄당 항목 수**. 상한이 아니다.
+ * 재각인(restamp) 로그에 실을 **상세 항목 수 상한**.
  *
- * 이 값을 덮어쓰기 전 파기일은 DB 에서 덮여 **복구 경로가 없다.** 그래서 자르지 않고 전량을
- * `ceil(n/이 값)` 줄에 나눠 남긴다. 이 상수가 정하는 것은 **줄 길이뿐**이고, 값이 몇이든
- * 남는 정보량은 같다 — 따라서 조정해도 안전하다(그 점이 상한이었던 종전과 결정적으로 다르다).
+ * ⚠️ **로그는 감사 저장소가 아니다.** 이 점을 잘못 알고 한 번 설계가 뒤집혔으므로 근거를 남긴다.
  *
- * ⚠️ 다시 `slice(0, N)` 형태의 **상한으로 되돌리지 말 것.** 종전이 그랬고, 근거 없이 정한 50 이
- *    그대로 "무엇을 영구히 버릴지"를 결정하고 있었다(리뷰 5차 HIGH-1/M-C).
+ *    한때 이 상수를 '청크 크기'로 바꿔 전량을 `ceil(n/50)` 줄에 나눠 찍었다. 목적은
+ *    "이전 파기일을 하나도 잃지 않는다"였는데, **그 보장이 성립하지 않았다**:
+ *      · logger 는 stdout 이고 보존정책·전송보장이 없다. 수집기의 단일 이벤트/처리량 제한에
+ *        걸리면 코드가 몇 줄을 찍었든 남지 않는다 — "전량 보존"은 코드가 줄 수 없는 약속이다.
+ *      · 그러면서 비용은 실재했다. 5만 건이면 @Transactional 락 보유 구간에서 warn 1,001회 +
+ *        대형 문자열 포매팅이 돌아 **배치 지연과 로그 폭주**를 만든다(PR#52 리뷰 P1).
+ *    즉 얻는 것은 없고 장애 위험만 늘었다. 그래서 상한으로 되돌린다.
+ *
+ *    대신 **요약은 전량에서 낸다**(건수 · 이전 파기일 범위 · 출처 분포). 요약은 문자열을 만들지
+ *    않는 스칼라 집계라 대량에서도 저렴하고, "무엇을 잃었는지"의 윤곽은 남는다.
+ *
+ * ⚠️ 상세를 잘라도 **이전 파기일은 DB 에서 덮여 복구 경로가 없다.** 이 상한은 그 손실을 해결하지
+ *    않고 **인정**한다. 진짜로 잃지 않으려면 로그가 아니라 `order_delivery` 전용 컬럼이나 영속
+ *    감사 테이블이 필요하며, 그건 별건이다. 여기서 늘리는 것으로 대신하려 하지 말 것.
+ *
  * ⚠️ 아래 UNKNOWN_ID_LOG_LIMIT 과 **성격이 다르다. 값이 같다고 합치지 말 것.**
- *    그쪽은 진짜 상한이지만 버려도 재산출되므로 안전하다. 이쪽은 그렇지 않다.
+ *    그쪽은 잘려도 다음 회차가 재보고하지만, 이쪽은 잘린 만큼 영구 소실이다.
  */
-const RESTAMP_AUDIT_LOG_CHUNK = 50;
+const RESTAMP_AUDIT_LOG_LIMIT = 50;
 
 /**
  * "이미 파기됐으나 파기 시각을 알 수 없는" 발송건 id 로그 상한.
@@ -122,6 +133,58 @@ const RESTAMP_AUDIT_LOG_CHUNK = 50;
  * 것은 소실 때문이 아니라 두 로그의 표기를 통일하기 위해서다.
  */
 const UNKNOWN_ID_LOG_LIMIT = 50;
+
+/**
+ * 감사 로그용 시각 문자열. **어떤 입력에도 throw 하지 않는다.**
+ *
+ * `value?.toISOString?.()` 로는 부족하다 — optional call 은 **메서드 부재**만 막고,
+ * Invalid Date(`new Date('x')`)의 `toISOString()` 은 `RangeError: Invalid time value` 를 던진다.
+ * 이 함수는 정기파기 `@Transactional` 구간에서 호출되므로, 행 하나의 값이 이상하다는 이유로
+ * 그 회차 전체가 롤백되면 **PII 가 하루 더 살아남는다** — 로그 한 줄과 바꿀 수 없는 손해다.
+ * (PR#52 리뷰 P2)
+ *
+ * 세 결과를 구분한다. 감사 흔적이므로 "값이 없었다"와 "값이 깨져 있었다"는 다른 사실이다:
+ *   · null / undefined        → `'null'`
+ *   · Date 아님 / Invalid Date → `'invalid-date'`
+ *   · 정상                     → ISO 8601
+ */
+const formatAuditTimestamp = (value: Date | null | undefined): string => {
+  if (value === null || value === undefined) return 'null';
+  const time = value.getTime?.();
+  if (typeof time !== 'number' || Number.isNaN(time)) return 'invalid-date';
+  return new Date(time).toISOString();
+};
+
+/**
+ * 재각인 대상의 **전량 요약**.
+ *
+ * 상세 목록은 RESTAMP_AUDIT_LOG_LIMIT 에서 잘리므로, 잘린 부분의 윤곽은 여기서 남긴다.
+ * 문자열을 만들지 않는 단일 패스 스칼라 집계라 5만 건 회차에서도 비용이 무시할 수준이다
+ * — 그래서 이쪽만 전량을 본다.
+ */
+const summarizeRestampRows = (rows: { destroyedAt: Date | null; destroyedAtSource: string | null }[]): string => {
+  let oldest: number | null = null;
+  let newest: number | null = null;
+  let unreadable = 0;
+  const bySource = new Map<string, number>();
+
+  for (const row of rows) {
+    const time = row.destroyedAt?.getTime?.();
+    if (typeof time === 'number' && !Number.isNaN(time)) {
+      if (oldest === null || time < oldest) oldest = time;
+      if (newest === null || time > newest) newest = time;
+    } else {
+      unreadable += 1;
+    }
+    const source = row.destroyedAtSource ?? 'null';
+    bySource.set(source, (bySource.get(source) ?? 0) + 1);
+  }
+
+  const range =
+    oldest === null ? '없음' : `${new Date(oldest).toISOString()} ~ ${new Date(newest as number).toISOString()}`;
+  const sources = [...bySource.entries()].map(([source, count]) => `${source}=${count}`).join(' ');
+  return `갱신 전 파기일 ${range}${unreadable > 0 ? ` (읽을 수 없는 값 ${unreadable}건)` : ''} / 출처 ${sources}`;
+};
 
 @Injectable()
 export class DeliveryBatchService {
@@ -3396,18 +3459,14 @@ export class DeliveryBatchService {
       const restampRows = orderDeliveryList.filter((od) => od.destroyedAt !== null && !isDeliveryDestroyed(od));
       const restampIds = restampRows.map((od) => od.id);
       // 덮어쓰기 전 값 — 갱신하면 복구 불가라 감사 흔적으로 남긴다(아래 warn 로그).
-      // toISOString 을 optional call(?.) 로 부른다. destroyedAt 은 Date 로 매핑되지만, 로그 한 줄
-      // 때문에 트랜잭션 전체(그 회차 정기파기)가 롤백되는 것은 어떤 경우에도 이득이 아니다.
       //
-      // ★ **전량을 만든다. 자르지 않는다.** 아래 warn 이 RESTAMP_AUDIT_LOG_CHUNK 건씩 여러 줄로
-      //   나눠 남기므로 줄 길이는 묶이고 정보는 하나도 버려지지 않는다.
-      //   종전에는 여기서 slice(0, 50) 으로 잘랐는데, 그 50 은 측정 근거 없는 임의값이면서
-      //   "무엇을 영구히 버릴지"를 결정하고 있었다(리뷰 5차 HIGH-1/M-C 반영, 운영 결정).
-      //   전량 포매팅은 @Transactional 구간의 비용이지만, 같은 트랜잭션이 이미 destroyIdList
-      //   전량에 대한 대형 IN-list UPDATE 를 세 번 돌리므로 이 비용은 그 옆에서 지배적이지 않다.
-      const restampPrevious = restampRows.map(
-        (od) => `${od.id}:${od.destroyedAt?.toISOString?.() ?? 'null'}/${od.destroyedAtSource ?? 'null'}`,
-      );
+      // ★ 요약은 **전량**에서, 상세는 **상한까지만**. 그 근거는 RESTAMP_AUDIT_LOG_LIMIT 주석에 있다.
+      //   slice 를 map **앞에** 둔다 — 대량 회차에서 버릴 문자열을 @Transactional 구간에서
+      //   만들지 않기 위해서다.
+      const restampSummary = summarizeRestampRows(restampRows);
+      const restampPrevious = restampRows
+        .slice(0, RESTAMP_AUDIT_LOG_LIMIT)
+        .map((od) => `${od.id}:${formatAuditTimestamp(od.destroyedAt)}/${od.destroyedAtSource ?? 'null'}`);
       const firstDestroyIds = orderDeliveryList
         .filter((od) => od.destroyedAt === null && !isDeliveryDestroyed(od))
         .map((od) => od.id);
@@ -3466,25 +3525,22 @@ export class DeliveryBatchService {
         //    구분이 필요하면 migration §4-8 로 레거시 모집단을 먼저 계량할 것.
         // 이전 값을 함께 남긴다 — 덮어쓰면 복구 경로가 없다.
         //
-        // ★ 자르지 않고 **전량을 청크로 나눠** 남긴다(운영 결정). 종전에는 앞 50건만 남기고
-        //   나머지를 버렸는데, 그 50 은 측정 근거 없이 정한 임의값이었고 버린 값은 DB 에서도
-        //   덮여 영구 소실이었다. 줄 길이를 묶는 것이 원래 목적이었으므로, 목적은 청크로 지키고
-        //   소실은 0 으로 만든다(리뷰 5차 HIGH-1/M-C).
-        //   각 줄에 (k/total) 을 붙인다 — 하류 수집기가 줄 단위로 유실해도 **빠진 것을 셀 수 있어야**
-        //   한다. 총건수만 헤더에 있으면 3줄 중 2줄만 도착했을 때 그 사실을 알 수 없다.
-        const chunkTotal = Math.max(1, Math.ceil(restampPrevious.length / RESTAMP_AUDIT_LOG_CHUNK));
+        // ★ **한 줄이다.** 요약은 전량에서 내고 상세는 상한까지만 싣는다.
+        //   한때 전량을 청크로 나눠 여러 줄로 찍었으나, 로그는 전송·보존을 보장하지 않아
+        //   "전량 보존"이 애초에 성립하지 않으면서 대량 회차에서 배치 지연만 만들었다.
+        //   근거는 RESTAMP_AUDIT_LOG_LIMIT 주석 — 되돌리기 전에 반드시 읽을 것(PR#52 리뷰 P1).
+        // ⚠️ 생략 건수는 상수가 아니라 **실제 출력 길이**에서 유도한다. 상수에서 빼면 slice 인자만
+        //    바뀌었을 때 카운트가 조용히 거짓말한다.
+        const restampOmitted = restampIds.length - restampPrevious.length;
         this.logger.warn(
           `[정기파기] 이미 파기 시각이 있으나 PII 가 남아 있어 파기일을 갱신함 ${restampIds.length}건 ` +
             `(원인: CS 수신정보 변경 후 재파기 또는 레거시 부분마스킹 — 데이터로 구분 불가). ` +
-            `갱신 전 값을 ${chunkTotal}줄에 나눠 남긴다 — 전량이며 생략 없음.`,
+            `요약(전량): ${restampSummary}. ` +
+            `상세 id:시각/출처=[${restampPrevious.join(', ')}]` +
+            (restampOmitted > 0
+              ? ` 외 ${restampOmitted}건 로그 생략 — 그 행들의 이전 파기일은 DB 에서도 덮여 영구 소실`
+              : ''),
         );
-        for (let chunkIndex = 0; chunkIndex < chunkTotal; chunkIndex++) {
-          const from = chunkIndex * RESTAMP_AUDIT_LOG_CHUNK;
-          this.logger.warn(
-            `[정기파기] 갱신 전 값 (${chunkIndex + 1}/${chunkTotal}) id:시각/출처=` +
-              `[${restampPrevious.slice(from, from + RESTAMP_AUDIT_LOG_CHUNK).join(', ')}]`,
-          );
-        }
       }
 
       // order_history 의 PII 도 함께 파기. '수신정보 변경요청'/'폐기 후 신규 발송' 이력의
