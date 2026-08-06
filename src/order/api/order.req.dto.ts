@@ -3,6 +3,7 @@ import {
   ArrayMaxSize,
   IsArray,
   IsBoolean,
+  IsDefined,
   IsEnum,
   IsIn,
   IsInt,
@@ -13,9 +14,10 @@ import {
   Matches,
   MaxLength,
   Min,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional, PickType } from '@nestjs/swagger';
 import { dateAtRegexp } from '../../common/domain/date.regexp';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { OrderCreateDto } from './dto/order.create.dto';
@@ -23,7 +25,6 @@ import { IOrderType } from '../interface/order.type';
 import { IOrderSection } from '../interface/order.section';
 import { Transform, Type } from 'class-transformer';
 import { OrderSettleCreateDto } from './dto/order.settle.create.dto';
-import { IOrderSendMethod } from '../interface/order.send.method';
 import { IOrderSendingType } from '../interface/order.sending.type';
 import { IOrderDateType } from '../interface/order.date.type';
 import { CompanyType } from '../../common/domain/company.type';
@@ -58,6 +59,15 @@ export class OrderGetListReqDto extends PagingReqDto {
   @IsOptional()
   @IsEnum(IOrderStatus)
   status?: IOrderStatus;
+  @ApiPropertyOptional({
+    description:
+      '미해결 발송 실패 건 포함 주문만 조회한다. FAIL/FAIL_SMS 이면서 재발송되지 않은(resendAt IS NULL) 활성 발송건이 하나라도 있으면 해당한다.',
+    default: false,
+  })
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  hasFailedDelivery?: boolean;
 
   @ApiPropertyOptional({
     description: '기간 검색 기준 ex) REGISTER: 등록일자(기본), SEND: 발송일자(actual_send_at)',
@@ -111,7 +121,25 @@ export class OrderGetListReqDto extends PagingReqDto {
   @IsOptional()
   @IsEnum(IOrderSendingType)
   sendingType?: IOrderSendingType = IOrderSendingType.ALL;
+}
 
+export class OrderGetListSummaryReqDto extends PickType(OrderGetListReqDto, [
+  'section',
+  'type',
+  'dateType',
+  'startAt',
+  'endAt',
+  'searchType',
+  'searchKeyword',
+  'sendingType',
+] as const) {
+  @ApiProperty({
+    description: '발송관리 집계만 지원합니다.',
+    enum: [IOrderSection.SHIPPING],
+    default: IOrderSection.SHIPPING,
+  })
+  @IsIn([IOrderSection.SHIPPING])
+  section: IOrderSection = IOrderSection.SHIPPING;
 }
 
 /**
@@ -609,12 +637,15 @@ export class OrderUpdateEncourageDayReqParamDto {
 }
 
 export class OrderUpdateEncourageDayReqBodyDto {
-  @ApiPropertyOptional({
-    description: '독려 문자 day (null이면 미사용)',
+  @ApiProperty({
+    description: '독려 문자 day (1 이상의 정수, null이면 미사용)',
+    nullable: true,
   })
   // ===================================
-  @IsOptional()
-  @IsNumber()
+  @IsDefined()
+  @ValidateIf((_object, value) => value !== null)
+  @IsInt()
+  @Min(1)
   encourageDay: number | null;
 }
 

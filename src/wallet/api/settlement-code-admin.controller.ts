@@ -29,6 +29,29 @@ class IssueCodeReqDto {
   userId: number;
 }
 
+class CreateCodeReqDto {
+  @IsInt()
+  @Min(1)
+  companyId: number;
+
+  @IsOptional()
+  @IsIn(['PRE_PAYMENT', 'POST_PAYMENT'])
+  settleCondition?: 'PRE_PAYMENT' | 'POST_PAYMENT';
+
+  @IsOptional()
+  @IsIn(['CARD', 'CASH'])
+  settleMethod?: 'CARD' | 'CASH';
+
+  @IsOptional()
+  @IsBoolean()
+  cardSurchargeApplied?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  creditLimit?: number;
+}
+
 class AssignCodeReqDto {
   @IsInt()
   @Min(1)
@@ -244,6 +267,22 @@ export class SettlementCodeAdminController {
   @ApiOperation({ summary: '정산코드 신규 발급 (company-{id}-{n})' })
   async issue(@Body() body: IssueCodeReqDto): Promise<{ settlementCode: string }> {
     const settlementCode = await this.adminService.issueNewCode(body.userId);
+    return { settlementCode };
+  }
+
+  /**
+   * 배정 계정 없이 회사에 정산코드만 생성 (배정 대기 계정 0명인 회사 대응).
+   * 정산조건/정산방법/카드할증/여신한도를 생성과 동일 트랜잭션에 반영한다 (발급 후 정책 설정 2단계 호출 불필요).
+   */
+  @Post()
+  @ApiOperation({ summary: '정산코드 단독 생성 (계정 배정 없이, company-{id}-{n})' })
+  async create(@Body() body: CreateCodeReqDto): Promise<{ settlementCode: string }> {
+    const settlementCode = await this.adminService.createCodeForCompany(body.companyId, {
+      settleCondition: body.settleCondition,
+      settleMethod: body.settleMethod,
+      cardSurchargeApplied: body.cardSurchargeApplied,
+      creditLimit: body.creditLimit,
+    });
     return { settlementCode };
   }
 

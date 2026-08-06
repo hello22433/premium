@@ -46,6 +46,10 @@ import { DateFormatStr } from '../../common/domain/date.format.str';
 import { PhoneUtil } from '../../common/utils/phone.util';
 import { CouponViewLogEntity } from '../../entity/coupon.view.log.entity';
 import { isCrawlerUserAgent } from '../../common/utils/crawler-ua.util';
+import { MessageAttemptService } from '../../delivery/application/message-attempt.service';
+import { MessageAttemptChannel, MessageAttemptType } from '../../delivery/interface/message.attempt.status';
+import { DeliveryExclusiveOp } from '../../delivery/interface/delivery.workflow.status';
+import { OrderEmailFinalSendMethod } from '../../order/domain/order.email.final.send.method';
 
 import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
@@ -106,6 +110,7 @@ export class OrderReceiveService {
     private orderFromService: OrderFromService,
     @InjectRepository(CouponViewLogEntity)
     private couponViewLogRepository: Repository<CouponViewLogEntity>,
+    private messageAttemptService: MessageAttemptService,
   ) {}
 
   private readonly logger = new Logger(OrderReceiveService.name);
@@ -466,14 +471,28 @@ export class OrderReceiveService {
           getBillingUserId(orderDelivery.orderProductMapping.order),
         ));
       const title = orderDelivery.orderProductMapping.sendTitle ?? '';
-      await this.smsSend.send({
-        msgType: 'M',
-        to: decryptedPhone,
-        from: fromPhoneNumber,
-        subject: title,
-        text: smsText,
-        filePath: filePathList,
-      });
+      // 발송 추적(§5.3). 이 경로는 초이스 선택 후의 **실발송**이므로 상관키(EXT_COL2)를 실어
+      // message_attempt 를 남긴다. 추적이 없으면 결과 조회·504 자동 재발송·실패내역 workflow
+      // 렌더가 이 건을 통째로 못 본다(§10 2단계 추적 커버리지).
+      await this.messageAttemptService.trackSend(
+        {
+          orderDeliveryId: orderDelivery.id,
+          channel: MessageAttemptChannel.MMS,
+          attemptType: MessageAttemptType.INITIAL,
+          slotOp: DeliveryExclusiveOp.MESSAGE_SEND,
+          sendReason: 'CHOICE_POST_SEND',
+        },
+        (attemptId) =>
+          this.smsSend.send({
+            msgType: 'M',
+            to: decryptedPhone,
+            from: fromPhoneNumber,
+            subject: title,
+            text: smsText,
+            filePath: filePathList,
+            attemptId,
+          }),
+      );
       success = true;
     } catch (e) {
       console.error('초이스 쿠폰 선택 후 SMS 발송 실패', orderDelivery.id, e);
@@ -1222,64 +1241,96 @@ export class OrderReceiveService {
     // 만료 재계산(updateCouponExpiration) 후이므로 토큰 _exp도 새 쿠폰 expireAt 기준으로 재발급
     const refreshedSendEncryptKey = this.cryptoCipher.encryptJson(obj, couponTokenExpiry(orderDelivery.expireAt));
 
-    try {
-      // 1차: 알림톡 발송 시도 (기존 등록 템플릿 사용)
-      const alimTalkText = AlimTalkTemplate(orderDelivery);
-      const { report } = await this.deliveryAlimTalk.send({
-        to: getBody.phoneNumber,
-        text: alimTalkText,
-        encryptKey: refreshedSendEncryptKey,
-      });
+    const emailFinalSendMethod = orderDelivery.orderProductMapping.emailFinalSendMethod;
 
-      if (report.code !== 'A000') {
-        throw new Error('AlimTalk Send Error');
-      }
-    } catch (alimTalkError) {
-      // 2차: 알림톡 실패 시 MMS 폴백 (배치 문자 발송 패턴과 동일)
-      let mmsText = orderDelivery.orderProductMapping.sendContent ?? '';
-
-      if (
-        orderDelivery.orderProductMapping.product.memo &&
-        orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
-      ) {
-        mmsText += `\n\n${orderDelivery.orderProductMapping.product.memo}`;
-      }
-
-      const sendTailText = orderDelivery.orderProductMapping.sendTailText;
-      if (sendTailText) {
-        mmsText += `\n\n${sendTailText}`;
-      }
-
-      mmsText = applyReplaceCharacters(mmsText, orderDelivery);
-
+    if (emailFinalSendMethod === OrderEmailFinalSendMethod.MMS) {
+      // MMS 직행 — 폴백 없음 (P-a 비대칭 정책)
+      const mmsText = this.buildEmailCouponMmsText(orderDelivery);
       const mmsFromPhoneNumber = await this.orderFromService.resolveSendDefaultPhone(
         getBillingUserId(orderDelivery.orderProductMapping.order),
       );
 
-      const orderType = orderDelivery.orderProductMapping.order.type;
-      const productType = orderDelivery.orderProductMapping.product.type;
-
-      if (orderType === IOrderType.SSG) {
-        mmsText += smsSsgTemplate(orderDelivery);
-      }
-
-      if (orderType !== IOrderType.SSG && productType !== IProductType.CHOICE && orderDelivery.barCode) {
-        mmsText += '\n\n' + smsCouponInfoTemplate(orderDelivery);
-      }
-
       try {
-        await this.smsSend.send({
-          msgType: 'M',
-          to: getBody.phoneNumber,
-          from: mmsFromPhoneNumber,
-          subject: title,
-          text: mmsText,
-          filePath: filePathList,
-        });
+        await this.messageAttemptService.trackSend(
+          {
+            orderDeliveryId: orderDelivery.id,
+            channel: MessageAttemptChannel.MMS,
+            attemptType: MessageAttemptType.INITIAL,
+            slotOp: DeliveryExclusiveOp.MESSAGE_SEND,
+            sendReason: 'EMAIL_COUPON_RECEIVE',
+          },
+          (attemptId) =>
+            this.smsSend.send({
+              msgType: 'M',
+              to: getBody.phoneNumber,
+              from: mmsFromPhoneNumber,
+              subject: title,
+              text: mmsText,
+              filePath: filePathList,
+              attemptId,
+            }),
+        );
       } catch (mmsError) {
-        // 알림톡, MMS 모두 실패
+        this.logger.error(`[EMAIL_COUPON] MMS 발송 실패 (MMS 직행, 폴백 없음) orderDeliveryId=${orderDelivery.id}`, mmsError);
         status = IOrderDeliveryStatus.FAIL;
         emailCouponStatus = OrderDeliveryEmailCouponStatus.PIN_ISSUED;
+      }
+    } else {
+      // NULL 또는 ALIM_TALK — 현행 동작: 알림톡 → MMS 폴백
+      try {
+        const alimTalkText = AlimTalkTemplate(orderDelivery);
+        const { report } = await this.messageAttemptService.trackAlimTalk(
+          {
+            orderDeliveryId: orderDelivery.id,
+            attemptType: MessageAttemptType.INITIAL,
+            slotOp: DeliveryExclusiveOp.MESSAGE_SEND,
+            sendReason: 'EMAIL_COUPON_RECEIVE',
+          },
+          () =>
+            this.deliveryAlimTalk.send({
+              to: getBody.phoneNumber,
+              text: alimTalkText,
+              encryptKey: refreshedSendEncryptKey,
+            }),
+          (result) => result.report.code === 'A000',
+        );
+
+        if (report.code !== 'A000') {
+          throw new Error('AlimTalk Send Error');
+        }
+      } catch (alimTalkError) {
+        this.logger.error(`[EMAIL_COUPON] 알림톡 발송 실패, MMS 폴백 시도 orderDeliveryId=${orderDelivery.id}`, alimTalkError);
+        // 2차: 알림톡 실패 시 MMS 폴백
+        const mmsText = this.buildEmailCouponMmsText(orderDelivery);
+        const mmsFromPhoneNumber = await this.orderFromService.resolveSendDefaultPhone(
+          getBillingUserId(orderDelivery.orderProductMapping.order),
+        );
+
+        try {
+          await this.messageAttemptService.trackSend(
+            {
+              orderDeliveryId: orderDelivery.id,
+              channel: MessageAttemptChannel.MMS,
+              attemptType: MessageAttemptType.CHANNEL_FALLBACK,
+              slotOp: DeliveryExclusiveOp.MESSAGE_SEND,
+              sendReason: 'EMAIL_COUPON_RECEIVE_FALLBACK',
+            },
+            (attemptId) =>
+              this.smsSend.send({
+                msgType: 'M',
+                to: getBody.phoneNumber,
+                from: mmsFromPhoneNumber,
+                subject: title,
+                text: mmsText,
+                filePath: filePathList,
+                attemptId,
+              }),
+          );
+        } catch (mmsError) {
+          this.logger.error(`[EMAIL_COUPON] MMS 폴백도 실패 orderDeliveryId=${orderDelivery.id}`, mmsError);
+          status = IOrderDeliveryStatus.FAIL;
+          emailCouponStatus = OrderDeliveryEmailCouponStatus.PIN_ISSUED;
+        }
       }
     }
 
@@ -1386,20 +1437,10 @@ export class OrderReceiveService {
     // 버튼 링크용 암호화 키 (테스트 토큰 재생성)
     const sendEncryptKey = this.cryptoCipher.encryptJson(obj);
 
-    try {
-      // 1차: 알림톡 발송 시도 (실발송과 동일하게 등록 템플릿 사용)
-      const alimTalkText = AlimTalkTemplate(testOrderDelivery as unknown as OrderDeliveryEntity);
-      const { report } = await this.deliveryAlimTalk.send({
-        to: phoneNumber,
-        text: alimTalkText,
-        encryptKey: sendEncryptKey,
-      });
+    const emailFinalSendMethod = testOrderDelivery.orderProductMapping.emailFinalSendMethod;
 
-      if (report.code !== 'A000') {
-        throw new Error('AlimTalk Send Error');
-      }
-    } catch (alimTalkError) {
-      // 2차: 알림톡 실패 시 MMS 폴백 (실발송 sendToMMS와 동일 패턴)
+    if (emailFinalSendMethod === OrderEmailFinalSendMethod.MMS) {
+      // MMS 직행 — 폴백 없음 (테스트 발송도 실발송과 동일 분기)
       try {
         await this.smsSend.send({
           msgType: 'M',
@@ -1411,6 +1452,34 @@ export class OrderReceiveService {
         });
       } catch (mmsError) {
         throw new InternalServerErrorException('테스트 발송에 실패했습니다.');
+      }
+    } else {
+      // NULL 또는 ALIM_TALK — 현행 동작: 알림톡 → MMS 폴백
+      try {
+        const alimTalkText = AlimTalkTemplate(testOrderDelivery as unknown as OrderDeliveryEntity);
+        const { report } = await this.deliveryAlimTalk.send({
+          to: phoneNumber,
+          text: alimTalkText,
+          encryptKey: sendEncryptKey,
+        });
+
+        if (report.code !== 'A000') {
+          throw new Error('AlimTalk Send Error');
+        }
+      } catch (alimTalkError) {
+        // 2차: 알림톡 실패 시 MMS 폴백
+        try {
+          await this.smsSend.send({
+            msgType: 'M',
+            to: phoneNumber,
+            from: testFromPhoneNumber,
+            subject: title,
+            text: text,
+            filePath: filePathList,
+          });
+        } catch (mmsError) {
+          throw new InternalServerErrorException('테스트 발송에 실패했습니다.');
+        }
       }
     }
   }
@@ -1472,5 +1541,40 @@ export class OrderReceiveService {
     );
 
     return path;
+  }
+
+  /**
+   * 이메일 쿠폰 발송 시 MMS 본문 조립.
+   * sendContent + product.memo(SSG 제외) + sendTailText + applyReplaceCharacters + SSG/쿠폰정보 템플릿.
+   */
+  private buildEmailCouponMmsText(orderDelivery: OrderDeliveryEntity): string {
+    let mmsText = orderDelivery.orderProductMapping.sendContent ?? '';
+
+    if (
+      orderDelivery.orderProductMapping.product.memo &&
+      orderDelivery.orderProductMapping.order.type !== IOrderType.SSG
+    ) {
+      mmsText += `\n\n${orderDelivery.orderProductMapping.product.memo}`;
+    }
+
+    const sendTailText = orderDelivery.orderProductMapping.sendTailText;
+    if (sendTailText) {
+      mmsText += `\n\n${sendTailText}`;
+    }
+
+    mmsText = applyReplaceCharacters(mmsText, orderDelivery);
+
+    const orderType = orderDelivery.orderProductMapping.order.type;
+    const productType = orderDelivery.orderProductMapping.product.type;
+
+    if (orderType === IOrderType.SSG) {
+      mmsText += smsSsgTemplate(orderDelivery);
+    }
+
+    if (orderType !== IOrderType.SSG && productType !== IProductType.CHOICE && orderDelivery.barCode) {
+      mmsText += '\n\n' + smsCouponInfoTemplate(orderDelivery);
+    }
+
+    return mmsText;
   }
 }

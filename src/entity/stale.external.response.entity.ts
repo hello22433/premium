@@ -7,6 +7,7 @@ export enum StaleMismatchReason {
   GENERATION = 'GENERATION',
   WORKFLOW_VERSION = 'WORKFLOW_VERSION',
   MULTIPLE = 'MULTIPLE',
+  HEARTBEAT_ERROR = 'HEARTBEAT_ERROR',
 }
 
 /** 응답이 속한 상태 머신 */

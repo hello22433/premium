@@ -26,9 +26,13 @@
  *   - 이중 암호화 방지: 위 규칙으로 "이미 암호문"인 행은 재암호화하지 않는다.
  *
  * ── 조건부 UPDATE(바이트정확, 동시 write 보호) ──────────────────────────
- *   UPDATE <table> SET <col> = ? WHERE id = ? AND BINARY <col> = ?  (원본 평문 바이트 그대로)
+ *   UPDATE <table> SET <col> = ?, updated_at = updated_at WHERE id = ? AND BINARY <col> = ?
+ *                                                              (원본 평문 바이트 그대로)
  *   → 백필 조회 시점과 UPDATE 시점 사이에 앱이 그 값을 이미 암호화해 덮어썼다면(라이브 write),
  *     BINARY 비교가 실패해 UPDATE 는 0행 영향 → no-op. 이중 암호화 없음.
+ *   → `updated_at = updated_at` 은 ON UPDATE CURRENT_TIMESTAMP(6) 자동 갱신을 막는다. 대상 4개
+ *     테이블 모두 그 속성을 가지므로(preaudit [게이트 5]), 없으면 저장 형식만 바꾸는 백필이
+ *     업무상 최종수정시각을 백필 시각으로 밀어버린다.
  *
  * ── 배치/체크포인트 ──────────────────────────────────────────────────
  *   order_delivery 는 대량 테이블이므로 PK(id) range 배칭으로 순회하고, 마지막으로 처리한 id를
@@ -73,7 +77,11 @@ const BATCH_SIZE = Number(getOpt('batch-size') ?? process.env.BACKFILL_BATCH_SIZ
 const RESUME_FROM_ID = Number(getOpt('resume-from-id') ?? process.env.BACKFILL_RESUME_FROM_ID ?? 0);
 // 실행 단위 고정 run id — 백업 스냅샷 테이블 접미사에 사용(여러 테이블 백업 세트를 한 실행으로 상관 추적).
 const BACKFILL_RUN_ID =
-  process.env.BACKFILL_RUN_ID ?? new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
+  process.env.BACKFILL_RUN_ID ??
+  new Date()
+    .toISOString()
+    .replace(/[^0-9]/g, '')
+    .slice(0, 14);
 
 const DESTROY_VALUE = '-';
 const ALREADY_CIPHERTEXT_SHAPE = /^[0-9-]+$/;
@@ -220,9 +228,7 @@ async function requireBackupSnapshot(conn: mysql.Connection, table: string, colu
     const [bakRows] = await conn.query<mysql.RowDataPacket[]>(`SELECT COUNT(*) AS c FROM \`${backupTable}\``);
     const backedUp = Number(bakRows[0]?.c ?? 0);
     if (backedUp !== original) {
-      throw new Error(
-        `backup row-count mismatch for ${table}.${column}: backup=${backedUp} original=${original}`,
-      );
+      throw new Error(`backup row-count mismatch for ${table}.${column}: backup=${backedUp} original=${original}`);
     }
     console.log(`[backup] ${backupTable} created (${backedUp} rows) — hard prerequisite satisfied.`);
   } catch (err) {
@@ -266,7 +272,10 @@ async function backfillSimpleTable(
 
     try {
       const [res] = await conn.query<mysql.ResultSetHeader>(
-        `UPDATE \`${table}\` SET \`${column}\` = ? WHERE id = ? AND BINARY \`${column}\` = ?`,
+        // `updated_at = updated_at` 는 MySQL 의 ON UPDATE CURRENT_TIMESTAMP(6) 자동 갱신을 막는다.
+        // 대상 4개 테이블 모두 그 속성을 갖고 있어(2026-08-03 information_schema 실측), 이 절이 없으면
+        // 저장 형식만 바꾸는 백필이 업무상 최종수정시각을 백필 시각으로 밀어버린다.
+        `UPDATE \`${table}\` SET \`${column}\` = ?, updated_at = updated_at WHERE id = ? AND BINARY \`${column}\` = ?`,
         [result.ciphertext, row.id, row.val],
       );
       if (res.affectedRows === 1) {
@@ -329,7 +338,10 @@ async function backfillOrderDelivery(conn: mysql.Connection, counters: Counters)
 
       try {
         const [res] = await conn.query<mysql.ResultSetHeader>(
-          `UPDATE \`${table}\` SET \`${column}\` = ? WHERE id = ? AND BINARY \`${column}\` = ?`,
+          // `updated_at = updated_at` 는 MySQL 의 ON UPDATE CURRENT_TIMESTAMP(6) 자동 갱신을 막는다.
+          // 대상 4개 테이블 모두 그 속성을 갖고 있어(2026-08-03 information_schema 실측), 이 절이 없으면
+          // 저장 형식만 바꾸는 백필이 업무상 최종수정시각을 백필 시각으로 밀어버린다.
+          `UPDATE \`${table}\` SET \`${column}\` = ?, updated_at = updated_at WHERE id = ? AND BINARY \`${column}\` = ?`,
           [result.ciphertext, row.id, row.val],
         );
         if (res.affectedRows === 1) {

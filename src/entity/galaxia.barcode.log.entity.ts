@@ -39,6 +39,23 @@ export class GalaxiaBarcodeLogEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 10, comment: '상품권 종류 (cpn:쿠폰, dept:백화점상품권)' })
   giftKind: string;
 
+  /**
+   * 시각 완비 event 의 멱등 identity — `barcode|giftKind|appDiv|appDay|appTime|appNo(NULL→'-')|amount`.
+   *
+   * DB generated STORED 컬럼이라 애플리케이션은 읽기만 한다(`insert`/`update` false).
+   * UNIQUE 는 이 컬럼이 아니라 soft-delete 를 제외한 `active_event_fingerprint` 에 걸려 있다 —
+   * raw 컬럼에 직접 걸면 tombstone row 가 동일 fingerprint 를 계속 점유해 재수신이 막힌다.
+   */
+  @Column({
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+    insert: false,
+    update: false,
+    comment: '[generated] 시각 완비 event 멱등 identity',
+  })
+  eventFingerprint: string | null;
+
   @ManyToOne(() => OrderDeliveryEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'order_delivery_id' })
   orderDelivery: OrderDeliveryEntity;

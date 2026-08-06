@@ -44,6 +44,7 @@ import {
   OrderGetDestructionCertificatePdfReqDto,
   OrderGetDetailReqParamDto,
   OrderGetListReqDto,
+  OrderGetListSummaryReqDto,
   OrderGetCustomerSettlementReqDto,
   OrderGetOrderCompleteReportPdfReqDto,
   OrderGetOrderCompleteReportReqDto,
@@ -147,6 +148,22 @@ export class OrderController {
     }
 
     return this.orderService.getList(user, getQuery);
+  }
+  @ApiOperation({
+    summary: '발송관리 상태별 주문 수 집계 API',
+    description: '목록과 동일한 조회 조건에서 상태별 주문 수와 미해결 발송 실패 포함 주문 수를 반환합니다.',
+  })
+  @Get('/order/list/summary')
+  async getListSummary(@User() user: ILoginUserInfo, @Query() getQuery: OrderGetListSummaryReqDto) {
+    if (getQuery.type === 'GENERAL') {
+      await this.authService.authorityValidator(user, UserAuthSubEnum.SEND_GENERAL);
+    }
+
+    if (getQuery.type === 'SSG') {
+      await this.authService.authorityValidator(user, UserAuthSubEnum.SEND_SSG);
+    }
+
+    return this.orderService.getListSummary(user, getQuery);
   }
 
   @ApiOperation({
@@ -667,14 +684,15 @@ export class OrderController {
 
   @ApiOperation({
     summary: '주문 테스트 발송 API',
-    description: '',
+    description:
+      '기업관리자는 상품당 최대 2회까지 테스트 발송할 수 있으며, 운영관리자/최고관리자는 횟수 제한이 없습니다.',
   })
   @ApiBearerAuth()
   @ApiOkResponse({
     description: '성공적으로 전송한 경우',
   })
   @ApiBadRequestResponse({
-    description: '테스트발송은 최대 2회입니다.',
+    description: '기업관리자의 테스트발송은 상품당 최대 2회입니다.',
   })
   // ===================================================
   @Post('/order/test-delivery')

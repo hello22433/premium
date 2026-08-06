@@ -120,4 +120,52 @@ export class MailSendSmtp {
       };
     }
   }
+
+  /**
+   * 쿠폰 메일 전용 발송: BCC 차단 + HTML <br> 주입 차단.
+   * 쿠폰 메일 본문은 EmailDeliveryTemplate이 생성한 완성된 HTML이므로
+   * \n → <br> 치환이 들어가면 레이아웃이 깨진다.
+   * 또한 고객 개인정보(수신자 이메일)를 담는 메일에 BCC가 붙으면 안 된다.
+   */
+  async sendCouponEmail(obj: ISmtpMailSendIn): Promise<ISmtpMailSendOut> {
+    try {
+      const companyType = obj.companyType || CompanyType.ENMAD;
+      const profile = this.profiles[companyType];
+
+      const mailOptions: nodemailer.SendMailOptions = {
+        from: {
+          name: profile.fromName,
+          address: profile.fromEmail,
+        },
+        to: obj.to,
+        cc: obj.cc || undefined,
+        subject: obj.subject,
+        html: obj.content, // HTML 그대로 사용 — <br> 주입 안 함
+        // BCC 의도적 차단 — 쿠폰 메일은 개인정보 포함
+      };
+
+      if (obj.attachments?.length) {
+        mailOptions.attachments = obj.attachments.map((attachment) => ({
+          filename: attachment.filename,
+          content: attachment.content,
+          contentType: attachment.contentType || 'application/pdf',
+        }));
+      }
+
+      const result = await profile.transporter.sendMail(mailOptions);
+
+      this.logger.log(`쿠폰 이메일 전송 성공 [${companyType}]: ${result.messageId}`);
+
+      return {
+        success: true,
+        messageId: result.messageId,
+      };
+    } catch (error) {
+      this.logger.error('쿠폰 이메일 전송 실패:', error);
+      return {
+        success: false,
+        error: error.message || '쿠폰 이메일 전송에 실패했습니다.',
+      };
+    }
+  }
 }

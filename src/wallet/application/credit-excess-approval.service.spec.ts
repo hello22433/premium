@@ -3,6 +3,7 @@ import { getDataSourceToken, getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { CreditExcessApprovalEntity, CreditExcessApprovalStatus } from '../../entity/credit.excess.approval.entity';
+import { UserEntity } from '../../entity/user.entity';
 import { CreditExcessApprovalService } from './credit-excess-approval.service';
 import { WalletAccountResolverService } from './wallet-account-resolver.service';
 
@@ -10,6 +11,7 @@ describe('CreditExcessApprovalService — 4단계 워크플로', () => {
   let sut: CreditExcessApprovalService;
   let repo: any;
   let orderRepo: any;
+  let userRepo: any;
   let walletAccountResolver: any;
 
   beforeEach(async () => {
@@ -44,6 +46,8 @@ describe('CreditExcessApprovalService — 4단계 워크플로', () => {
         return repo;
       }),
     };
+    // list() 의 요청자/승인자 이름 조인용 — 본 스펙의 request/approve/consume 경로에서는 사용되지 않는다.
+    userRepo = { find: jest.fn().mockResolvedValue([]) };
     const dataSourceMock = {
       transaction: jest.fn(async (cb: any) => cb(txManager)),
       getRepository: jest.fn(() => orderRepo),
@@ -52,6 +56,7 @@ describe('CreditExcessApprovalService — 4단계 워크플로', () => {
       providers: [
         CreditExcessApprovalService,
         { provide: getRepositoryToken(CreditExcessApprovalEntity), useValue: repo },
+        { provide: getRepositoryToken(UserEntity), useValue: userRepo },
         { provide: getDataSourceToken(), useValue: dataSourceMock },
         { provide: WalletAccountResolverService, useValue: walletAccountResolver },
       ],

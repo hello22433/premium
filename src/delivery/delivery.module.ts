@@ -40,9 +40,17 @@ import { DeliveryWorkflowEntity } from '../entity/delivery.workflow.entity';
 import { MessageAttemptEntity } from '../entity/message.attempt.entity';
 import { DeliveryWorkflowSlotService } from './application/delivery-workflow-slot.service';
 import { MessageAttemptService } from './application/message-attempt.service';
+import { PinIssueCommandEntity } from '../entity/pin.issue.command.entity';
+import { PinIssueCommandService } from './application/pin-issue-command.service';
 import { MessageResultReconcileService } from './application/message-result-reconcile.service';
 import { MessageResendExecutorService } from './application/message-resend-executor.service';
 import { DeliveryCutoverModule } from './delivery.cutover.module';
+import { RefundAttemptEntity } from '../entity/refund.attempt.entity';
+import { DualApprovalEntity } from '../entity/dual.approval.entity';
+import { RefundAttemptExecutorService } from './application/refund-attempt-executor.service';
+import { StaleExternalResponseEntity } from '../entity/stale.external.response.entity';
+import { DeliveryCancelIntentEntity } from '../entity/delivery.cancel.intent.entity';
+import { DeliveryCancelIntentService } from './application/delivery-cancel-intent.service';
 
 @Module({
   imports: [
@@ -66,6 +74,11 @@ import { DeliveryCutoverModule } from './delivery.cutover.module';
       SsgResendDeductPendingEntity,
       DeliveryWorkflowEntity,
       MessageAttemptEntity,
+      PinIssueCommandEntity,
+      RefundAttemptEntity,
+      DualApprovalEntity,
+      StaleExternalResponseEntity,
+      DeliveryCancelIntentEntity,
     ]),
     MailModule,
     SmsModule,
@@ -94,8 +107,11 @@ import { DeliveryCutoverModule } from './delivery.cutover.module';
     SsgResendDeductRecoveryService,
     DeliveryWorkflowSlotService,
     MessageAttemptService,
+    PinIssueCommandService,
     MessageResultReconcileService,
     MessageResendExecutorService,
+    RefundAttemptExecutorService,
+    DeliveryCancelIntentService,
   ],
   exports: [
     {
@@ -114,6 +130,8 @@ import { DeliveryCutoverModule } from './delivery.cutover.module';
     MessageAttemptService,
     MessageResultReconcileService,
     MessageResendExecutorService,
+    RefundAttemptExecutorService,
+    DeliveryCancelIntentService,
     SsgInsertStateModule,
     DeliveryCutoverModule,
   ],

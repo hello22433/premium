@@ -13,6 +13,7 @@ import { applyReplaceCharacters } from '../../common/utils/replace-characters.ut
 import { resolveExpireDays, couponTokenExpiry } from '../../common/utils/expire.util';
 import { OrderEntity } from '../../entity/order.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
+import { DESTROYED_AT_SOURCE, isDeliveryDestroyed } from '../../order/domain/destroyed.at.source';
 import { OrderHistoryEntity } from '../../entity/order.history.entity';
 import { OrderRealProductEntity } from '../../entity/order.real.product.entity';
 import { OrderRealProductMappingEntity } from '../../entity/order.real.product.mapping.entity';
@@ -49,6 +50,8 @@ import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
 import { LegacyDeliveryEntryPoint, NOT_CUTOVER_ORDER_DELIVERY } from '../interface/legacy.delivery.entry.point';
 import { MessageAttemptChannel, MessageAttemptType } from '../interface/message.attempt.status';
 import { DeliveryExclusiveOp } from '../interface/delivery.workflow.status';
+import { RefundAttemptStatus, RefundScope } from '../interface/refund.attempt.status';
+import { ExecuteRefundContext, RefundAttemptExecutorService } from './refund-attempt-executor.service';
 import { computeNextAttemptAt, isWithinAllowedSendWindow } from '../domain/resend.schedule';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { IOrderStatus } from '../../order/interface/order.status';
@@ -98,6 +101,17 @@ import { SsgRefundOutcome } from '../interface/ssg.refund.resolve';
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
+import { SsgTryError } from '../../partner_company_extern/infra/ssg.issue';
+import { DeferredDeliveryError } from '../interface/deferred.delivery.error';
+import { PinIssueCommandService } from './pin-issue-command.service';
+
+/**
+ * 배치 단건 처리 결과 (§4.1 2-pass).
+ * `deferred` 는 실패가 아니라 **이번 pass 판정 보류** 다 — 상태·환불·이력을 남기지 않는다.
+ */
+type BatchDeliveryOutcome =
+  | { kind: 'done'; result: { deliveryHistory: DeliverySendHistoryEntity; orderId: number } | null }
+  | { kind: 'deferred' };
 
 @Injectable()
 export class DeliveryBatchService {
@@ -119,6 +133,7 @@ export class DeliveryBatchService {
     @Inject('ISmsSend')
     private smsSend: ISmsSend,
     private messageAttemptService: MessageAttemptService,
+    private pinIssueCommandService: PinIssueCommandService,
     private messageResultReconcileService: MessageResultReconcileService,
     private deliveryTrackHttp: DeliveryTrackHttp,
     private cryptoCipher: CryptoCipher,
@@ -153,6 +168,7 @@ export class DeliveryBatchService {
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly orderFromService: OrderFromService,
     private readonly cutoverGuard: DeliveryCutoverGuardService,
+    private readonly refundAttemptExecutor: RefundAttemptExecutorService,
   ) {}
 
   private readonly logger = new Logger('batch');
@@ -270,10 +286,32 @@ export class DeliveryBatchService {
    * (이전 순서: SSG 먼저 → ledger 가 막더라도 SSG 잔액은 이미 복구됨 = 중복 위험.)
    */
   private async refundForFail(orderDelivery: OrderDeliveryEntity): Promise<void> {
-    // 컷오버 전환 건 거부(§9 인벤토리 #5). 전환 건의 환불은 refund_attempt CLAIMED→SUBMITTING 뒤
-    // 실행 단계로만 호출한다. 호출처 4곳 어디서 들어와도 여기서 한 번에 막힌다.
-    await this.cutoverGuard.assertLegacyAllowed(orderDelivery.id, LegacyDeliveryEntryPoint.BATCH_REFUND_FOR_FAIL);
+    const isCutover = await this.cutoverGuard.isCutover(orderDelivery.id);
+    if (isCutover) {
+      await this.messageResultReconcileService.markWorkflowFailedIfSettled(orderDelivery.id, new Date());
+      const mapping = orderDelivery.orderProductMapping;
+      const amount = calculateSettlementPrice(mapping, mapping.order.cardSurchargeApplied, orderDelivery);
+      await this.refundAttemptExecutor.execute({
+        orderDeliveryId: orderDelivery.id,
+        amount,
+        scope: RefundScope.FULL,
+        externalIdempotencyKey: `delivery-fail:${orderDelivery.id}:${randomUUID()}`,
+        execute: async (fencing) => {
+          await this.executeRefundForFail(orderDelivery, fencing);
+          return { status: RefundAttemptStatus.SUCCEEDED };
+        },
+      });
+      return;
+    }
 
+    await this.cutoverGuard.assertLegacyAllowed(orderDelivery.id, LegacyDeliveryEntryPoint.BATCH_REFUND_FOR_FAIL);
+    await this.executeRefundForFail(orderDelivery);
+  }
+
+  private async executeRefundForFail(
+    orderDelivery: OrderDeliveryEntity,
+    refundExecution?: ExecuteRefundContext,
+  ): Promise<void> {
     const order = orderDelivery.orderProductMapping.order;
     const mapping = orderDelivery.orderProductMapping;
     const productPrice = mapping.product.price;
@@ -305,6 +343,7 @@ export class DeliveryBatchService {
         // resolver 가 RESTORED/SKIPPED_CONFIRMED 반환 시 markSsgSettled 로 true 갱신.
         // DEFERRED 면 false 유지 → 다음 재발송 가드 차단 (이중 차감 방지).
         ssgPending: isSsg,
+        refundExecution,
       });
     } catch (error) {
       if (error instanceof BadRequestException) {
@@ -339,6 +378,7 @@ export class DeliveryBatchService {
           refundAmount: productPrice,
           orderId: order.id,
           refundLedgerId: refundLedgerId ?? undefined,
+          refundExecution,
         });
         if (outcome === SsgRefundOutcome.DEFERRED) {
           this.logger.error(
@@ -579,18 +619,13 @@ export class DeliveryBatchService {
     return claimResult.affected ?? 0;
   }
 
-  async issueAndSend() {
-    // 다른 배치가 동시에 돌더라도 UPDATE는 DB에서 직렬화되므로
-    // claimed_at IS NULL 조건에 걸린 행만 이 배치가 소유하게 된다.
-    // claimedAt 값은 이번 배치의 식별자로도 사용해서 뒤의 SELECT가 우리 몫만 가져오도록 한다.
-    const claimedAt = new Date();
-    const claimedCount = await this.claimWaitDeliveries(claimedAt);
-    this.logger.log(`[BATCH] Claimed ${claimedCount} deliveries at ${claimedAt.toISOString()}`);
-
-    if (claimedCount === 0) {
-      return;
-    }
-
+  /**
+   * 이번 배치가 claim 한 발송 대상을 발송에 필요한 관계까지 붙여 읽는다.
+   *
+   * `ids` 를 주면 그 부분집합만 **다시 읽는다**(2-pass 의 pass 2 용). 조건이 동일하므로
+   * 그 사이 종결됐거나 lease 를 뺏긴 행은 자연히 빠진다.
+   */
+  private async findClaimedDeliveries(claimedAt: Date, ids?: number[]): Promise<OrderDeliveryEntity[]> {
     const queryBuilder = this.orderDeliveryRepository
       .createQueryBuilder('orderDelivery')
       .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
@@ -605,7 +640,29 @@ export class DeliveryBatchService {
       .andWhere('orderDelivery.reportState IS NULL')
       .andWhere('order.type != :externalType', { externalType: IOrderType.EXTERNAL });
 
-    const orderDeliveryList = await queryBuilder.getMany();
+    if (ids !== undefined) {
+      if (ids.length === 0) {
+        return [];
+      }
+      queryBuilder.andWhere('orderDelivery.id IN (:...ids)', { ids });
+    }
+
+    return await queryBuilder.getMany();
+  }
+
+  async issueAndSend() {
+    // 다른 배치가 동시에 돌더라도 UPDATE는 DB에서 직렬화되므로
+    // claimed_at IS NULL 조건에 걸린 행만 이 배치가 소유하게 된다.
+    // claimedAt 값은 이번 배치의 식별자로도 사용해서 뒤의 SELECT가 우리 몫만 가져오도록 한다.
+    const claimedAt = new Date();
+    const claimedCount = await this.claimWaitDeliveries(claimedAt);
+    this.logger.log(`[BATCH] Claimed ${claimedCount} deliveries at ${claimedAt.toISOString()}`);
+
+    if (claimedCount === 0) {
+      return;
+    }
+
+    const orderDeliveryList = await this.findClaimedDeliveries(claimedAt);
 
     this.logger.log(`[BATCH] Found ${orderDeliveryList.length} deliveries to send at ${claimedAt.toISOString()}`);
 
@@ -635,13 +692,17 @@ export class DeliveryBatchService {
     // 동시 처리 수는 concurrency 상한 유지. 건별 격리(processOneDeliveryForBatch 내부 try/catch)·SSG mutex 불변.
     let cursor = 0;
     let processedCount = 0;
+    const deferredIds: number[] = [];
     const nextDelivery = (): OrderDeliveryEntity | undefined => uniqueDeliveryList[cursor++];
     const runWorker = async (): Promise<void> => {
       let od: OrderDeliveryEntity | undefined;
       while ((od = nextDelivery()) !== undefined) {
-        const result = await this.processOneDeliveryForBatch(od);
-        if (result !== null) {
-          allResults.push(result);
+        // pass 1 은 판정 불가 건을 확정하지 않고 뒤로 미룬다(allowDefer=true).
+        const outcome = await this.processOneDeliveryForBatch(od, true);
+        if (outcome.kind === 'deferred') {
+          deferredIds.push(od.id);
+        } else if (outcome.result !== null) {
+          allResults.push(outcome.result);
         }
         processedCount++;
         this.logger.log(`[BATCH] Processed ${processedCount}/${uniqueDeliveryList.length}`);
@@ -649,6 +710,26 @@ export class DeliveryBatchService {
     };
     const workerCount = Math.min(concurrency, uniqueDeliveryList.length);
     await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+
+    // pass 2 — 본 처리가 전부 끝난 뒤 미룬 건만 재시도한다(계약 §2 조항 2).
+    //
+    // ★ 반드시 **DB 에서 다시 읽어** issue() 를 진입점부터 재실행한다. pass 1 의 엔티티 스냅샷을
+    //   재사용하면 그 사이 SSG 에 반영된 이전 INSERT(응답 유실로 실제 등록된 PIN)를 못 보고
+    //   중복 발급이 난다. 조회 실패는 "발급 안 됨" 이 아니라 "판정 불가" 라는 점이 핵심이다.
+    //   재조회 조건(status=WAIT AND claimedAt=이번 배치)이 그 사이 종결·탈취된 행도 자연 배제한다.
+    //
+    // 순차 실행이다 — 미룬 건은 소수이고, SSG mutex 를 두고 pass 1 잔여와 경쟁시킬 이유가 없다.
+    if (deferredIds.length > 0) {
+      const retryList = await this.findClaimedDeliveries(claimedAt, deferredIds);
+      this.logger.log(`[BATCH][PASS2] 미룬 ${deferredIds.length}건 중 ${retryList.length}건 재시도`);
+
+      for (const od of retryList) {
+        const outcome = await this.processOneDeliveryForBatch(od, false);
+        if (outcome.kind === 'done' && outcome.result !== null) {
+          allResults.push(outcome.result);
+        }
+      }
+    }
 
     // 결과 집계
     const deliveryHistoryList = allResults.map((r) => r.deliveryHistory);
@@ -1258,12 +1339,21 @@ export class DeliveryBatchService {
    */
   private async processOneDeliveryForBatch(
     orderDelivery: OrderDeliveryEntity,
-  ): Promise<{ deliveryHistory: DeliverySendHistoryEntity; orderId: number } | null> {
+    allowDefer = false,
+  ): Promise<BatchDeliveryOutcome> {
     const claimToken = orderDelivery.claimedAt;
+    let deferred = false;
     try {
-      const result = await this.processOneDeliveryInternal(orderDelivery, claimToken);
-      return result;
+      const result = await this.processOneDeliveryInternal(orderDelivery, claimToken, allowDefer);
+      return { kind: 'done', result };
     } catch (error) {
+      // 미룬 건은 실패가 아니다. claimedAt 을 풀지 않아야 다른 배치가 집어가지 않고,
+      // 변형 lease 도 유지해야 pass 2 전에 폐기·재발행이 끼어들지 못한다(finally 참조).
+      if (error instanceof DeferredDeliveryError) {
+        deferred = true;
+        return { kind: 'deferred' };
+      }
+
       this.logger.error(`[BATCH] Failed to process orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
       try {
         await this.orderDeliveryRepository.update(
@@ -1273,9 +1363,9 @@ export class DeliveryBatchService {
       } catch (resetError) {
         this.logger.error(`[BATCH] claimedAt reset 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${resetError}`);
       }
-      return null;
+      return { kind: 'done', result: null };
     } finally {
-      if (claimToken) {
+      if (claimToken && !deferred) {
         try {
           await this.orderDeliveryRepository.update(
             { id: orderDelivery.id, mutationClaimedAt: claimToken },
@@ -1347,6 +1437,26 @@ export class DeliveryBatchService {
   }
 
   /**
+   * **"이번 발송이 실패 이후 재발송인가"의 단일 판정 지점** (§8 판정 SoT 고정, HIGH 4).
+   *
+   * 발송 진입점은 이 값으로 배타 op(`MANUAL_RESEND`/`MESSAGE_SEND`), 시도 유형, 환불 복구
+   * (`reverseRefundForResend`)와 `RESEND` attempt 선발급, 재실패 시 재환불을 모두 결정한다.
+   * 뒤집히면 환불이 누락되거나 없는 환불을 되감으므로 판정 근거가 하나여야 한다.
+   *
+   * - **미전환 건**: `order_delivery.status` 가 실제 SoT 다 → 종전 판별을 그대로 쓴다(동작 불변).
+   * - **전환 건**: `status` 는 legacy 호환 표시용 파생 미러다 → `delivery_workflow` 업무 상태로만
+   *   판정한다. 컷오버 마크가 서는 순간 미러 기반 판별이 뒤집히는 것을 여기서 차단한다.
+   */
+  private async resolveResendEntry(orderDelivery: OrderDeliveryEntity): Promise<boolean> {
+    const workflowVerdict = await this.cutoverGuard.isWorkflowResend(orderDelivery.id);
+    if (workflowVerdict !== null) {
+      return workflowVerdict;
+    }
+
+    return orderDelivery.status === IOrderDeliveryStatus.FAIL || orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS;
+  }
+
+  /**
    * 단일 배송건 내부 처리 로직
    */
   private async processOneDeliveryInternal(
@@ -1356,6 +1466,11 @@ export class DeliveryBatchService {
      * 상태 쓰기의 fencing 조건으로 쓴다(다음 커밋). 없으면 종전대로 무울타리.
      */
     claimToken?: Date | null,
+    /**
+     * 이번 pass 에서 판정 불가(SSG 조회 실패)를 `FAIL` 로 확정하지 않고 뒤로 미룰 수 있는지
+     * (§4.1 2-pass). pass 1 은 true, pass 2 는 false — pass 2 는 종전대로 확정한다.
+     */
+    allowDefer = false,
   ): Promise<{ deliveryHistory: DeliverySendHistoryEntity; orderId: number }> {
     const order = orderDelivery.orderProductMapping.order;
     const product = orderDelivery.orderProductMapping.product;
@@ -1363,11 +1478,12 @@ export class DeliveryBatchService {
     const isEmailDelivery = orderDelivery.deliveryMethod === IOrderSendMethod.EMAIL;
 
     // B1/B3: 최초 발송 실패는 환불을 보류한다(구매/발송 미성립 → 복구 이벤트 미생성).
-    // 진입 시점(발송 전) status 로 최초/재발송을 구분한다. 재발송이면 직전이 FAIL/FAIL_SMS.
+    // 진입 시점(발송 전) 상태로 최초/재발송을 구분한다. 재발송이면 직전이 실패다.
     // SSG 보류 여부는 발송 후 SsgInsertState 에 달려 있어(issue() 후 전이) refund 지점에서
     // shouldHoldRefundForFail() 로 재평가한다 (여기선 최초 발송 여부만 snapshot).
-    const isInitialSend =
-      orderDelivery.status !== IOrderDeliveryStatus.FAIL && orderDelivery.status !== IOrderDeliveryStatus.FAIL_SMS;
+    // 판정 SoT 는 전환 여부로 갈린다(HIGH 4) — 미전환 건은 legacy status 가 실제 SoT 이고,
+    // 전환 건은 그 값이 표시용 미러라 workflow 업무 상태로만 판정한다.
+    const isInitialSend = !(await this.resolveResendEntry(orderDelivery));
 
     // 1. PIN 발급 (barCode가 없는 경우)
     if (!orderDelivery.barCode && !isChoiceCoupon && !isEmailDelivery) {
@@ -1379,11 +1495,19 @@ export class DeliveryBatchService {
           });
         }
 
+        await this.pinIssueCommandService.recordAttempt({
+          orderDeliveryId: orderDelivery.id,
+          partnerType: product.partnerCompany?.type ?? 'UNKNOWN',
+          requestKey: orderDelivery.ssgTransactionId ?? orderDelivery.transactionId,
+        });
+
         await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
 
         if (orderDelivery.status === IOrderDeliveryStatus.FAIL || !orderDelivery.barCode) {
           throw new Error('PIN 발급 실패');
         }
+
+        await this.pinIssueCommandService.markSucceeded(orderDelivery.id);
 
         orderDelivery.imagePath = await this.createCouponImage(orderDelivery);
 
@@ -1392,6 +1516,29 @@ export class DeliveryBatchService {
         );
       } catch (error) {
         this.logger.error(`[BATCH] PIN 발급 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+
+        // 조회 판정 불가(SsgTryError)는 **실패가 아니라 미확정**이다. pass 1 이면 여기서 확정하지
+        // 않고 뒤로 미룬다 — status/환불/이력을 건드리지 않아야 pass 2 가 깨끗한 상태에서 재판정한다.
+        // (계약 §2 조항 2: 본 처리 종료 직후 1회 재시도. 고정 대기 없음)
+        const retryableLookupFailure = error instanceof SsgTryError;
+
+        if (allowDefer && retryableLookupFailure) {
+          await this.pinIssueCommandService.markRetryPending(orderDelivery.id, error.message);
+          this.logger.warn(
+            `[BATCH][DEFER] SSG 조회 판정 불가 — pass 2 로 미룸. orderDelivery.id: ${orderDelivery.id}: ${error.message}`,
+          );
+          throw new DeferredDeliveryError(orderDelivery.id, error);
+        }
+
+        // §5.4 전이표: 재시도 가능 실패를 소진한 것(`RETRYING → EXHAUSTED`)과 애초에 재시도가
+        // 무의미한 실패(`STARTED → TERMINAL`)는 다른 상태다. 잔액 부족·파라미터 오류까지
+        // EXHAUSTED 로 적으면 "재시도했는데 안 됐다" 로 읽혀 원인 분석이 왜곡된다.
+        const reason = error instanceof Error ? error.message : String(error);
+        if (retryableLookupFailure) {
+          await this.pinIssueCommandService.markExhausted(orderDelivery.id, reason);
+        } else {
+          await this.pinIssueCommandService.markTerminal(orderDelivery.id, reason);
+        }
 
         // B1/B3: 최초 발송 실패는 환불 보류. SSG 는 ATTEMPTED 만 환불, 재발송 실패는 환불.
         const shouldHold = isInitialSend && (await this.shouldHoldRefundForFail(orderDelivery, order));
@@ -2719,10 +2866,10 @@ export class DeliveryBatchService {
     leaseToken?: Date | null,
   ): Promise<boolean> {
     const order = orderDelivery.orderProductMapping.order;
-    // 재발송인 경우 chargeBack 후 발송 실패 시 재환불이 필요한지 판단하기 위해 이전 상태 저장 (FAIL_SMS 포함)
-    const wasFailBefore =
-      !testOrderDeliveryId &&
-      (orderDelivery.status === IOrderDeliveryStatus.FAIL || orderDelivery.status === IOrderDeliveryStatus.FAIL_SMS);
+    // 재발송인 경우 chargeBack 후 발송 실패 시 재환불이 필요한지 판단하기 위해 이전 상태 저장.
+    // 판정 SoT 는 전환 여부로 갈린다(HIGH 4, resolveResendEntry 주석 참조).
+    // 테스트 발송은 운영 상태 모델을 쓰지 않으므로 항상 최초 발송으로 취급한다.
+    const wasFailBefore = !testOrderDeliveryId && (await this.resolveResendEntry(orderDelivery));
 
     // B1/B3: 실패 재발송 — 보류(환불 미생성)/환불됨 분기. snapshot 은 reissue 호출 *전* 에 잡는다
     // (reissue 내부 reverseRefundForResend 가 ledger 를 release 해 exists() 가 뒤집히기 때문).
@@ -3158,6 +3305,143 @@ export class DeliveryBatchService {
         '(orderDelivery.deliveryTarget != :destroyValue OR orderDelivery.originalDeliveryTarget != :destroyValue OR orderDelivery.emailReceiverPhone != :destroyValue OR orderDelivery.bankAccount != :destroyValue OR orderDelivery.bankAccountOwner != :destroyValue)',
         { destroyValue },
       )
+      // ── 유효기간 가드 ────────────────────────────────────────────────────────────
+      // 유효기간이 파기예정일보다 뒤인 상품(예: 유효기간 5년 / 파기 180일)은 만료 전까지 파기를 미룬다.
+      //   실효 파기예정일 = MAX(발송요청일 + N일, 유효기간 만료일 + 1일)
+      // 수신처를 만료 전에 지우면 안 되는 이유는 셋인데, **적용 범위가 서로 다르다**:
+      //   · CS 대응 — 보류 집합 전체에 적용된다. 수신처가 '-' 면 CS 재발송이 '파기된 발송
+      //     정보입니다.' 로 차단된다(customer.service.service.ts:1051).
+      //   · 재발송 — CANCEL/REFUND_CANCEL 은 UNSENDABLE_COUPON_STATUSES 로 이미 차단돼 있어
+      //     (order.delivery.mutation.claim.ts:33) 이 명분이 적용되지 않는다.
+      //   · 만료 안내 독려문자 — handleDeliveryEncourage 가 couponStatus=NOT_USED 이고
+      //     status IN (COMPLETE, COMPLETE_SMS) 인 건만 대상으로 하므로(아래 handleDeliveryEncourage
+      //     참조) USED·CANCEL·FAIL 에는 적용되지 않는다.
+      // 즉 보류 집합 전체를 정당화하는 명분은 CS 대응 하나다. 나머지 둘은 부분집합에만 걸린다.
+      //
+      // 만료 후 재포착: 보류된 행은 PII 5종이 모두 원값이라 위 미파기 절(:3158)이 계속 참이고, 주 날짜
+      // 절도 한 번 참이 되면 계속 참이므로, 만료 다음 날 자정 회차에서 자동으로 파기된다.
+      //  단 **파기일수 상향 편집과 주문 상태 이탈이 없다는 전제**에서다 —
+      //  updateDestroyPersonalInfoDay 에는 상태 검사가 없어 기준일이 뒤로 밀릴 수 있고,
+      //  주문이 DELIVERY_COMPLETE 를 이탈하면 절 2) 가 깨져 아예 파기되지 않는다.
+      // 보류 기간에도 매 회차 후보군에는 남아 있다가 이 가드 절에서만 걸러진다.
+      //
+      // **발송 실패(status=FAIL) 건도 보류된다** — 다른 행과 같은 이유, 즉 살아있는 expireAt 때문이다.
+      // PIN 발급까지 성공한 뒤 발송에서 실패하면 expireAt 이 영속되므로(:1441, 그리고 :1565 의
+      // updateDeliveryOwned('발송 부가 컬럼')) 가드가 그대로 걸린다. 부수적으로 couponStatus 는
+      // NOT_USED 로 남고 최초 실패는 환불이 보류될 수 있어 refundStatus 도 NULL 이라 다른 가드에도
+      // 걸리지 않아, 실제로 보류가 성립한다. 재발송이 유일한 구제책인 집합이라 이 포함은 의도된
+      // 것이다. 발송 성공 건으로 좁히려면 status IN (COMPLETE, COMPLETE_SMS) 를 이 절에 추가해야
+      // 하지만, 그러면 정작 재발송이 필요한 실패 건이 먼저 파기된다.
+      //
+      // [AND 로 덧붙는 절이므로 파기 대상을 좁히기만 한다 — 이 변경으로 새로 파기되는 건은 없다]
+      // 아래 3개 절은 반드시 OR 로 묶인다. AND 로 바꾸면 "3개를 모두 만족해야 파기"가 되어 의미가
+      // 정반대로 뒤집히고 대량 미파기가 발생한다(target-destroy.spec 이 OR 개수로 이를 고정한다).
+      //
+      // 각 절은 "가드를 적용하지 않는다 = 종전 정책대로 즉시 파기한다" 는 뜻이다(파기 면제가 아니다).
+      //
+      // ※ 판정 기준은 **쿠폰 상태가 아니라 유효기간 하나**다. 유효기간이 남아 있으면 사용/폐기/
+      //   환불폐기 여부와 무관하게 파기하지 않는다(운영 결정). 사용 완료(USED) 건도 유효기간
+      //   동안은 조회·CS 대응 대상으로 남겨야 한다는 요구에서 나온 규칙이라, couponStatus 로
+      //   좁히는 절을 두지 않는다.
+      //
+      //   [보유기간에 대한 기록 — 다음 사람이 알아야 할 사실]
+      //   이 규칙의 대가로 PII 실보유기간이 최대 유효기간(5년)까지 늘어난다. 반면 주문 화면의
+      //   파기일수는 60/180일 프리셋과 '기타' 직접입력으로 받고, 62~180 범위 검사는 일부 화면의
+      //   onBlur 에만 걸려 있다(프리셋 60 은 그 검사를 타지 않는다). 어느 쪽이든 실제 보관기간
+      //   (유효기간)보다 훨씬 짧은 값이라, 운영자·고객사가 인식하는 기간과 실제가 어긋난다.
+      //   **실무진이 이 괴리를 인지한 상태에서 현행대로 진행하기로 결정했다.** 놓친 것이 아니라
+      //   알고서 수용한 것이다. 신규 정책도 아니어서, 구 이팝콘 프로그램에서부터 같은 방식으로
+      //   운영해 왔다 — 유효기간이 남은 쿠폰의 CS 대응을 보유기간 최소화보다 우선한 판단이다.
+      //   따라서 이 주석을 근거로 "미검토 리스크"를 다시 제기할 필요는 없다.
+      //   (승인 근거 문서는 이 레포에 없다 — 이력이 필요하면 운영팀에 확인할 것.)
+      //
+      //   [보류 대상이 '행 전체'라는 점 — 별도로 확인받은 사항]
+      //   이 가드는 행 단위로 걸리므로, 쿠폰 유효기간과 직접 관련이 없는 **환불 계좌**
+      //   (bankAccount / bankAccountOwner)도 함께 최대 5년 보관된다. 가드를 만든 명분은 쿠폰
+      //   CS 대응인데 금융 PII 까지 같은 기간 묶이는 셈이라 축이 다르다.
+      //   → 이 축도 **확인 후 현행 유지로 결정**했다. 환불 문의 역시 유효기간 동안 들어올 수
+      //     있으므로 계좌 정보도 그때까지 보유할 필요가 있다는 판단이다. 계좌 2종만 종전 일정대로
+      //     파기하려면 UPDATE 를 두 갈래로 나누고 가드 절을 계좌에는 적용하지 않으면 되지만,
+      //     지금은 의도적으로 그렇게 하지 않는다.
+      //   실보유기간을 줄이는 방향으로 정책이 바뀐다면, 이 절에 couponStatus 조건을 되돌리는
+      //   것이 아니라(그러면 CS 대응 요구가 다시 깨진다) 파기일수 입력 상한을 유효기간에 맞춰
+      //   여는 쪽이 맞다.
+      //
+      // (번호는 아래 SQL 의 OR 항 순서와 같다)
+      //
+      //  1) expireAt IS NULL — [필수. 제거 금지]
+      //     미발행 등 유효기간 자체가 없는 건. SQL 3값 논리상 `NULL < DATE(:now)` 는 거짓이
+      //     아니라 NULL 이고 WHERE 는 TRUE 가 아닌 행을 버리므로, 이 절이 없으면 해당 건이 파기되지
+      //     않는다. 종전(이 가드 이전)에는 정상 파기되던 집합이라 PII 사고다. 정책 논의 대상이 아니라
+      //     정합성 방어이므로 지우지 말 것.
+      //     · 정확히는 3절이 OR 라 `NULL OR TRUE = TRUE` 다. 이 절을 빼도 soft-delete 행은 여전히
+      //       파기된다. 영구 미파기가 되는 건 `expireAt IS NULL` AND `deletedAt IS NULL` 인
+      //       교집합, 즉 **PIN 미발급 모집단**이다. (발송실패 중에서도 발급 전에 실패한 건만이다 —
+      //       발급 후 실패는 위에 적은 대로 expireAt 이 있어 이 교집합에 들지 않는다.)
+      //
+      //  2) DATE(expireAt) < DATE(:now) — [이 기능의 본체]
+      //     만료 다음 날부터 파기한다. 만료 당일은 아직 쿠폰이 유효하므로 파기하지 않는다.
+      //     날짜 절삭이라 expireAt 의 시분초는 판정에 영향을 주지 않는다(주 날짜 절과 같은 방식).
+      //
+      //  3) deletedAt IS NOT NULL — [정책 선택. 변경 가능]
+      //     order_delivery 를 soft-delete 하는 경로는 레포 전체에 하나뿐이고, 지워지는 것은 재발행
+      //     실패 시 unwindReissue 가 되감는 **신행(tip)** 이다 — 구행이 아니다
+      //     (customer.service.service.ts:2219. 이 파일 :562 와 external.api.service.ts:1458 의
+      //     기존 주석도 "unwindReissue 가 tip 을 softDelete" 로 서술한다).
+      //     실물 쿠폰이 있다면 그것은 **원본(구행)** 쪽이다 — SSG 는 reverseDiscard 로 부활하고,
+      //     비-SSG 는 협력사 취소된 채 남는다. 되감긴 tip 은 고객이 볼 쿠폰이 아니므로 유효기간이
+      //     남아 있어도 붙잡지 않는다. 위 withDeleted() 가 이 행을 후보에 넣는 것과 짝을 이룬다.
+      //     · 이 절이 잡는 행은 모두 couponStatus=CANCEL 이기도 하다 — softDelete 는
+      //       `couponStatus=CANCEL` 플립이 성공했을 때만 실행되기 때문이다
+      //       (customer.service.service.ts:2186-2232). 따라서 이 가드에 couponStatus 기반 절을
+      //       추가하면 이 절과 완전히 겹쳐 이 절이 no-op 이 된다. 반대로 이 절을 지우면 그때는
+      //       CANCEL 인 soft-delete tip 이 유효기간만큼 보류된다.
+      //     · 다만 단독으로 잡는 구간은 좁다 — 되감긴 tip 은 대개 expireAt 이 NULL 이라 1) 이
+      //       커버하고, 이 절만이 잡는 것은 'issue() 가 expireAt 을 영속한 뒤 barCode 누락으로
+      //       unwind 된' 경우다(partner.company.extern.service.ts:198-206 의 markConfirmed 가 영속, 그 뒤
+      //       customer.service.service.ts:2502 이 되감는다).
+      //     · 빼면 그 구간의 PII 를 유효기간만큼(최대 5년) 더 보관하게 된다.
+      //
+      // 조기파기(EarlyDestroyService.executeRequest)에는 이 가드가 없다 — 의도된 비대칭이다.
+      // 정기파기는 기한 도래로 기계가 일괄 수행하지만, 조기파기는 운영자가 대상을 지정해 "지금
+      // 파기하라"고 명시적으로 판단한 행위라 유효기간보다 그 의사를 우선한다.
+      // ※ 이 메서드 곳곳의 "조기파기와 동일 집합"(H-1) 불변식과 충돌하지 않는다. 그쪽은 **무엇을
+      //   지우는가**(PII 5종·환불 진행중 제외)의 동형성이고, 이 가드는 **언제 지우는가**의 축이다.
+      //   "동일 집합"을 근거로 이 가드를 조기파기에 이식하지 말 것.
+      // 구현 주의 3가지:
+      //  · 바깥 괄호는 필수다. TypeORM 0.3.x 는 raw string 조건을 자동으로 괄호치지 않으므로
+      //    (isolateWhereStatements 미설정) 괄호를 지우면 AND/OR 우선순위로 정책이 뒤집힌다.
+      //  · :now 는 위 파기 기준일 절과 **같은 파라미터**다. 파라미터 맵은 하나로 병합되고 나중
+      //    바인딩이 이기므로, 여기서 다른 값을 넘기면 배치 전체의 커트오프 날짜가 함께 밀린다.
+      //  · DATE(expireAt) < DATE(:now) 는 expireAt < DATE(:now) 와 동치다(우변이 자정이라 절삭
+      //    비교와 결과가 같다). 후자가 sargable 이지만 선두 절이 이미 함수 적용이라 지금은 이득이
+      //    없어 스타일 일관성을 택했다. 선두 절을 sargable 로 정리할 때 함께 바꾸면 된다.
+      //
+      // [성능 — 지금은 무해하나 장기 관찰 대상 (리뷰 MEDIUM)]
+      //   보류된 행은 파기될 때까지 매 회차 후보군에 남는다. 유효기간 5년 상품이면 최대 5년간
+      //   누적되므로 스캔 행 수가 단조 증가한다.
+      //   ⚠️ orderDelivery.expireAt 에 인덱스를 추가해도 이 절은 그 인덱스를 타지 못한다. 이유는
+      //   선두 절 때문이 아니라(그건 조인된 다른 테이블의 컬럼이라 이 테이블 접근 경로를 막지
+      //   않는다) 이 절 자체의 구조 때문이다:
+      //     · 3항 OR 이고, 가운데 항이 DATE(expireAt) 로 함수 래핑돼 non-sargable 이며,
+      //       세 번째 항은 아예 다른 컬럼(deletedAt)이라 index_merge 로도 묶이지 않는다.
+      //     · 게다가 이 절은 대상을 **넓히는** 필터라(대부분 행이 통과) 애초에 구동 접근 경로가
+      //       될 수 없다.
+      //   실제로 대상을 좁히는 절은 선두의 DATE_ADD(DATE(sendRequestAt), INTERVAL N DAY) 인데,
+      //   이건 **두 컬럼을 조합**하므로 생성 컬럼(generated column) 없이는 함수 인덱스조차 못
+      //   만든다 — (a) 방향이 단순 작업이 아닌 진짜 이유가 여기다.
+      //   (이 레포는 스키마를 레포 밖 수기 SQL 로 관리해 인덱스 유무를 코드로 확인할 수 없다.
+      //    실제 계획은 EXPLAIN 으로 확인할 것.)
+      //   실제 부담은 접근 경로가 아니라 후보군 행 수이므로, 대응이 필요해지면
+      //   (a) 두 날짜 절을 sargable 형태로 재작성해 인덱스를 태우거나
+      //   (b) 보류 사유가 사라진 행만 남기도록 후보군 산정을 바꾸는 방향이다.
+      //   (이미 파기된 행은 위 PII 5종 미파기 절이 걸러내므로 누적 대상이 아니다.)
+      .andWhere(
+        `(orderDelivery.expireAt IS NULL
+          OR DATE(orderDelivery.expireAt) < DATE(:now)
+          OR orderDelivery.deletedAt IS NOT NULL)`,
+        { now },
+      )
       .getMany();
 
     const destroyIdList = orderDeliveryList.map((od) => od.id);
@@ -3165,6 +3449,15 @@ export class DeliveryBatchService {
     if (destroyIdList.length > 0) {
       // PII 5종 파기 — 조기파기(executeRequest)와 동일 집합으로 통일(H-1). 운영 정책: 환불 계좌
       // (bankAccount/bankAccountOwner)도 조기파기가 이미 파기하므로 정기파기 범위도 이를 따른다.
+      //
+      // destroyedAt 은 "언제 지웠나"의 **실적 기록**이다. 이게 없던 시절에는 화면이
+      // `발송요청일 + 파기일수` 로 파기일을 역산했는데, 유효기간 가드로 규칙이 바뀌자 옛 규칙으로
+      // 이미 파기된 행에 수년 뒤 날짜가 인쇄됐다(재리뷰 H-1). 규칙 변경에 흔들리지 않으려면
+      // 추론이 아니라 기록이어야 하므로 파기하는 그 자리에서 남긴다.
+      //
+      // ⚠️ 이 UPDATE 의 대상 조건(위 WHERE)은 "PII 5종 중 **하나라도** 미파기"다. 즉 이미 한 번
+      //    파기된 행도 다시 집힐 수 있고, 그때 destroyedAt 을 어떻게 할지는 **재수집 사유에 따라
+      //    답이 갈린다**. 그래서 각인을 이 payload 에서 빼고 아래에서 사유별로 나눠 찍는다.
       await this.orderDeliveryRepository.update(
         { id: In(destroyIdList) },
         {
@@ -3175,6 +3468,82 @@ export class DeliveryBatchService {
           bankAccountOwner: destroyValue,
         },
       );
+
+      // ── 파기 시각 각인 ────────────────────────────────────────────────────────
+      // 재수집된 행은 두 종류이고, 각인 여부가 반대다.
+      //
+      //  (가) **부분 파기 재수집** — 이전 회차에 deliveryTarget 만 '-' 가 되고 나머지가 남은 행.
+      //       기존 값 **유지**. 근거는 사실이 아니라 **정의**다: 이 시스템에서 "파기됐다"의 판정
+      //       술어는 deliveryTarget 단일이고(destruction.certificate.gate.ts / 파기일 계산 모두),
+      //       그 컬럼이 사라진 시점이 곧 파기일이다. 나머지 컬럼이 늦게 정리되는 것은 이 정의상
+      //       파기일을 바꾸지 않는다. (술어를 5종 전부로 바꾸는 정책이 되면 이 분기도 뒤집어야
+      //       한다 — 그때는 '완료 시점 갱신'이 맞다.)
+      //
+      //  (나) **부활 후 재파기** — 파기된 뒤 CS 수신정보 변경으로 수신처가 다시 채워진 행
+      //       (customer.service.service.ts 참조. 사후 CS 대응을 위해 **의도적으로 허용**된 경로다).
+      //       그 행의 PII 는 재입력 시점부터 지금까지 실제로 살아 있었으므로, 옛 날짜를 유지하면
+      //       "그때 이미 지웠다"는 거짓 증명이 된다 → 새 시각으로 **갱신**.
+      //
+      // 두 경우를 SQL 한 줄로 가를 수 없다. 위 마스킹 UPDATE 가 이미 돌아서 지금 DB 의
+      // deliveryTarget 은 전부 '-' 이기 때문이다. 판정 근거는 **마스킹 이전 상태**이므로,
+      // select 결과(orderDeliveryList)를 쓴다 — 이 목록은 UPDATE 전에 읽은 스냅샷이다.
+      // 두 축(각인 유무 × 현재 파기 여부)으로 분류한다. 한 축만 보면 4사분면 중 하나가
+      // 잘못 처리된다 — 특히 (각인 없음 + 이미 파기됨)을 '신규 각인'으로 넣으면 **파기 시점을
+      // 모르는 행에 오늘 날짜를 실측으로 박제**하게 된다(리뷰 HIGH-2). 그 행의 PII 는 이전
+      // 회차에 이미 사라졌으므로 오늘은 사실이 아니고, 한 번 찍히면 되돌릴 수 없다.
+      const revivedIds = orderDeliveryList
+        .filter((od) => od.destroyedAt !== null && !isDeliveryDestroyed(od))
+        .map((od) => od.id);
+      const firstDestroyIds = orderDeliveryList
+        .filter((od) => od.destroyedAt === null && !isDeliveryDestroyed(od))
+        .map((od) => od.id);
+      // (각인 없음 + 이미 파기됨) — 시각을 알 수 없으므로 **각인하지 않는다**. 읽기측이 null 로
+      // 답하고(effective.destroy.date.ts 분기 ③), 백필 §4-1 이 이 잔량을 센다.
+      const unknownDestroyedAtIds = orderDeliveryList
+        .filter((od) => od.destroyedAt === null && isDeliveryDestroyed(od))
+        .map((od) => od.id);
+      const stampIdList = [...firstDestroyIds, ...revivedIds];
+
+      if (stampIdList.length > 0) {
+        // UpdateQueryBuilder 는 soft-delete 필터를 자동 부착하지 않으므로(TypeORM 은 select 에만
+        // 부착한다), 위 select 가 withDeleted() 로 집어온 soft-delete 행도 그대로 갱신된다.
+        await this.orderDeliveryRepository
+          .createQueryBuilder()
+          .update(OrderDeliveryEntity)
+          // destroyedAtSource 를 함께 쓴다 — 이 값이 없으면 나중에 이 날짜가 실측인지
+          // 백필 추정인지 판별할 수 없다(날짜만으로는 구분 불가).
+          .set({ destroyedAt: now, destroyedAtSource: DESTROYED_AT_SOURCE.BATCH })
+          .where('id IN (:...ids)', { ids: stampIdList })
+          .execute();
+      }
+
+      // 관측 — 이 배치는 지금껏 처리 건수를 전혀 남기지 않았다. 파기일은 대외 증빙에 쓰이므로
+      // "몇 건을 어떤 사유로 각인했는지"가 사후 감사의 유일한 단서다.
+      // Set 으로 판정한다 — filter+includes 는 O(n²) 이고, 이 배치의 후보군은 유효기간 가드
+      // 때문에 최대 5년치가 누적되어 단조 증가한다(위 성능 주석 참조). 로그 한 줄 때문에
+      // 대량 회차에서 이중 루프를 돌 이유가 없다.
+      const stampIdSet = new Set(stampIdList);
+      const keptCount = destroyIdList.filter((id) => !stampIdSet.has(id)).length;
+      this.logger.log(
+        `[정기파기] 대상 ${destroyIdList.length}건 — 신규 각인 ${firstDestroyIds.length}건, ` +
+          `부활 재파기 갱신 ${revivedIds.length}건, 최초일 유지(부분 파기 재수집) ${keptCount}건`,
+      );
+      if (unknownDestroyedAtIds.length > 0) {
+        // 정상 운영에서는 나오지 않아야 한다. 백필 누락이거나 배포 순서 사고다.
+        this.logger.error(
+          `[정기파기] 이미 파기됐으나 파기 시각을 알 수 없는 발송건 ${unknownDestroyedAtIds.length}건 — ` +
+            `orderDeliveryIds=[${unknownDestroyedAtIds.slice(0, 50).join(', ')}]. ` +
+            `오늘 날짜를 실측으로 박제하지 않고 비워 둔다(해당 주문의 파기일은 null 로 응답된다).`,
+        );
+      }
+      if (revivedIds.length > 0) {
+        // 정상 경로이지만 드물어야 한다. 잦아지면 CS 수신정보 변경이 파기 건에 반복 적용되고
+        // 있다는 신호이므로 운영이 알아야 한다.
+        this.logger.warn(
+          `[정기파기] 파기 후 수신처가 재입력됐던 발송건을 재파기하고 파기일을 갱신함 — ` +
+            `orderDeliveryIds=[${revivedIds.slice(0, 50).join(', ')}]. 이전 파기일은 더 이상 유효하지 않다.`,
+        );
+      }
 
       // order_history 의 PII 도 함께 파기. '수신정보 변경요청'/'폐기 후 신규 발송' 이력의
       // beforeChange/afterChange 에는 평문 수신처가 남아 CS 이력 API(execStatusList)로 노출되므로,

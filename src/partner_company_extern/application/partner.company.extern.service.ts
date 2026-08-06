@@ -19,13 +19,15 @@ import {
   SsgCheckNotFoundError,
   SsgIssueAlreadyConfirmedError,
   SsgIssueAttemptAlreadyActiveError,
+  SsgIssueLogKeyCollisionError,
   SsgIssueRejectedError,
   SsgProcessingError,
+  SsgTryError,
 } from '../infra/ssg.issue';
 import { SsgInsertStateService, SsgAttemptPayload } from '../../delivery/application/ssg-insert-state.service';
 import { MarkAttemptedResult, SsgInsertState } from '../../delivery/interface/ssg.insert.state';
 import { SsgOrphanResolveOutcome } from '../interface/ssg.orphan.resolve';
-import { Propagation, Transactional } from 'typeorm-transactional';
+import { Propagation, runInTransaction, Transactional } from 'typeorm-transactional';
 import { orderBarcodeGenerate } from '../../order/domain/order.code.generate';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { SsgResendDeductPendingEntity } from '../../entity/ssg.resend.deduct.pending.entity';
@@ -43,6 +45,11 @@ import { parseDateString, isExpiredYMD, formatDateYMD } from '../../util/date.ut
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
 import { resolveGalaxiaUsage } from '../../common/utils/galaxia.usage.util';
 import { sleep } from '../../util/time.util';
+import { PartnerSettleFeatureFlag } from '../../partner_settle/application/partner.settle.feature.flag';
+import { PartnerSettleProducerService } from '../../partner_settle/application/partner.settle.producer.service';
+import { buildSettlementContext } from '../../partner_settle/application/partner.settle.context.builder';
+import { buildIssuanceKey, buildProviderTransitionKey } from '../../partner_settle/domain/settle.idempotency.key';
+import { fromDate } from '../../partner_settle/domain/settle.time';
 
 /**
  * issue() 결과 — 배치 재발송 선차감 정합용.
@@ -90,6 +97,8 @@ export class PartnerCompanyExternService {
     private ssgInsertStateService: SsgInsertStateService,
     @InjectRepository(SsgResendDeductPendingEntity)
     private resendDeductPendingRepository: Repository<SsgResendDeductPendingEntity>,
+    private readonly settleFlag: PartnerSettleFeatureFlag,
+    private readonly settleProducer: PartnerSettleProducerService,
   ) {}
 
   private logger = new Logger('PARTNER_COMPANY_EXTERN');
@@ -305,6 +314,10 @@ export class PartnerCompanyExternService {
         ...(orderDelivery.ssgEventId != null ? { ssgEventId: orderDelivery.ssgEventId } : {}),
       },
     );
+
+    // ── P1 정산 원장 (B14 §4 P1 — 발행분 ISSUANCE) ──────────────────────────
+    // 이미 REQUIRES_NEW 안이므로 same-tx(§6.5). 멱등키 ISS:{orderDeliveryId} 로 중복 0.
+    await this.recordIssuanceSettlement(orderDelivery);
   }
 
   @Transactional({ propagation: Propagation.REQUIRED })
@@ -663,6 +676,12 @@ export class PartnerCompanyExternService {
           if (candidates.length > 0) {
             const registeredList: SsgIssueLogEntity[] = [];
             let uncertain = false; // PROCESSING / 조회오류 / eventSeq 없이 제출이력(getTry=Y)만 있는 후보
+            // 미확정 사유가 "조회 자체의 실패" 였는지 기억한다. 같은 보류라도 SSG 가 "처리중" 이라고
+            // **정상 응답한 것**과 조회가 **실패해 답을 못 받은 것**은 성격이 다르다 — 후자만 재조회
+            // 가치가 있어 배치 2-pass 의 보류 대상이다(`deferred.delivery.error.ts`).
+            // 루프 안에서 즉시 던지지 않는 이유: 다른 후보가 REGISTERED 면 재사용이 우선이라
+            // (아래 registeredList 분기) 중간에 던지면 재사용 가능한 PIN 을 놓친다.
+            let lookupFailure: SsgTryError | null = null;
 
             for (const candidate of candidates) {
               try {
@@ -690,6 +709,9 @@ export class PartnerCompanyExternService {
               } catch (e) {
                 // getTry/check 네트워크·파싱 오류 → 등록 여부 불명 → 보류 후보
                 uncertain = true;
+                if (e instanceof SsgTryError && lookupFailure === null) {
+                  lookupFailure = e;
+                }
                 this.logger.error(
                   `[SSG] barCode 없음 후보 조회 오류 - orderDeliveryId=${orderDelivery.id}, vno=${candidate.personalCode}: ${e instanceof Error ? e.message : e}`,
                 );
@@ -720,6 +742,12 @@ export class PartnerCompanyExternService {
               this.logger.warn(
                 `[SSG] barCode 없음 - 후보 등록 여부 미확정(처리중/조회불가) - 발송 보류. orderDeliveryId=${orderDelivery.id}`,
               );
+              // 미확정 원인이 조회 실패라면 그 타입 그대로 던진다 — 배치 pass 1 이 보류로 인식해
+              // 본 처리 종료 후 재시도한다(계약 §2 조항 2). SSG 가 "처리중" 이라고 정상 응답한
+              // 경우는 몇 초 뒤 재조회해도 답이 같으므로 종전대로 SsgProcessingError 다.
+              if (lookupFailure) {
+                throw lookupFailure;
+              }
               throw new SsgProcessingError(orderDelivery.id);
             }
             // else: 모든 후보 미제출/미등록 확정 → 새 PIN 정상 경로(아래 Mutex)
@@ -727,71 +755,74 @@ export class PartnerCompanyExternService {
           // 후보 0건(최초 clean 발송) → 새 PIN. 외부 SSG API 추가호출 없음(hot-path 보존).
         }
 
-        // 2~4단계를 Mutex로 직렬화: PIN 생성~중복확인~INSERT 간 경쟁 조건 방지
+        // 2~4단계를 Mutex로 직렬화: PIN 생성~중복확인~INSERT 간 경쟁 조건 방지.
+        // (Mutex 는 프로세스 로컬이라 다중 노드 안전 권위가 아니다. 후보 PIN 유일성의 권위는
+        //  ssg_issue_log 의 uq_ssg_issue_log_bar_code / _personal_code UNIQUE 제약이다.
+        //  docs/plans/2026-08-04-ssg-issue-log-unique-typed-collision.md)
         context = await this.withSsgMutex(async () => {
-          // 2) 새 PIN 생성 (최초 발송 또는 INSERT 실패 시) + 2중 중복 확인
-          if (!orderDelivery.barCode || !orderDelivery.personalCode) {
-            const maxRetries = 5;
-            let pinGenerated = false;
-            for (let attempt = 0; attempt < maxRetries; attempt++) {
-              const { barCode, personalCode } = this.ssgIssue.generateSsgIssue();
+          // 기존 PIN 재사용 확정(needsInsert=false) → 새 PIN 생성도 markAttempted 도 하지 않는다.
+          // 유효기간은 SSG DB 실제 값과 어긋나지 않도록 그대로 보존한다.
+          if (!needsInsert) {
+            return '';
+          }
 
-              // 1차 중복 확인: 로컬 ssg_issue_log (빠름)
-              const localDuplicate = await this.ssgIssueLogRepository.findOne({
-                where: [{ barCode }, { personalCode }],
-              });
-              if (localDuplicate) {
+          // 후보 루프. 후보 1회 = 생성 → 로컬 조회 → getTry → trId/유효기간 → 본문 → markAttempted.
+          // ssg_issue_log 유일성 충돌만 다음 후보로 넘어가고, 그 외 오류는 즉시 전파한다.
+          // maxRetries 는 전체 후보 수 상한이다. 생성 루프와 충돌 재시도를 중첩하면
+          // 충돌마다 생성이 다시 5회 돌아 최대 25 후보가 만들어지므로 단일 루프로 유지한다.
+          const maxRetries = 5;
+          for (let attempt = 0; attempt < maxRetries; attempt++) {
+            // 2) 새 PIN 생성 + 2중 중복 확인
+            const { barCode, personalCode } = this.ssgIssue.generateSsgIssue();
+
+            // 1차 중복 확인: 로컬 ssg_issue_log (빠름). SELECT 이므로 비원자적 — 최종 판정은 UNIQUE 제약.
+            const localDuplicate = await this.ssgIssueLogRepository.findOne({
+              where: [{ barCode }, { personalCode }],
+            });
+            if (localDuplicate) {
+              this.logger.warn(
+                `[SSG] 로컬 블랙리스트 중복 감지 - barCode: ${barCode}, personalCode: ${personalCode}, 재생성 시도 (${attempt + 1}/${maxRetries})`,
+              );
+              continue;
+            }
+
+            // 2차 중복 확인: SSG cust_info (GetSsgTry). 제출 이력 = 중복.
+            // personalCode 단독(전 행사 합산) 조회라 cust_info_result(GetSsgStatus)보다 중복번호 검출이 정확.
+            try {
+              const tryOut = await this.ssgIssue.getTry({ vno: personalCode });
+              const tryYn = tryOut?.response?.value?.[0]?.tryYn?.[0];
+              if (tryYn === 'Y') {
+                // 제출 이력 존재 = 중복
                 this.logger.warn(
-                  `[SSG] 로컬 블랙리스트 중복 감지 - barCode: ${barCode}, personalCode: ${personalCode}, 재생성 시도 (${attempt + 1}/${maxRetries})`,
+                  `[SSG] cust_info 중복 감지 - personalCode: ${personalCode}, 재생성 시도 (${attempt + 1}/${maxRetries})`,
                 );
                 continue;
               }
-
-              // 2차 중복 확인: SSG cust_info (GetSsgTry). 제출 이력 = 중복.
-              // personalCode 단독(전 행사 합산) 조회라 cust_info_result(GetSsgStatus)보다 중복번호 검출이 정확.
-              try {
-                const tryOut = await this.ssgIssue.getTry({ vno: personalCode });
-                const tryYn = tryOut?.response?.value?.[0]?.tryYn?.[0];
-                if (tryYn === 'Y') {
-                  // 제출 이력 존재 = 중복
-                  this.logger.warn(
-                    `[SSG] cust_info 중복 감지 - personalCode: ${personalCode}, 재생성 시도 (${attempt + 1}/${maxRetries})`,
-                  );
-                  continue;
-                }
-                // tryYn === 'N' = 미사용 → 사용 가능
-                orderDelivery.barCode = barCode;
-                orderDelivery.personalCode = personalCode;
-                pinGenerated = true;
-                this.logger.log(`[SSG] PIN 생성 완료 - barCode: ${barCode}, personalCode: ${personalCode}`);
-                break;
-              } catch (e) {
-                // getTry 실패(검증 거절/네트워크/파싱) → 중복 여부 불명 → 안전을 위해 중단
-                this.logger.error(
-                  `[SSG] PIN 중복 확인(GetSsgTry) 오류 - personalCode: ${personalCode}, 안전을 위해 중단: ${e instanceof Error ? e.message : e}`,
-                );
-                throw e;
-              }
+              // tryYn === 'N' = 미사용 → 사용 가능
+            } catch (e) {
+              // getTry 실패(검증 거절/네트워크/파싱) → 중복 여부 불명 → 안전을 위해 중단
+              this.logger.error(
+                `[SSG] PIN 중복 확인(GetSsgTry) 오류 - personalCode: ${personalCode}, 안전을 위해 중단: ${e instanceof Error ? e.message : e}`,
+              );
+              throw e;
             }
-            if (!pinGenerated) {
-              throw new Error(`SSG PIN 생성 ${maxRetries}회 시도 후에도 중복 발생`);
-            }
-          }
 
-          // 3) 유효기간 및 트랜잭션 ID 설정
-          // needsInsert=false(PIN이 이미 SSG DB에 등록된 경우)일 때는 기존 유효기간 보존
-          // → SSG DB의 실제 유효기간과 안내 유효기간 불일치 방지
-          if (needsInsert) {
+            orderDelivery.barCode = barCode;
+            orderDelivery.personalCode = personalCode;
+            this.logger.log(`[SSG] PIN 생성 완료 - barCode: ${barCode}, personalCode: ${personalCode}`);
+
+            // 3) 유효기간 및 트랜잭션 ID 설정 — 후보마다 새로 산출한다.
             orderDelivery.ssgTransactionId = SsgTransactionId.makeSsgTrade();
             orderDelivery.expireAt = addDays(new Date(), orderDelivery.orderProductMapping.product.expireDay - 1);
             const encourageDay = orderDelivery.orderProductMapping.encourageDay;
-            if (encourageDay) {
-              orderDelivery.encourageAt = subDays(orderDelivery.expireAt, encourageDay);
-            }
-          }
+            // encourageDay 가 없으면 명시적으로 null 이다. expireAt 은 무조건 재산출되므로,
+            // 이전 시도(실패/고아/충돌 후보)가 남긴 encourageAt 을 그대로 두면 옛 expireAt 기준
+            // 알림일이 새 후보에 붙는다.
+            orderDelivery.encourageAt = encourageDay ? subDays(orderDelivery.expireAt, encourageDay) : null;
 
-          // 4) SSG DB INSERT (필요한 경우에만)
-          if (needsInsert) {
+            // 4) SSG DB INSERT
+            // 본문(smsSsgTemplate)은 personalCode/barCode/expireAt 을 직접 담으므로 후보마다 재산출해야 한다.
+            // 재사용하면 옛 후보의 PIN 이 적힌 본문을 SSG 로 보내게 된다.
             let text = orderDelivery.orderProductMapping.sendContent ?? '';
 
             if (orderDelivery.orderProductMapping.sendTailText) {
@@ -807,9 +838,9 @@ export class PartnerCompanyExternService {
             // plans/ssg-balance-refactor.md PR2.
             // markAttempted 결과가 TRANSITIONED 가 아니면 외부 INSERT 호출 금지 (state/log 없는 INSERT 위험).
             const attemptPayload: SsgAttemptPayload = {
-              barCode: orderDelivery.barCode!,
-              personalCode: orderDelivery.personalCode!,
-              ssgTransactionId: orderDelivery.ssgTransactionId!,
+              barCode: orderDelivery.barCode,
+              personalCode: orderDelivery.personalCode,
+              ssgTransactionId: orderDelivery.ssgTransactionId,
               eventNo: ssgEvent.no,
               eventSeq: ssgEvent.order,
               ssgEventId: ssgEvent.id,
@@ -817,7 +848,24 @@ export class PartnerCompanyExternService {
               encourageAt: orderDelivery.encourageAt ?? null,
               couponNum: orderDelivery.couponNum ?? null,
             };
-            const markResult = await this.ssgInsertStateService.markAttempted(orderDelivery.id, attemptPayload);
+            let markResult: MarkAttemptedResult;
+            try {
+              markResult = await this.ssgInsertStateService.markAttempted(orderDelivery.id, attemptPayload);
+            } catch (e) {
+              if (e instanceof SsgIssueLogKeyCollisionError) {
+                // 다른 발송 건이 이 후보를 선점했다. markAttempted 의 REQUIRES_NEW 가 통째로 롤백되어
+                // state 도 충돌 이전 값이므로, 후보만 폐기하고 다음 후보로 진행한다.
+                // 충돌은 ssgIssue.issue() 이전에 발생하므로 벤더 호출은 0 이다.
+                this.logger.warn(
+                  `[SSG] 후보 PIN 선점됨(${e.collidedKey}) - barCode: ${barCode}, personalCode: ${personalCode}, 재생성 시도 (${attempt + 1}/${maxRetries})`,
+                );
+                orderDelivery.barCode = null;
+                orderDelivery.personalCode = null;
+                orderDelivery.ssgTransactionId = null;
+                continue;
+              }
+              throw e;
+            }
             if (markResult === MarkAttemptedResult.SKIPPED_ACTIVE) {
               // 이미 ATTEMPTED 진행 중. 실패 확정이 아니므로 markFailed 대상 아님. orphan resolver가 확정해야 함.
               throw new SsgIssueAttemptAlreadyActiveError(orderDelivery.id);
@@ -833,12 +881,12 @@ export class PartnerCompanyExternService {
                 eventNo: ssgEvent.no,
                 eventSeq: ssgEvent.order,
                 eventKey: ssgEvent.code,
-                vno: orderDelivery.personalCode!,
-                pinNo: orderDelivery.barCode!,
+                vno: orderDelivery.personalCode,
+                pinNo: orderDelivery.barCode,
                 userName: ssgIssueUserName,
                 userAmount: String(orderDelivery.orderProductMapping.product.price),
                 msgContent: textForSsg,
-                trId: orderDelivery.ssgTransactionId!,
+                trId: orderDelivery.ssgTransactionId,
                 callBack: callBackNumber,
               });
             } catch (e) {
@@ -852,9 +900,9 @@ export class PartnerCompanyExternService {
 
             // INSERT 성공 → durable state CONFIRMED 마킹 (PIN 정보 best-effort 저장).
             await this.ssgInsertStateService.markConfirmed(orderDelivery.id, {
-              barCode: orderDelivery.barCode!,
-              personalCode: orderDelivery.personalCode!,
-              ssgTransactionId: orderDelivery.ssgTransactionId!,
+              barCode: orderDelivery.barCode,
+              personalCode: orderDelivery.personalCode,
+              ssgTransactionId: orderDelivery.ssgTransactionId,
               couponNum: orderDelivery.couponNum ?? null,
               expireAt: orderDelivery.expireAt ?? null,
               encourageAt: orderDelivery.encourageAt ?? null,
@@ -864,7 +912,7 @@ export class PartnerCompanyExternService {
             return JSON.stringify(response);
           }
 
-          return '';
+          throw new Error(`SSG PIN 생성 ${maxRetries}회 시도 후에도 중복 발생`);
         });
 
         // 신규 INSERT 로 전달된 ssgEvent 를 실제 차감·사용한 경우만 신규발급으로 표시(재사용은 기본 false 유지).
@@ -1149,6 +1197,8 @@ export class PartnerCompanyExternService {
       this.logger.warn(`partnerCompany relation 로딩 누락 fallback 발동 (orderDeliveryId: ${orderDelivery.id})`);
       partnerType = partnerCompany.type;
     }
+    // P5 정산 증적 — SSG 교환 감지 시 아래 CAS+producer same-tx 에서 사용한다.
+    let ssgExchangeEvidence: { occurredAt: Date | null; evidenceRef: string } | null = null;
 
     switch (partnerType) {
       // 1. GALAXIA
@@ -1401,6 +1451,12 @@ export class PartnerCompanyExternService {
           if (executeDate) {
             orderDelivery.tradeAt = new Date(executeDate);
           }
+
+          // P5 정산 증적 수집 — CAS 성공 후 producer 에서 사용한다.
+          ssgExchangeEvidence = {
+            occurredAt: orderDelivery.tradeAt ?? null,
+            evidenceRef: `${orderDelivery.ssgEvent.no}|${orderDelivery.ssgEvent.order}|${orderDelivery.personalCode}`,
+          };
         }
         break;
       }
@@ -1472,27 +1528,61 @@ export class PartnerCompanyExternService {
     //   "터미널 다운그레이드 금지" 도 안 된다: 폐기 실패 후 동기화(CANCEL → 실제 NOT_USED 정정)라는
     //   **정당한 다운그레이드**가 실재하고, 그걸 막으면 살아있는 쿠폰이 DB 상 죽은 채로 굳는다.
     //   진입 시점 값 대조는 그 둘을 정확히 가른다.
-    const write = await this.orderDeliveryRepository
-      .createQueryBuilder()
-      .update(OrderDeliveryEntity)
-      .set({
-        couponStatus: orderDelivery.couponStatus,
-        discardedAt: orderDelivery.discardedAt,
-        tradeAt: orderDelivery.tradeAt,
-        tradePlace: orderDelivery.tradePlace,
-        galaxiaBalance: orderDelivery.galaxiaBalance,
-      })
-      .where('id = :id', { id: orderDelivery.id })
-      // NULL-safe equality(<=>) — coupon_status 가 NULL 인 행도 정상 대조된다.
-      .andWhere('coupon_status <=> :loaded', { loaded: loadedCouponStatus })
-      .execute();
-    if (!write.affected) {
-      // 조회(외부 통신, 수 초) 도중 남이 coupon_status 를 바꿨다. 우리 결과는 stale 이므로 버린다.
-      // 덮어썼다면 폐기·환불이 확정된 쿠폰을 되살렸을 것이다.
-      this.logger.error(
-        `[핀상태갱신] 조회 중 쿠폰상태가 변경됨 — 갱신을 폐기한다(stale 덮어쓰기 방지). ` +
-          `orderDeliveryId=${orderDelivery.id}, 진입시=${loadedCouponStatus}, 협력사응답=${orderDelivery.couponStatus}`,
-      );
+
+    // P5 SSG 정산: isSettlementTarget 이면 CAS + producer 를 같은 트랜잭션으로 묶는다(§6.5).
+    // flag off 경로는 기존 CAS 단독 실행과 1비트도 다르지 않다(§4.6 회귀 요건).
+    const provider = partnerType as IPartnerCompanyType;
+    const needsSsgSettlement =
+      !!ssgExchangeEvidence && this.settleFlag.isEnabledFor(provider);
+
+    const executeCasWrite = () =>
+      this.orderDeliveryRepository
+        .createQueryBuilder()
+        .update(OrderDeliveryEntity)
+        .set({
+          couponStatus: orderDelivery.couponStatus,
+          discardedAt: orderDelivery.discardedAt,
+          tradeAt: orderDelivery.tradeAt,
+          tradePlace: orderDelivery.tradePlace,
+          galaxiaBalance: orderDelivery.galaxiaBalance,
+        })
+        .where('id = :id', { id: orderDelivery.id })
+        // NULL-safe equality(<=>) — coupon_status 가 NULL 인 행도 정상 대조된다.
+        .andWhere('coupon_status <=> :loaded', { loaded: loadedCouponStatus })
+        .execute();
+
+    const handleCasResult = (affected: number | undefined) => {
+      if (!affected) {
+        this.logger.error(
+          `[핀상태갱신] 조회 중 쿠폰상태가 변경됨 — 갱신을 폐기한다(stale 덮어쓰기 방지). ` +
+            `orderDeliveryId=${orderDelivery.id}, 진입시=${loadedCouponStatus}, 협력사응답=${orderDelivery.couponStatus}`,
+        );
+      }
+      return !!affected;
+    };
+
+    if (needsSsgSettlement) {
+      await runInTransaction(async () => {
+        const write = await executeCasWrite();
+        if (!handleCasResult(write.affected)) return;
+
+        const ctx = buildSettlementContext(orderDelivery, provider);
+        if (!ctx || !this.settleProducer.isSettlementTarget(ctx, 'EXCHANGE')) return;
+
+        const ev = ssgExchangeEvidence!;
+        await this.settleProducer.record(ctx, {
+          kind: 'EXCHANGE',
+          idempotencyKey: buildProviderTransitionKey(IPartnerCompanyType.SSG, 'EXCHANGE', ev.evidenceRef),
+          occurredAt: ev.occurredAt ? fromDate(ev.occurredAt) : null,
+          baseAmount: orderDelivery.orderProductMapping?.snapshotProductPrice != null
+            ? BigInt(orderDelivery.orderProductMapping.snapshotProductPrice)
+            : null,
+          providerEvidenceRef: ev.evidenceRef,
+        });
+      });
+    } else {
+      const write = await executeCasWrite();
+      handleCasResult(write.affected);
     }
     return orderDelivery;
   }
@@ -1606,5 +1696,44 @@ export class PartnerCompanyExternService {
       return SsgOrphanResolveOutcome.NETWORK_UNKNOWN;
     }
     return SsgOrphanResolveOutcome.FAILED;
+  }
+
+  /**
+   * P1 정산 원장 — 발행분 ISSUANCE.
+   *
+   * flag off 면 즉시 리턴(DB 접근 0). flag on 이면 조인 재조회 → producer.record.
+   * persistIssuedPin 의 REQUIRES_NEW 안에서 호출되므로 same-tx(§6.5).
+   */
+  private async recordIssuanceSettlement(orderDelivery: OrderDeliveryEntity): Promise<void> {
+    // 조인 데이터 없이 provider 를 판정할 수 없으므로 전역 flag 만 먼저 검사한다.
+    if (!this.settleFlag.isEnabled) return;
+
+    const od = await this.orderDeliveryRepository.findOne({
+      where: { id: orderDelivery.id },
+      relations: [
+        'orderProductMapping',
+        'orderProductMapping.product',
+        'orderProductMapping.product.partnerCompany',
+        'choiceSelectProduct',
+        'choiceSelectProduct.partnerCompany',
+      ],
+    });
+    if (!od) return;
+
+    const provider = (od.choiceSelectProduct?.partnerCompany?.type ??
+      od.orderProductMapping?.product?.partnerCompany?.type) as IPartnerCompanyType | undefined;
+    if (!provider || !this.settleFlag.isEnabledFor(provider)) return;
+
+    const ctx = buildSettlementContext(od, provider);
+    if (!ctx) return;
+
+    await this.settleProducer.record(ctx, {
+      kind: 'ISSUANCE',
+      idempotencyKey: buildIssuanceKey(od.id),
+      occurredAt: fromDate(new Date()),
+      baseAmount: od.orderProductMapping?.snapshotProductPrice != null
+        ? BigInt(od.orderProductMapping.snapshotProductPrice)
+        : null,
+    });
   }
 }

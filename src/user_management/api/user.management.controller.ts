@@ -520,8 +520,11 @@ export class UserManagementController {
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: '[어드민] 추가 credential 발급 (다중키, 평문 1회 노출)' })
-  async issueCredential(@Param('accountId') accountId: string): Promise<{ apiKey: string; credentialId: string }> {
-    return this.userManagementService.issueCredential(accountId);
+  async issueCredential(
+    @Param('accountId') accountId: string,
+    @User() user: ILoginUserInfo,
+  ): Promise<{ apiKey: string; credentialId: string }> {
+    return this.userManagementService.issueCredential(accountId, user);
   }
 
   @Get('/user-management/api-keys/:accountId/credentials')
@@ -538,8 +541,11 @@ export class UserManagementController {
   @UseGuards(AuthUserSuperAndOperationAdminGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: '[어드민] credential 회전 (기존 활성 전부 회수 + 신규 발급, 평문 1회)' })
-  async rotateCredential(@Param('accountId') accountId: string): Promise<{ apiKey: string; credentialId: string }> {
-    return this.userManagementService.rotateCredential(accountId);
+  async rotateCredential(
+    @Param('accountId') accountId: string,
+    @User() user: ILoginUserInfo,
+  ): Promise<{ apiKey: string; credentialId: string }> {
+    return this.userManagementService.rotateCredential(accountId, user);
   }
 
   @Delete('/user-management/api-keys/:accountId/credentials/:credentialId')
@@ -549,8 +555,9 @@ export class UserManagementController {
   async revokeCredential(
     @Param('accountId') accountId: string,
     @Param('credentialId') credentialId: string,
+    @User() user: ILoginUserInfo,
   ): Promise<void> {
-    await this.userManagementService.revokeCredential(accountId, credentialId);
+    await this.userManagementService.revokeCredential(accountId, credentialId, user);
   }
 
   // ─── 외부 API: 3계층 매핑모드 고객 매핑 CRUD (PR2 Phase 7) ─────────────
@@ -561,8 +568,9 @@ export class UserManagementController {
   async createCustomerMapping(
     @Param('accountId') accountId: string,
     @Body() body: CreateCustomerMappingReqDto,
+    @User() user: ILoginUserInfo,
   ): Promise<CustomerMappingResDto> {
-    return this.userManagementService.createCustomerMapping(accountId, body);
+    return this.userManagementService.createCustomerMapping(accountId, body, user);
   }
 
   @Get('/user-management/api-keys/:accountId/customer-mappings')
@@ -581,8 +589,9 @@ export class UserManagementController {
     @Param('accountId') accountId: string,
     @Param('mappingId') mappingId: string,
     @Body() body: UpdateCustomerMappingReqDto,
+    @User() user: ILoginUserInfo,
   ): Promise<CustomerMappingResDto> {
-    return this.userManagementService.updateCustomerMapping(accountId, mappingId, body);
+    return this.userManagementService.updateCustomerMapping(accountId, mappingId, body, user);
   }
 
   @Delete('/user-management/api-keys/:accountId/customer-mappings/:mappingId')
@@ -592,8 +601,9 @@ export class UserManagementController {
   async deleteCustomerMapping(
     @Param('accountId') accountId: string,
     @Param('mappingId') mappingId: string,
+    @User() user: ILoginUserInfo,
   ): Promise<void> {
-    await this.userManagementService.deleteCustomerMapping(accountId, mappingId);
+    await this.userManagementService.deleteCustomerMapping(accountId, mappingId, user);
   }
 
   // ─── 외부 API Key: SSG 활성화 요청 ─────────────────────

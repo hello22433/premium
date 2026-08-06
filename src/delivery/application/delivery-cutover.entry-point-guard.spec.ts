@@ -17,16 +17,15 @@ jest.mock('typeorm-transactional', () => ({
 import * as fs from 'fs';
 import * as path from 'path';
 import { ConflictException } from '@nestjs/common';
-import {
-  DELIVERY_CUTOVER_LEGACY_BLOCKED,
-  LegacyDeliveryEntryPoint,
-} from '../interface/legacy.delivery.entry.point';
+import { DELIVERY_CUTOVER_LEGACY_BLOCKED, LegacyDeliveryEntryPoint } from '../interface/legacy.delivery.entry.point';
 import { SsgRecoveryService } from './ssg-recovery.service';
 import { SsgRecoveryResult } from '../interface/ssg.recovery.result';
 import { RefundLedgerService, ClaimRefundInput } from './refund-ledger.service';
 import { MessageAttemptService } from './message-attempt.service';
 import { MessageResendExecutorService } from './message-resend-executor.service';
 import { DeliveryExclusiveOp } from '../interface/delivery.workflow.status';
+import { RefundAttemptEntity } from '../../entity/refund.attempt.entity';
+import { RefundAttemptStatus } from '../interface/refund.attempt.status';
 import { DeliveryBatchService } from './delivery.batch.service';
 import { CustomerServiceService } from '../../customer_service/application/customer.service.service';
 import { ExternalApiService } from '../../external_api/application/external.api.service';
@@ -60,14 +59,16 @@ describe('§9 컷오버 — legacy 진입점 12곳 거부', () => {
         orderDeliveryIds: [orderDeliveryId],
       }),
     ),
-    assertRefundExecutionAllowed: jest.fn().mockRejectedValue(
-      new ConflictException({ code: DELIVERY_CUTOVER_LEGACY_BLOCKED, entryPoint }),
-    ),
+    assertRefundExecutionAllowed: jest
+      .fn()
+      .mockRejectedValue(new ConflictException({ code: DELIVERY_CUTOVER_LEGACY_BLOCKED, entryPoint })),
     isCutover: jest.fn().mockResolvedValue(true),
   });
 
   const expectBlocked = async (run: () => Promise<unknown>, entryPoint: LegacyDeliveryEntryPoint) => {
-    const error = await run().then(() => null).catch((e) => e);
+    const error = await run()
+      .then(() => null)
+      .catch((e) => e);
 
     expect(error).toBeInstanceOf(ConflictException);
     const body = (error as ConflictException).getResponse() as Record<string, unknown>;
@@ -80,10 +81,7 @@ describe('§9 컷오버 — legacy 진입점 12곳 거부', () => {
   describe('#1·#4 발송 — 전환 건은 배타 슬롯 없이 발송하지 않는다', () => {
     // 두 경로(배치·외부 API)의 실제 발송은 모두 MessageAttemptService.trackSend 를 거친다.
     // 여기서는 그 게이트의 동작을 직접 호출해 검증한다.
-    const createAttemptService = (opts: {
-      isCutover?: jest.Mock;
-      acquire?: jest.Mock;
-    }) => {
+    const createAttemptService = (opts: { isCutover?: jest.Mock; acquire?: jest.Mock }) => {
       const slotService = {
         ensureWorkflow: jest.fn().mockResolvedValue({ workflowVersion: '3', cutoverMigratedAt: null }),
         acquire: opts.acquire ?? jest.fn().mockResolvedValue({ acquired: false, code: 'DELIVERY_OPERATION_LOCKED' }),
@@ -129,9 +127,9 @@ describe('§9 컷오버 — legacy 진입점 12곳 거부', () => {
       // 드레이닝 확인과 전환 마크 설정 사이의 admission race 를 닫는 구간. 여기서 신규 모델을 먼저
       // 시작하면 아직 빠져나가지 못한 legacy 워커와 겹친다.
       const { service, slotService } = createAttemptService({
-        isCutover: jest.fn().mockRejectedValue(
-          new ConflictException({ code: 'DELIVERY_CUTOVER_DRAINING', phase: 'DRAINING' }),
-        ),
+        isCutover: jest
+          .fn()
+          .mockRejectedValue(new ConflictException({ code: 'DELIVERY_CUTOVER_DRAINING', phase: 'DRAINING' })),
       });
       const send = jest.fn();
 
@@ -170,37 +168,70 @@ describe('§9 컷오버 — legacy 진입점 12곳 거부', () => {
       const sut: any = Object.create(CustomerServiceService.prototype);
       sut.cutoverGuard = blockingGuard(LegacyDeliveryEntryPoint.CS_RESEND);
 
-      await expectBlocked(
-        () => sut.reSend({ id: 1 }, { orderDeliveryId }),
-        LegacyDeliveryEntryPoint.CS_RESEND,
-      );
+      await expectBlocked(() => sut.reSend({ id: 1 }, { orderDeliveryId }), LegacyDeliveryEntryPoint.CS_RESEND);
     });
   });
 
   describe('#5 배치 발송 실패 환불', () => {
-    it('전환 건은 ledger claim 전에 거부된다', async () => {
+    it('전환 건은 refund_attempt 실행기에 위임된다', async () => {
       const sut: any = Object.create(DeliveryBatchService.prototype);
-      sut.cutoverGuard = blockingGuard(LegacyDeliveryEntryPoint.BATCH_REFUND_FOR_FAIL);
+      sut.cutoverGuard = { isCutover: jest.fn().mockResolvedValue(true) };
+      sut.refundAttemptExecutor = { execute: jest.fn().mockResolvedValue({ status: 'SUCCEEDED' }) };
+      sut.messageResultReconcileService = {
+        markWorkflowFailedIfSettled: jest.fn().mockResolvedValue(undefined),
+      };
 
-      await expectBlocked(
-        () => sut.refundForFail({ id: orderDeliveryId, orderProductMapping: { order: {}, product: {} } }),
-        LegacyDeliveryEntryPoint.BATCH_REFUND_FOR_FAIL,
+      await sut.refundForFail({
+        id: orderDeliveryId,
+        settleFee: null,
+        settlePriceAdjustment: null,
+        orderProductMapping: {
+          order: { cardSurchargeApplied: false },
+          product: { price: 1000 },
+          productPriceSnapshot: 1000,
+          fee: null,
+          priceAdjustment: null,
+        },
+      });
+
+      expect(sut.messageResultReconcileService.markWorkflowFailedIfSettled.mock.invocationCallOrder[0]).toBeLessThan(
+        sut.refundAttemptExecutor.execute.mock.invocationCallOrder[0],
+      );
+
+      expect(sut.refundAttemptExecutor.execute).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orderDeliveryId,
+          amount: 1000,
+          scope: 'FULL',
+          execute: expect.any(Function),
+        }),
       );
     });
   });
 
   describe('#6·#7 외부 API 환불·취소', () => {
-    it('발송 실패 환불은 상태 저장 전에 거부된다', async () => {
+    it('발송 실패 환불은 상태 저장 후 refund_attempt 실행기에 위임된다', async () => {
       const sut: any = Object.create(ExternalApiService.prototype);
-      sut.cutoverGuard = blockingGuard(LegacyDeliveryEntryPoint.EXTERNAL_API_FAIL_REFUND);
+      sut.cutoverGuard = { isCutover: jest.fn().mockResolvedValue(true) };
+      sut.phaseC_persistFailure = jest.fn().mockResolvedValue(undefined);
+      sut.refundAttemptExecutor = { execute: jest.fn().mockResolvedValue({ status: 'SUCCEEDED' }) };
+      sut.messageResultReconcileService = {
+        markWorkflowFailedIfSettled: jest.fn().mockResolvedValue(undefined),
+      };
+      const order = { settleAmount: 1000 };
       const orderDelivery = { id: orderDeliveryId, status: 'WAIT' };
 
-      await expectBlocked(
-        () => sut.phaseC_handleFailure({}, orderDelivery, {}, new Error('boom')),
-        LegacyDeliveryEntryPoint.EXTERNAL_API_FAIL_REFUND,
+      await sut.phaseC_handleFailure(order, orderDelivery, {}, new Error('boom'));
+
+      expect(sut.phaseC_persistFailure).toHaveBeenCalledWith(order, orderDelivery, expect.any(Error));
+      expect(sut.refundAttemptExecutor.execute).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orderDeliveryId,
+          amount: 1000,
+          scope: 'FULL',
+          execute: expect.any(Function),
+        }),
       );
-      // 상태 변경조차 일어나지 않아야 한다(가드가 최상단이라는 증거).
-      expect(orderDelivery.status).toBe('WAIT');
     });
 
     it('취소 환불은 상태 targeted update 전에 거부된다', async () => {
@@ -215,23 +246,82 @@ describe('§9 컷오버 — legacy 진입점 12곳 거부', () => {
       expect(orderDelivery.status).toBe('COMPLETE');
     });
 
-    it('cancelOrder 는 협력사 취소(비가역) 전에 거부된다', async () => {
+    it('cancelOrder 는 DISCARD 슬롯 획득 실패 시 협력사 취소 전에 중단된다', async () => {
       const sut: any = Object.create(ExternalApiService.prototype);
-      sut.cutoverGuard = blockingGuard(LegacyDeliveryEntryPoint.EXTERNAL_API_CANCEL_REFUND);
+      sut.cutoverGuard = { isCutover: jest.fn().mockResolvedValue(true) };
       sut.findOrderDeliveryByTrId = jest.fn().mockResolvedValue({
         id: orderDeliveryId,
         orderProductMapping: { order: { type: 'GENERAL' }, product: {} },
       });
-      // 변형 lease 획득은 가드 뒤에 있어야 한다 — 호출되면 가드가 밀린 것이다.
-      sut.acquireMutationLease = jest.fn(() => {
-        throw new Error('가드보다 먼저 lease 를 잡았다');
-      });
+      sut.deliveryWorkflowSlotService = {
+        acquire: jest.fn().mockResolvedValue({ acquired: false, code: 'DELIVERY_OPERATION_LOCKED' }),
+      };
+      sut.partnerCompanyExternService = { cancelByExternalApi: jest.fn() };
 
-      await expectBlocked(
-        () => sut.cancelOrder({}, 'TR-1', {}),
-        LegacyDeliveryEntryPoint.EXTERNAL_API_CANCEL_REFUND,
+      await expect(sut.cancelOrder({}, 'TR-1', {})).rejects.toBeDefined();
+
+      expect(sut.deliveryWorkflowSlotService.acquire).toHaveBeenCalledWith({
+        orderDeliveryId,
+        op: DeliveryExclusiveOp.DISCARD,
+      });
+      expect(sut.partnerCompanyExternService.cancelByExternalApi).not.toHaveBeenCalled();
+    });
+
+    it('협력사 취소 후 workflow fencing 실패는 durable intent를 재조정 대상으로 남긴다', async () => {
+      const sut: any = Object.create(ExternalApiService.prototype);
+      const slot = {
+        orderDeliveryId,
+        ownerToken: 'discard-owner',
+        workflowVersion: '4',
+      };
+      const orderDelivery = {
+        id: orderDeliveryId,
+        status: 'COMPLETE',
+        couponStatus: 'NOT_USED',
+        expireAt: null,
+        barCode: 'PIN-1',
+        discardedAt: null,
+        orderProductMapping: {
+          order: { type: 'GENERAL' },
+          product: { isCancelable: true, partnerCompany: { id: 1 } },
+        },
+      };
+
+      sut.cutoverGuard = { isCutover: jest.fn().mockResolvedValue(true) };
+      sut.findOrderDeliveryByTrId = jest.fn().mockResolvedValue(orderDelivery);
+      sut.orderDeliveryRepository = {
+        findOne: jest.fn().mockResolvedValue({
+          status: 'COMPLETE',
+          couponStatus: 'NOT_USED',
+          expireAt: null,
+          barCode: 'PIN-1',
+          discardedAt: null,
+        }),
+      };
+      sut.deliveryWorkflowSlotService = {
+        acquire: jest.fn().mockResolvedValue({ acquired: true, slot }),
+        release: jest.fn().mockResolvedValue(false),
+      };
+      sut.deliveryCancelIntentService = {
+        create: jest.fn().mockResolvedValue({ id: 'intent-1' }),
+        markExternalCancelled: jest.fn().mockResolvedValue(undefined),
+        markReconciling: jest.fn().mockResolvedValue(undefined),
+      };
+      sut.partnerCompanyExternService = {
+        cancelByExternalApi: jest.fn().mockResolvedValue(undefined),
+      };
+      sut.processCutoverCancelRefund = jest.fn().mockRejectedValue(new Error('workflow fencing lost'));
+
+      await expect(sut.cancelOrder({}, 'TR-1', {})).rejects.toThrow('workflow fencing lost');
+
+      expect(sut.deliveryCancelIntentService.create.mock.invocationCallOrder[0]).toBeLessThan(
+        sut.partnerCompanyExternService.cancelByExternalApi.mock.invocationCallOrder[0],
       );
-      expect(sut.acquireMutationLease).not.toHaveBeenCalled();
+      expect(sut.deliveryCancelIntentService.markExternalCancelled).toHaveBeenCalledWith('intent-1', slot);
+      expect(sut.deliveryCancelIntentService.markReconciling).toHaveBeenCalledWith(
+        'intent-1',
+        'EXTERNAL_CANCEL_FLOW_FAILED:workflow fencing lost',
+      );
     });
   });
 
@@ -302,6 +392,7 @@ describe('§9 컷오버 — legacy 진입점 12곳 거부', () => {
       ownerToken: 'owner-token-1',
       generation: '3',
       workflowVersion: '9',
+      externalIdempotencyKey: 'refund-attempt:9007199254740993',
     };
 
     const baseInput: ClaimRefundInput = {
@@ -314,7 +405,7 @@ describe('§9 컷오버 — legacy 진입점 12곳 거부', () => {
       sourcePath: 'BATCH_FAIL',
     };
 
-    const createLedger = (allow: boolean) => {
+    const createLedger = (allow: boolean, attemptOverrides: Record<string, unknown> = {}) => {
       const chain: any = {
         insert: jest.fn(() => chain),
         into: jest.fn(() => chain),
@@ -324,7 +415,23 @@ describe('§9 컷오버 — legacy 진입점 12곳 거부', () => {
         where: jest.fn(() => chain),
         execute: jest.fn().mockResolvedValue({ affected: 1, identifiers: [{ id: 1 }] }),
       };
+      // 전환 건 claim 은 attempt 행을 잠금 읽기로 확정한 뒤에만 원장을 쓴다.
+      const attemptFindOne = jest.fn().mockResolvedValue({
+        id: fencing.refundAttemptId,
+        orderDeliveryId,
+        status: RefundAttemptStatus.SUBMITTING,
+        ownerToken: fencing.ownerToken,
+        generation: fencing.generation,
+        workflowVersion: fencing.workflowVersion,
+        ...attemptOverrides,
+      });
       const repository = { createQueryBuilder: jest.fn(() => chain) } as never;
+      const manager = {
+        getRepository: jest.fn((entity: any) =>
+          entity === RefundAttemptEntity ? { findOne: attemptFindOne } : repository,
+        ),
+      };
+      const dataSource = { transaction: jest.fn(async (run: any) => run(manager)) } as never;
       const guard = {
         assertRefundExecutionAllowed: allow
           ? jest.fn().mockResolvedValue(undefined)
@@ -335,7 +442,13 @@ describe('§9 컷오버 — legacy 진입점 12곳 거부', () => {
               }),
             ),
       };
-      return { service: new RefundLedgerService(repository, repository, guard as never), chain, guard };
+      return {
+        service: new RefundLedgerService(repository, repository, guard as never, dataSource),
+        chain,
+        guard,
+        manager,
+        attemptFindOne,
+      };
     };
 
     it('게이트를 통과하지 못하면 ledger 를 쓰지 않는다', async () => {
@@ -346,25 +459,62 @@ describe('§9 컷오버 — legacy 진입점 12곳 거부', () => {
     });
 
     it('게이트 검증 자체를 fencing 제시 여부로 건너뛰지 않는다', async () => {
-      const { service, guard } = createLedger(false);
+      const { service, guard, manager } = createLedger(false);
 
       await expectBlocked(
         () => service.claim({ ...baseInput, refundExecution: fencing }),
         LegacyDeliveryEntryPoint.REFUND_LEDGER_CLAIM,
       );
       // 값을 넘겨도 가드는 호출된다(= 제시만으로 우회 불가). 소유·상태·슬롯·fencing 대조는 가드 spec 담당.
+      // 전환 건은 attempt 잠금과 같은 트랜잭션이어야 하므로 manager 를 넘긴다.
       expect(guard.assertRefundExecutionAllowed).toHaveBeenCalledWith(
         expect.objectContaining({ orderDeliveryId, fencing }),
-        undefined,
+        manager,
       );
     });
 
-    it('게이트를 통과하면 ledger 를 기록한다', async () => {
+    it('세대가 회수된 실행은 게이트 이전에 원장을 쓰지 못한다', async () => {
+      // 재조정이 세대를 올린 뒤라면 살아남은 콜백도 환불을 커밋하지 못해야 한다.
+      const { service, chain, guard } = createLedger(true, { generation: '99' });
+
+      await expect(service.claim({ ...baseInput, refundExecution: fencing })).rejects.toMatchObject({
+        response: { code: 'REFUND_EXECUTION_STALE' },
+      });
+      expect(chain.execute).not.toHaveBeenCalled();
+      expect(guard.assertRefundExecutionAllowed).not.toHaveBeenCalled();
+    });
+
+    it('실행 중이 아닌 attempt 의 claim 도 거부한다', async () => {
+      const { service, chain } = createLedger(true, { status: RefundAttemptStatus.RECONCILING });
+
+      await expect(service.claim({ ...baseInput, refundExecution: fencing })).rejects.toMatchObject({
+        response: { code: 'REFUND_EXECUTION_STALE' },
+      });
+      expect(chain.execute).not.toHaveBeenCalled();
+    });
+
+    it('attempt 행을 잠금 읽기로 확정한다 — 재조정과 직렬화되지 않으면 이중 환불이 열린다', async () => {
+      const { service, attemptFindOne } = createLedger(true);
+
+      await service.claim({ ...baseInput, refundExecution: fencing });
+
+      expect(attemptFindOne).toHaveBeenCalledWith(
+        expect.objectContaining({ lock: { mode: 'pessimistic_write' } }),
+      );
+    });
+
+    it('게이트를 통과하면 attempt id와 외부 멱등키를 ledger에 기록한다', async () => {
       const { service, chain } = createLedger(true);
 
       await service.claim({ ...baseInput, refundExecution: fencing });
 
       expect(chain.execute).toHaveBeenCalled();
+      expect(chain.values).toHaveBeenCalledWith(
+        expect.objectContaining({
+          refundAttemptId: fencing.refundAttemptId,
+          externalIdempotencyKey: fencing.externalIdempotencyKey,
+        }),
+      );
     });
 
     it('claimWithManager 도 같은 게이트를 거친다', async () => {

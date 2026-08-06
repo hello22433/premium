@@ -1,14 +1,16 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, Repository } from 'typeorm';
+import { BadRequestException, ConflictException, Injectable, Logger } from '@nestjs/common';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import {
   OrderDeliveryRefundEntity,
   OrderDeliveryRefundRestoreType,
   OrderDeliveryRefundSourcePath,
 } from '../../entity/order.delivery.refund.entity';
+import { RefundAttemptEntity } from '../../entity/refund.attempt.entity';
 import { DeliveryCutoverGuardService, RefundExecutionFencing } from './delivery-cutover-guard.service';
 import { LegacyDeliveryEntryPoint } from '../interface/legacy.delivery.entry.point';
+import { REFUND_EXECUTING_STATUSES } from '../interface/refund.attempt.status';
 
 export interface ClaimRefundInput {
   orderDeliveryId: number;
@@ -35,7 +37,7 @@ export interface ClaimRefundInput {
    * `workflowVersion` 을 함께 받아, 가드가 attempt 와 현재 workflow 슬롯 소유자를 **한 쿼리로** 대조한다
    * (lease 를 뺏긴 stale worker 차단). 미전환 건은 이 값이 없어도 기존 경로 그대로 동작한다.
    */
-  refundExecution?: RefundExecutionFencing;
+  refundExecution?: RefundExecutionFencing & { externalIdempotencyKey: string };
 }
 
 /**
@@ -58,7 +60,22 @@ export class RefundLedgerService {
     @InjectRepository(OrderDeliveryEntity)
     private readonly deliveryRepository: Repository<OrderDeliveryEntity>,
     private readonly cutoverGuard: DeliveryCutoverGuardService,
+    @InjectDataSource() private readonly dataSource: DataSource,
   ) {}
+
+  async findByAttempt(
+    refundAttemptId: string,
+    orderDeliveryId: number,
+    amount: number,
+  ): Promise<OrderDeliveryRefundEntity | null> {
+    return await this.refundRepository.findOne({
+      where: {
+        refundAttemptId,
+        orderDeliveryId,
+        refundAmount: amount,
+      },
+    });
+  }
 
   /**
    * 상위 게이트 확인 (§9 인벤토리 #12). 두 게이트(기존 ledger claim · 신규 `refund_attempt`)가
@@ -80,6 +97,21 @@ export class RefundLedgerService {
   }
 
   async claim(input: ClaimRefundInput): Promise<void> {
+    // 전환 건은 attempt 잠금 → 게이트 → INSERT 를 **한 트랜잭션**으로 묶는다.
+    // 잠금이 INSERT 커밋까지 유지돼야 재조정이 "원장 부재"를 미실행 증거로 쓸 수 있다(lockExecutingAttempt 참고).
+    if (input.refundExecution) {
+      // `@Transactional()` 호출자 안이면 그 트랜잭션에 합류한다. `dataSource.transaction` 은
+      // typeorm-transactional 이 항상 **독립 트랜잭션**으로 돌리므로, 여기서 그대로 쓰면
+      // 호출자가 롤백해도 원장만 남는 divergence 가 생긴다.
+      const ambient = this.refundRepository.manager as EntityManager | undefined;
+      if (ambient?.queryRunner?.isTransactionActive) {
+        await this.claimWithManager(ambient, input);
+        return;
+      }
+      await this.dataSource.transaction(async (manager) => await this.claimWithManager(manager, input));
+      return;
+    }
+
     await this.assertUpstreamGate(input);
     await this.insertLedger(this.refundRepository, input);
     await this.markRefundedAt(this.deliveryRepository, input.orderDeliveryId);
@@ -153,9 +185,54 @@ export class RefundLedgerService {
   }
 
   async claimWithManager(manager: EntityManager, input: ClaimRefundInput): Promise<void> {
+    await this.lockExecutingAttempt(manager, input);
     await this.assertUpstreamGate(input, manager);
     await this.insertLedger(manager.getRepository(OrderDeliveryRefundEntity), input);
-    await this.markRefundedAt(manager.getRepository(OrderDeliveryEntity), input.orderDeliveryId);
+    if (!input.refundExecution) {
+      await this.markRefundedAt(manager.getRepository(OrderDeliveryEntity), input.orderDeliveryId);
+    }
+  }
+
+  /**
+   * 전환 건 ledger claim 의 **직렬화 지점**. `refund_attempt` 행을 잠금(현재) 읽기로 확정한다.
+   *
+   * 재조정(`RefundAttemptExecutorService.reconcile`)은 같은 행을 `FOR UPDATE` 로 잠그고 세대를 올린 뒤
+   * "원장 부재 = 외부 미실행"을 확정한다. 이 잠금이 없으면 두 트랜잭션이 서로를 보지 못하고 엇갈린다.
+   *   - 재조정이 먼저면: 여기서 세대 불일치를 보고 거부 → 살아남은 콜백도 환불을 커밋하지 못한다.
+   *   - claim 이 먼저면: 재조정이 이 트랜잭션 커밋까지 대기 → 원장을 보고 FAILED 로 확정하지 않는다.
+   * 즉 "실제 환불 성공 + attempt FAILED" 조합이 성립하지 않는다.
+   *
+   * 스냅샷(비잠금) 읽기로는 재조정이 이미 커밋한 세대를 볼 수 없어 대조 자체가 무의미하다.
+   * 잠금 순서는 다른 경로와 동일하게 attempt → workflow 로 고정한다(교착 방지).
+   */
+  private async lockExecutingAttempt(manager: EntityManager, input: ClaimRefundInput): Promise<void> {
+    const fencing = input.refundExecution;
+    if (!fencing) {
+      return;
+    }
+
+    const attempt = await manager.getRepository(RefundAttemptEntity).findOne({
+      where: { id: fencing.refundAttemptId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (
+      !attempt ||
+      attempt.orderDeliveryId !== input.orderDeliveryId ||
+      attempt.ownerToken !== fencing.ownerToken ||
+      attempt.generation !== fencing.generation ||
+      attempt.workflowVersion !== fencing.workflowVersion ||
+      !REFUND_EXECUTING_STATUSES.includes(attempt.status)
+    ) {
+      this.logger.warn(
+        `[REFUND_LEDGER] 세대가 회수된 실행의 claim 거부. ` +
+          `orderDeliveryId=${input.orderDeliveryId}, refundAttemptId=${fencing.refundAttemptId}`,
+      );
+      throw new ConflictException({
+        code: 'REFUND_EXECUTION_STALE',
+        refundAttemptId: fencing.refundAttemptId,
+        orderDeliveryId: input.orderDeliveryId,
+      });
+    }
   }
 
   async releaseWithManager(manager: EntityManager, orderDeliveryId: number): Promise<void> {
@@ -179,6 +256,8 @@ export class RefundLedgerService {
           sourcePath: input.sourcePath,
           operatorUserId: input.operatorUserId ?? null,
           memo: input.memo ?? null,
+          refundAttemptId: input.refundExecution?.refundAttemptId ?? null,
+          externalIdempotencyKey: input.refundExecution?.externalIdempotencyKey ?? null,
           // SSG 주문은 보정 완료 신호 false 로 시작 → resolver 성공 시 markSsgSettled 로 true.
           // 그 외 (비-SSG) 는 true (의미 없음, 가드에서 SSG type 분기로 영향 X).
           ssgBalanceSettled: !input.ssgPending,

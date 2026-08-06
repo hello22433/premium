@@ -27,4 +27,5 @@ export enum ActivityLogActionType {
   ACCOUNT_ANONYMIZE = 'ACCOUNT_ANONYMIZE', // 익명화 (LEAVE +6개월 PII 파기)
   SETTLE_DISCOUNT_MODIFY = 'SETTLE_DISCOUNT_MODIFY', // 정산 할인/할증 수동 변경 (정산정보 입력/수정)
   SETTLE_DISCOUNT_AUTO_CAPTURE = 'SETTLE_DISCOUNT_AUTO_CAPTURE', // 발송확정 시 할인 자동 매칭 캡처
+  API_ACCESS_CONFIG_MODIFY = 'API_ACCESS_CONFIG_MODIFY', // 외부 API 접근/차감 귀속 설정 변경
 }

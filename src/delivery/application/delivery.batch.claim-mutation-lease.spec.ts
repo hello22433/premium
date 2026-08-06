@@ -35,6 +35,7 @@ describe('DeliveryBatchService.claimWaitDeliveries — 변형 lease 제외 (D3-5
       assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
       assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
       isCutover: jest.fn().mockResolvedValue(false),
+      isWorkflowResend: jest.fn().mockResolvedValue(null),
       splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
     };
     (sut as any).orderDeliveryRepository = { createQueryBuilder: jest.fn(() => qb) };
@@ -151,6 +152,7 @@ describe('DeliveryBatchService.processOneDeliveryForBatch — 변형 lease 반�
       assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
       assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
       isCutover: jest.fn().mockResolvedValue(false),
+      isWorkflowResend: jest.fn().mockResolvedValue(null),
       splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
     };
     (sut as any).orderDeliveryRepository = { update };
@@ -240,10 +242,20 @@ describe('DeliveryBatchService.processOneDeliveryInternal — full save() 부재
       assertLegacyAllowed: jest.fn().mockResolvedValue(undefined),
       assertRefundExecutionAllowed: jest.fn().mockResolvedValue(undefined),
       isCutover: jest.fn().mockResolvedValue(false),
+      isWorkflowResend: jest.fn().mockResolvedValue(null),
       splitLegacyAllowed: jest.fn(async (ids: number[]) => ({ allowed: ids, blocked: [] })),
     };
     (sut as any).orderDeliveryRepository = repo;
     (sut as any).logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    // PIN 발급 명령 기록(§5.2 최소 배선) — 기록 전용이라 이 스펙의 검증 대상은 아니지만,
+    // PIN 발급 성공·실패 경로가 모두 호출하므로 스텁이 없으면 그 분기에서 터진다.
+    (sut as any).pinIssueCommandService = {
+      recordAttempt: jest.fn().mockResolvedValue(undefined),
+      markSucceeded: jest.fn().mockResolvedValue(undefined),
+      markRetryPending: jest.fn().mockResolvedValue(undefined),
+      markExhausted: jest.fn().mockResolvedValue(undefined),
+      markTerminal: jest.fn().mockResolvedValue(undefined),
+    };
     (sut as any).cryptoCipher = {
       safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01011112222'),
       encryptDeliveryTarget: jest.fn().mockReturnValue('ENC_OUT'),
@@ -501,7 +513,9 @@ describe('DeliveryBatchService.processOneDeliveryInternal — full save() 부재
       await (sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN);
 
       // 운영이 잃은 쓰기를 대사할 때 order 조인을 손으로 안 하도록 orderId 를 함께 남긴다(리뷰 P1).
-      const msg = (sut as any).logger.error.mock.calls.map((c: any[]) => c[0]).find((m: string) => m?.includes('[BATCH_FENCE_LOST]'));
+      const msg = (sut as any).logger.error.mock.calls
+        .map((c: any[]) => c[0])
+        .find((m: string) => m?.includes('[BATCH_FENCE_LOST]'));
       expect(msg).toContain('[BATCH_FENCE_LOST]');
       expect(msg).toContain('orderId: 55');
     });

@@ -99,6 +99,10 @@ export const UserAuthMainMenuAuthList = (userSubmenuAuthList: UserAuthSubEnum[])
       mainMenuSet.add(UserAuthMainEnum.SETTLEMENT);
     }
 
+    if (subMenu === UserAuthSubEnum.DEPOSIT_HISTORY) {
+      mainMenuSet.add(UserAuthMainEnum.SETTLEMENT);
+    }
+
     if (subMenu === UserAuthSubEnum.NOTICE) {
       mainMenuSet.add(UserAuthMainEnum.CUSTOMER_SERVICE);
     }

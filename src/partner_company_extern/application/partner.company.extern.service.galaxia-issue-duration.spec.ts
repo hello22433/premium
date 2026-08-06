@@ -1,3 +1,5 @@
+import { PartnerSettleFeatureFlag } from '../../partner_settle/application/partner.settle.feature.flag';
+import { PartnerSettleProducerService } from '../../partner_settle/application/partner.settle.producer.service';
 // 실제 DB 연결 없는 단위 테스트이므로 typeorm-transactional 데코레이터를 no-op으로 mock한다.
 jest.mock('typeorm-transactional', () => ({
   Transactional: () => (_target: unknown, _key: unknown, _descriptor: unknown) => _descriptor,
@@ -109,6 +111,8 @@ describe('PartnerCompanyExternService - Galaxia issue duration 선택', () => {
         { provide: CryptoCipher, useValue: { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01099998888') } },
         { provide: SsgInsertStateService, useValue: mock<any>() },
         { provide: getRepositoryToken(SsgResendDeductPendingEntity), useValue: {} },
+        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, isEnabledFor: () => false } },
+        { provide: PartnerSettleProducerService, useValue: {} },
       ],
     }).compile();
 
