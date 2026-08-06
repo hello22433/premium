@@ -6,7 +6,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, In, IsNull, Not, Repository } from 'typeorm';
 import { PartnerSettleLedgerEntity } from '../../entity/partner.settle.ledger.entity';
 import {
   IPartnerSettleLedgerStatus,
@@ -125,19 +125,28 @@ export class PartnerSettleLedgerService {
     private readonly ledgerRepository: Repository<PartnerSettleLedgerEntity>,
     private readonly pricingResolver: PartnerSettlePricingResolverService,
   ) {}
+  /**
+   * 수동 queryRunner 트랜잭션(CS execDiscard 등)에서 호출할 때 manager 를 넘기면
+   * 그 manager 의 queryRunner 를 통해 같은 커넥션에서 잠금·조회·INSERT 가 실행된다.
+   * CLS 경로(P1~P5)는 manager 를 넘기지 않으므로 기존 동작이 1비트도 바뀌지 않는다.
+   */
+  private repo(manager?: EntityManager): Repository<PartnerSettleLedgerEntity> {
+    return manager ? manager.getRepository(PartnerSettleLedgerEntity) : this.ledgerRepository;
+  }
+
 
   /**
    * 잠금 순서 1~2단계. producer 는 원천을 읽기 **전에** 이걸 먼저 부른다.
    *
    * 순서를 producer 마다 다르게 잡으면 일일 배치와 push 수신이 교차 데드락에 걸린다.
    */
-  async lockForAppend(partnerCompanyId: number, orderDeliveryId: number | null): Promise<void> {
+  async lockForAppend(partnerCompanyId: number, orderDeliveryId: number | null, manager?: EntityManager): Promise<void> {
     // 트랜잭션이 없으면 raw FOR UPDATE 가 에러 없이 무력화된다(autocommit). 잠근 줄 알고 진행하는 게 최악이다.
-    assertInTransaction(this.ledgerRepository, '정산 원장 잠금(lockForAppend)');
+    assertInTransaction(manager ?? this.ledgerRepository, '정산 원장 잠금(lockForAppend)');
 
-    await this.pricingResolver.lockPolicyForRead(partnerCompanyId);
+    await this.pricingResolver.lockPolicyForRead(partnerCompanyId, manager);
     if (orderDeliveryId !== null) {
-      await this.ledgerRepository.query('SELECT id FROM order_delivery WHERE id = ? FOR UPDATE', [orderDeliveryId]);
+      await this.repo(manager).query('SELECT id FROM order_delivery WHERE id = ? FOR UPDATE', [orderDeliveryId]);
     }
   }
 
@@ -165,17 +174,17 @@ export class PartnerSettleLedgerService {
    * 부분취소는 §6.4 이중 불변식(base·settle 각각 잔여 소진)을 `calculatePartialReversal` 이 강제하고,
    * 마지막 취소가 잔여 전량을 소진해 모든 구성금액이 정확히 0 이 된다.
    */
-  async appendReversal(command: LedgerReversalCommand): Promise<PartnerSettleLedgerEntity> {
+  async appendReversal(command: LedgerReversalCommand, manager?: EntityManager): Promise<PartnerSettleLedgerEntity> {
     // 아래 pessimistic_write 는 비트랜잭션이면 TypeORM 이 쿼리를 거부한다. 그 전에 계약 위반으로 끊는다.
-    assertInTransaction(this.ledgerRepository, '정산 원장 역분개(appendReversal)');
+    assertInTransaction(manager ?? this.ledgerRepository, '정산 원장 역분개(appendReversal)');
 
     const idempotencyKey = buildReversalKey(command.baseIdempotencyKey, command.reversesLedgerId);
 
-    const existing = await this.findByIdempotencyKey(idempotencyKey);
+    const existing = await this.findByIdempotencyKey(idempotencyKey, manager);
     if (existing) return existing;
 
     // 원본을 잠근 뒤에 기존 역분개를 접어야 동시 취소 2건이 같은 잔여를 두 번 쓰지 않는다.
-    const original = await this.ledgerRepository
+    const original = await this.repo(manager)
       .createQueryBuilder('ledger')
       .setLock('pessimistic_write')
       .where('ledger.id = :id', { id: command.reversesLedgerId })
@@ -192,7 +201,7 @@ export class PartnerSettleLedgerService {
       throw new LedgerInvariantError(`역분개 row 를 다시 역분개할 수 없다: ${original.id}`);
     }
 
-    const priorReversals = await this.ledgerRepository.find({
+    const priorReversals = await this.repo(manager).find({
       where: { reversesLedgerId: original.id },
     });
     const reversedTotals = sumBreakdowns(priorReversals.map(toBreakdown));
@@ -234,7 +243,7 @@ export class PartnerSettleLedgerService {
       ...amountColumns(amounts),
     };
 
-    return this.insertRow(row, idempotencyKey);
+    return this.insertRow(row, idempotencyKey, manager);
   }
 
   private calculateReversalAmounts(
@@ -409,16 +418,16 @@ export class PartnerSettleLedgerService {
   }
 
   /** append 결과는 항상 멱등키로 재조회한다 — 신규 INSERT 든 **멱등키** 충돌이든 답은 같은 row 다. */
-  private async insertRow(row: LedgerRow, idempotencyKey: string): Promise<PartnerSettleLedgerEntity> {
+  private async insertRow(row: LedgerRow, idempotencyKey: string, manager?: EntityManager): Promise<PartnerSettleLedgerEntity> {
     try {
-      await insertRawRow(this.ledgerRepository, 'partner_settle_ledger', row, {
+      await insertRawRow(this.repo(manager), 'partner_settle_ledger', row, {
         idempotentConstraints: [LEDGER_IDEMPOTENCY_CONSTRAINT],
       });
     } catch (error) {
       this.rethrowInsertConflict(error, idempotencyKey);
     }
 
-    const inserted = await this.findByIdempotencyKey(idempotencyKey);
+    const inserted = await this.findByIdempotencyKey(idempotencyKey, manager);
     if (!inserted) {
       throw new InternalServerErrorException('정산 원장 append 결과를 다시 읽지 못했습니다.');
     }
@@ -452,8 +461,25 @@ export class PartnerSettleLedgerService {
     throw error;
   }
 
-  private findByIdempotencyKey(idempotencyKey: string): Promise<PartnerSettleLedgerEntity | null> {
-    return this.ledgerRepository.findOne({ where: { idempotencyKey } });
+  private findByIdempotencyKey(idempotencyKey: string, manager?: EntityManager): Promise<PartnerSettleLedgerEntity | null> {
+    return this.repo(manager).findOne({ where: { idempotencyKey } });
+  }
+
+  /**
+   * 취소/역분개 대상 원장을 찾는다 — `reverses_ledger_id IS NULL` 이고 `NEEDS_REVIEW` 가 아닌 row.
+   *
+   * 호출부(P4 L2 · P2 CANCEL · P6 CS 폐기)가 이 결과의 `id` 를 `recordCancellation.reversesLedgerId` 로 넘긴다.
+   * 결과가 비어 있으면 "원본 원장이 없다"(flag off 시 기록된 사용 건, 또는 이미 전액 역분개)이므로 취소 생략.
+   */
+  async findReversibleEntries(orderDeliveryId: number, manager?: EntityManager): Promise<PartnerSettleLedgerEntity[]> {
+    return this.repo(manager).find({
+      where: {
+        orderDeliveryId,
+        reversesLedgerId: IsNull(),
+        status: Not(In(['NEEDS_REVIEW'] satisfies IPartnerSettleLedgerStatus[])),
+      },
+      order: { id: 'ASC' },
+    });
   }
 }
 

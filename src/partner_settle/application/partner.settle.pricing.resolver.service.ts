@@ -1,6 +1,6 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
+import { EntityManager, IsNull, Repository } from 'typeorm';
 import { PartnerDiscountHistoryEntity } from '../../entity/partner.discount.history.entity';
 import { PartnerDiscountPolicyEpochEntity } from '../../entity/partner.discount.policy.epoch.entity';
 import {
@@ -36,16 +36,20 @@ export class PartnerSettlePricingResolverService {
    * 트랜잭션 밖이면 `pessimistic_read` 는 TypeORM 이 거부하고 epoch 생성만 커밋된다. 그 상태로
    * 진행하면 잠금 없이 매입율을 읽어 정책 변경과 경합한다 — 시작 지점에서 끊는다.
    */
-  async lockPolicyForRead(partnerCompanyId: number): Promise<void> {
-    assertInTransaction(this.epochRepository, '협력사 정산조건 정책 잠금(lockPolicyForRead)');
+  async lockPolicyForRead(partnerCompanyId: number, manager?: EntityManager): Promise<void> {
+    assertInTransaction(manager ?? this.epochRepository, '협력사 정산조건 정책 잠금(lockPolicyForRead)');
+
+    const epochRepo = manager
+      ? manager.getRepository(PartnerDiscountPolicyEpochEntity)
+      : this.epochRepository;
 
     // 정책 변경이 한 번도 없던 협력사는 epoch row 자체가 없다. 없으면 잠글 대상도 없으므로 만든다.
-    await this.epochRepository.query(
+    await epochRepo.query(
       'INSERT IGNORE INTO partner_discount_policy_epoch (partner_company_id) VALUES (?)',
       [partnerCompanyId],
     );
 
-    const locked = await this.epochRepository
+    const locked = await epochRepo
       .createQueryBuilder('epoch')
       .setLock('pessimistic_read')
       .where('epoch.partnerCompanyId = :partnerCompanyId', { partnerCompanyId })

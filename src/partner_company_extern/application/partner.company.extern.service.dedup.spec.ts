@@ -1,3 +1,5 @@
+import { PartnerSettleFeatureFlag } from '../../partner_settle/application/partner.settle.feature.flag';
+import { PartnerSettleProducerService } from '../../partner_settle/application/partner.settle.producer.service';
 // 실제 DB 연결 없는 단위 테스트이므로 typeorm-transactional 데코레이터를 no-op으로 mock한다.
 // 이렇게 하면 @Transactional이 wrap-in-transaction을 거치지 않고 원래 메서드를 그대로 실행한다.
 jest.mock('typeorm-transactional', () => ({
@@ -133,6 +135,8 @@ describe('PartnerCompanyExternService - PIN dedup recovery', () => {
           provide: getRepositoryToken(SsgResendDeductPendingEntity),
           useValue: resendDeductPendingRepository,
         },
+        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, isEnabledFor: () => false } },
+        { provide: PartnerSettleProducerService, useValue: {} },
         {
           provide: getRepositoryToken(GiftielExchangeHistoryEntity),
           useValue: { ...mock<Repository<GiftielExchangeHistoryEntity>>(), ...makeRepoMock() },

@@ -27,7 +27,7 @@ import {
 import { SsgInsertStateService, SsgAttemptPayload } from '../../delivery/application/ssg-insert-state.service';
 import { MarkAttemptedResult, SsgInsertState } from '../../delivery/interface/ssg.insert.state';
 import { SsgOrphanResolveOutcome } from '../interface/ssg.orphan.resolve';
-import { Propagation, Transactional } from 'typeorm-transactional';
+import { Propagation, runInTransaction, Transactional } from 'typeorm-transactional';
 import { orderBarcodeGenerate } from '../../order/domain/order.code.generate';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { SsgResendDeductPendingEntity } from '../../entity/ssg.resend.deduct.pending.entity';
@@ -45,6 +45,11 @@ import { parseDateString, isExpiredYMD, formatDateYMD } from '../../util/date.ut
 import { applyReplaceCharacters } from '../../common/utils/replace-characters.util';
 import { resolveGalaxiaUsage } from '../../common/utils/galaxia.usage.util';
 import { sleep } from '../../util/time.util';
+import { PartnerSettleFeatureFlag } from '../../partner_settle/application/partner.settle.feature.flag';
+import { PartnerSettleProducerService } from '../../partner_settle/application/partner.settle.producer.service';
+import { buildSettlementContext } from '../../partner_settle/application/partner.settle.context.builder';
+import { buildIssuanceKey, buildProviderTransitionKey } from '../../partner_settle/domain/settle.idempotency.key';
+import { fromDate } from '../../partner_settle/domain/settle.time';
 
 /**
  * issue() 결과 — 배치 재발송 선차감 정합용.
@@ -92,6 +97,8 @@ export class PartnerCompanyExternService {
     private ssgInsertStateService: SsgInsertStateService,
     @InjectRepository(SsgResendDeductPendingEntity)
     private resendDeductPendingRepository: Repository<SsgResendDeductPendingEntity>,
+    private readonly settleFlag: PartnerSettleFeatureFlag,
+    private readonly settleProducer: PartnerSettleProducerService,
   ) {}
 
   private logger = new Logger('PARTNER_COMPANY_EXTERN');
@@ -307,6 +314,10 @@ export class PartnerCompanyExternService {
         ...(orderDelivery.ssgEventId != null ? { ssgEventId: orderDelivery.ssgEventId } : {}),
       },
     );
+
+    // ── P1 정산 원장 (B14 §4 P1 — 발행분 ISSUANCE) ──────────────────────────
+    // 이미 REQUIRES_NEW 안이므로 same-tx(§6.5). 멱등키 ISS:{orderDeliveryId} 로 중복 0.
+    await this.recordIssuanceSettlement(orderDelivery);
   }
 
   @Transactional({ propagation: Propagation.REQUIRED })
@@ -1186,6 +1197,8 @@ export class PartnerCompanyExternService {
       this.logger.warn(`partnerCompany relation 로딩 누락 fallback 발동 (orderDeliveryId: ${orderDelivery.id})`);
       partnerType = partnerCompany.type;
     }
+    // P5 정산 증적 — SSG 교환 감지 시 아래 CAS+producer same-tx 에서 사용한다.
+    let ssgExchangeEvidence: { occurredAt: Date | null; evidenceRef: string } | null = null;
 
     switch (partnerType) {
       // 1. GALAXIA
@@ -1438,6 +1451,12 @@ export class PartnerCompanyExternService {
           if (executeDate) {
             orderDelivery.tradeAt = new Date(executeDate);
           }
+
+          // P5 정산 증적 수집 — CAS 성공 후 producer 에서 사용한다.
+          ssgExchangeEvidence = {
+            occurredAt: orderDelivery.tradeAt ?? null,
+            evidenceRef: `${orderDelivery.ssgEvent.no}|${orderDelivery.ssgEvent.order}|${orderDelivery.personalCode}`,
+          };
         }
         break;
       }
@@ -1509,27 +1528,61 @@ export class PartnerCompanyExternService {
     //   "터미널 다운그레이드 금지" 도 안 된다: 폐기 실패 후 동기화(CANCEL → 실제 NOT_USED 정정)라는
     //   **정당한 다운그레이드**가 실재하고, 그걸 막으면 살아있는 쿠폰이 DB 상 죽은 채로 굳는다.
     //   진입 시점 값 대조는 그 둘을 정확히 가른다.
-    const write = await this.orderDeliveryRepository
-      .createQueryBuilder()
-      .update(OrderDeliveryEntity)
-      .set({
-        couponStatus: orderDelivery.couponStatus,
-        discardedAt: orderDelivery.discardedAt,
-        tradeAt: orderDelivery.tradeAt,
-        tradePlace: orderDelivery.tradePlace,
-        galaxiaBalance: orderDelivery.galaxiaBalance,
-      })
-      .where('id = :id', { id: orderDelivery.id })
-      // NULL-safe equality(<=>) — coupon_status 가 NULL 인 행도 정상 대조된다.
-      .andWhere('coupon_status <=> :loaded', { loaded: loadedCouponStatus })
-      .execute();
-    if (!write.affected) {
-      // 조회(외부 통신, 수 초) 도중 남이 coupon_status 를 바꿨다. 우리 결과는 stale 이므로 버린다.
-      // 덮어썼다면 폐기·환불이 확정된 쿠폰을 되살렸을 것이다.
-      this.logger.error(
-        `[핀상태갱신] 조회 중 쿠폰상태가 변경됨 — 갱신을 폐기한다(stale 덮어쓰기 방지). ` +
-          `orderDeliveryId=${orderDelivery.id}, 진입시=${loadedCouponStatus}, 협력사응답=${orderDelivery.couponStatus}`,
-      );
+
+    // P5 SSG 정산: isSettlementTarget 이면 CAS + producer 를 같은 트랜잭션으로 묶는다(§6.5).
+    // flag off 경로는 기존 CAS 단독 실행과 1비트도 다르지 않다(§4.6 회귀 요건).
+    const provider = partnerType as IPartnerCompanyType;
+    const needsSsgSettlement =
+      !!ssgExchangeEvidence && this.settleFlag.isEnabledFor(provider);
+
+    const executeCasWrite = () =>
+      this.orderDeliveryRepository
+        .createQueryBuilder()
+        .update(OrderDeliveryEntity)
+        .set({
+          couponStatus: orderDelivery.couponStatus,
+          discardedAt: orderDelivery.discardedAt,
+          tradeAt: orderDelivery.tradeAt,
+          tradePlace: orderDelivery.tradePlace,
+          galaxiaBalance: orderDelivery.galaxiaBalance,
+        })
+        .where('id = :id', { id: orderDelivery.id })
+        // NULL-safe equality(<=>) — coupon_status 가 NULL 인 행도 정상 대조된다.
+        .andWhere('coupon_status <=> :loaded', { loaded: loadedCouponStatus })
+        .execute();
+
+    const handleCasResult = (affected: number | undefined) => {
+      if (!affected) {
+        this.logger.error(
+          `[핀상태갱신] 조회 중 쿠폰상태가 변경됨 — 갱신을 폐기한다(stale 덮어쓰기 방지). ` +
+            `orderDeliveryId=${orderDelivery.id}, 진입시=${loadedCouponStatus}, 협력사응답=${orderDelivery.couponStatus}`,
+        );
+      }
+      return !!affected;
+    };
+
+    if (needsSsgSettlement) {
+      await runInTransaction(async () => {
+        const write = await executeCasWrite();
+        if (!handleCasResult(write.affected)) return;
+
+        const ctx = buildSettlementContext(orderDelivery, provider);
+        if (!ctx || !this.settleProducer.isSettlementTarget(ctx, 'EXCHANGE')) return;
+
+        const ev = ssgExchangeEvidence!;
+        await this.settleProducer.record(ctx, {
+          kind: 'EXCHANGE',
+          idempotencyKey: buildProviderTransitionKey(IPartnerCompanyType.SSG, 'EXCHANGE', ev.evidenceRef),
+          occurredAt: ev.occurredAt ? fromDate(ev.occurredAt) : null,
+          baseAmount: orderDelivery.orderProductMapping?.snapshotProductPrice != null
+            ? BigInt(orderDelivery.orderProductMapping.snapshotProductPrice)
+            : null,
+          providerEvidenceRef: ev.evidenceRef,
+        });
+      });
+    } else {
+      const write = await executeCasWrite();
+      handleCasResult(write.affected);
     }
     return orderDelivery;
   }
@@ -1643,5 +1696,44 @@ export class PartnerCompanyExternService {
       return SsgOrphanResolveOutcome.NETWORK_UNKNOWN;
     }
     return SsgOrphanResolveOutcome.FAILED;
+  }
+
+  /**
+   * P1 정산 원장 — 발행분 ISSUANCE.
+   *
+   * flag off 면 즉시 리턴(DB 접근 0). flag on 이면 조인 재조회 → producer.record.
+   * persistIssuedPin 의 REQUIRES_NEW 안에서 호출되므로 same-tx(§6.5).
+   */
+  private async recordIssuanceSettlement(orderDelivery: OrderDeliveryEntity): Promise<void> {
+    // 조인 데이터 없이 provider 를 판정할 수 없으므로 전역 flag 만 먼저 검사한다.
+    if (!this.settleFlag.isEnabled) return;
+
+    const od = await this.orderDeliveryRepository.findOne({
+      where: { id: orderDelivery.id },
+      relations: [
+        'orderProductMapping',
+        'orderProductMapping.product',
+        'orderProductMapping.product.partnerCompany',
+        'choiceSelectProduct',
+        'choiceSelectProduct.partnerCompany',
+      ],
+    });
+    if (!od) return;
+
+    const provider = (od.choiceSelectProduct?.partnerCompany?.type ??
+      od.orderProductMapping?.product?.partnerCompany?.type) as IPartnerCompanyType | undefined;
+    if (!provider || !this.settleFlag.isEnabledFor(provider)) return;
+
+    const ctx = buildSettlementContext(od, provider);
+    if (!ctx) return;
+
+    await this.settleProducer.record(ctx, {
+      kind: 'ISSUANCE',
+      idempotencyKey: buildIssuanceKey(od.id),
+      occurredAt: fromDate(new Date()),
+      baseAmount: od.orderProductMapping?.snapshotProductPrice != null
+        ? BigInt(od.orderProductMapping.snapshotProductPrice)
+        : null,
+    });
   }
 }
