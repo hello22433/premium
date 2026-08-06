@@ -332,6 +332,17 @@ export class CustomerServiceHistoryReqDto {
   @IsOptional()
   @IsString()
   extraType?: string;
+  @ApiProperty({
+    description: '환불률 1~100 (환불폐기 유형에서만 사용)',
+    required: false,
+  })
+  // =================================
+  @IsOptional()
+  @IsNumber()
+  @Max(100)
+  @Min(1)
+  @Type(() => Number)
+  refundRatio?: number;
 }
 
 export class CustomerServiceStatusListReqDto extends PagingReqDto {

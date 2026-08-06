@@ -2329,6 +2329,7 @@ export class CustomerServiceService {
       content: getBody.content || '',
       beforeChange: beforeChange || '',
       afterChange: getBody.afterChange || '',
+      refundRatio: getBody.refundRatio,
       sendMethod,
       orderDelivery,
     };
@@ -3257,7 +3258,7 @@ export class CustomerServiceService {
           map.orderDeliveryId,
           OrderDeliveryCouponStatus.REFUND_CANCEL,
           undefined, // historyData — 공통 말미 saveCsHistory 가 저장
-          { refundRatio: map.orderDelivery.refundRatio },
+          { refundRatio: map.refundRatio ?? map.orderDelivery.refundRatio },
         );
         afterChange = result.orderDelivery.couponStatus;
         discardDestroyAmount = result.destroyAmount;

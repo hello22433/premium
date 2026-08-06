@@ -184,4 +184,33 @@ describe('CustomerServiceService.execDiscard — REFUND_CANCEL 환불 필드 원
       expect(setArg).not.toHaveProperty('refundRatio');
     });
   });
+  describe('(D) history 환불폐기 → 요청 환불률 전달', () => {
+    it('요청 환불률을 DB 기존값보다 우선해 execDiscard에 전달한다', async () => {
+      const sut: any = Object.create(CustomerServiceService.prototype);
+      const orderDelivery = buildOrderDelivery(OrderDeliveryCouponStatus.NOT_USED, 90);
+      sut.execDiscard = jest.fn().mockResolvedValue({
+        orderDelivery: { couponStatus: OrderDeliveryCouponStatus.REFUND_CANCEL },
+        destroyAmount: 100,
+        restoreAmount: 0,
+        refundStatus: 'SUCCESS',
+      });
+      sut.saveCsHistory = jest.fn().mockResolvedValue(undefined);
+
+      await sut.execHistory({
+        user: operator,
+        orderDeliveryId: orderDelivery.id,
+        type: '환불폐기',
+        refundRatio: 80,
+        orderDelivery,
+      });
+
+      expect(sut.execDiscard).toHaveBeenCalledWith(
+        operator,
+        orderDelivery.id,
+        OrderDeliveryCouponStatus.REFUND_CANCEL,
+        undefined,
+        { refundRatio: 80 },
+      );
+    });
+  });
 });
