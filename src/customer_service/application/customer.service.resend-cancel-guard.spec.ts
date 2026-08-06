@@ -35,6 +35,12 @@ describe('CustomerServiceService.execResend — 발송취소 차단', () => {
       csResendAsSms: jest.fn(),
       csResendAsAlimTalk: jest.fn(),
     };
+    // 변형 lease(mutationClaimedAt)는 이 spec 의 관심사가 아니다 — 항상 획득 성공으로 통과시킨다.
+    // ※ CANCEL 케이스는 이 스텁에 **도달하지 않는다**. status 가드가 lease 획득보다 앞에 있어야
+    //   거부된 건이 lease 를 쥐지 않기 때문이고, 그 순서 자체가 이 spec 이 지키는 계약의 일부다.
+    sut.acquireMutationLease = jest.fn().mockResolvedValue(true);
+    sut.isMutationLeaseOwned = jest.fn().mockResolvedValue(true);
+    sut.releaseMutationLease = jest.fn().mockResolvedValue(undefined);
     return sut;
   };
 

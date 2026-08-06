@@ -327,4 +327,43 @@ describe('OrderService cancelable — 술어 ↔ SQL parity (실 DB)', () => {
     const after = await deliveryRepository.findByIds(ids);
     expect(after[0].status).toBe('WAIT');
   });
+
+  /**
+   * 컷오버 배제 술어(NOT_CUTOVER_ORDER_DELIVERY)가 **실제로 차단하는가**.
+   *
+   * 부분취소 CAS 는 legacy claim 이라 §9 quiesce 계약상 이 술어를 함께 실어야 한다. 그런데 술어를
+   * 그냥 붙이기만 하면 delivery_workflow 행이 없는 평시엔 NOT EXISTS 가 항상 참이라 **아무것도
+   * 검증되지 않는다**(다른 6케이스가 통과해도 no-op 일 수 있다). 그래서 마크가 선 상황을 직접 만들어
+   * 취소가 거부되는지 본다. 이게 없으면 술어를 지워도 전 스위트가 초록이다.
+   *
+   * DRAINING·MIGRATED 둘 다 배제 대상이다(단방향 NONE → DRAINING → MIGRATED).
+   */
+  it.each([['cutover_draining_at'], ['cutover_migrated_at']])(
+    '%s 마크가 선 발송건은 CAS 가 취소를 거부한다 (§9 quiesce — 중복 환불 차단)',
+    async (column) => {
+      const { orderId, ids } = await seedOrder(IOrderType.GENERAL, [{}]);
+
+      // 조회 단계는 컷오버를 보지 않는다 — 화면엔 여전히 취소가능으로 뜬다(의도).
+      const before = new Set<number>(await service.findCancelableDeliveryIds(orderId, now));
+      expect(before.has(ids[0])).toBe(true);
+
+      await dataSource.query(
+        `INSERT INTO delivery_workflow (order_delivery_id, workflow_status, ${column}) VALUES (?, 'IN_PROGRESS', NOW(6))`,
+        [ids[0]],
+      );
+
+      const svc: any = Object.create(OrderService.prototype);
+      svc.orderDeliveryRepository = deliveryRepository;
+      svc.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+
+      await expect(svc.cancelDeliveriesIfStillWaiting(orderId, ids, '사유', new Date())).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+
+      const after = await deliveryRepository.findByIds(ids);
+      expect(after[0].status).toBe('WAIT'); // 신규 모델이 소유한 건을 legacy 가 뺏지 못했다
+
+      await dataSource.query('DELETE FROM delivery_workflow WHERE order_delivery_id = ?', [ids[0]]);
+    },
+  );
 });

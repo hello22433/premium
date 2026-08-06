@@ -116,6 +116,7 @@ import {
 } from '../domain/delivery.cancelable';
 import { listToMap, listToMapValue } from '../../util/map.util';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
+import { NOT_CUTOVER_ORDER_DELIVERY } from '../../delivery/interface/legacy.delivery.entry.point';
 import { CreateTransactionId } from '../domain/create.transaction.id';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
@@ -5900,6 +5901,17 @@ export class OrderService {
       //     지난 행만 집고, 집는 순간 claimed_at 이 찬다). 즉 이 조건은 10분 규칙을 갱신 시점에도
       //     지키기 위한 것이지 미발송 보장의 유일한 근거가 아니다.
       .andWhere('sendRequestAt >= :cutoffAt', { cutoffAt })
+      // ★ 컷오버 배제 술어 (§9 quiesce 계약 — legacy.delivery.entry.point.ts).
+      //   이 UPDATE 는 legacy claim CAS 다(WAIT 을 선점해 CANCEL 로 바꾸고 그 근거로 환불한다).
+      //   전환(cutover_migrated_at)·드레이닝(cutover_draining_at) 마크가 선 발송건은 Level A 슬롯
+      //   모델이 소유하는데, 두 모델은 서로의 점유를 모른다. 이 술어가 없으면 신규 모델이 잡고 있는
+      //   건을 legacy 취소가 함께 잡아 **중복 환불**이 뚫린다 — 계약이 막으려는 바로 그 경우다.
+      //   가드(assertLegacyAllowed)가 아니라 술어로 다는 이유: 판정과 점유를 한 문장으로 원자화해야
+      //   admission race(가드 통과 후 마크가 서는 창)가 닫힌다. 안전성의 근거는 술어 쪽이다.
+      //   ※ 표시용 술어(evaluateDeliveryCancelable)에는 넣지 않는다 — 화면은 delivery_workflow 를
+      //     읽지 않고, 컷오버는 운영 구간 상태라 여기서 걸리면 다른 경합과 똑같이 affected 부족 →
+      //     ConflictException("다시 조회 후 재시도")으로 드러난다.
+      .andWhere(NOT_CUTOVER_ORDER_DELIVERY)
       .andWhere('deletedAt IS NULL')
       .execute();
 
