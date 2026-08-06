@@ -1710,11 +1710,12 @@ export class UserManagementService {
   }
 
   // app 의 활성 credential 일괄 비활성화(키회전/회수 공통).
-  private async deactivateActiveCredentials(appId: string, when: Date): Promise<void> {
-    await this.apiCredentialRepository.update(
+  private async deactivateActiveCredentials(appId: string, when: Date): Promise<number> {
+    const result = await this.apiCredentialRepository.update(
       { apiAppId: appId, isActive: true },
       { isActive: false, revokedAt: when },
     );
+    return result.affected ?? 0;
   }
 
   // 프론트 안정 계약: "API 앱 미프로비저닝" 을 errorCode 로 식별(문구 변경에 안 깨짐).
@@ -1754,15 +1755,63 @@ export class UserManagementService {
     return { apiKey: rawKey, credentialId: saved.id };
   }
 
+  private async recordApiAccessConfigLog(input: {
+    operator?: ILoginUserInfo;
+    method: string;
+    requestUrl: string;
+    operation:
+      | 'CREDENTIAL_ISSUE'
+      | 'CREDENTIAL_ROTATE'
+      | 'CREDENTIAL_REVOKE'
+      | 'CUSTOMER_MAPPING_CREATE'
+      | 'CUSTOMER_MAPPING_UPDATE'
+      | 'CUSTOMER_MAPPING_DELETE';
+    params: Record<string, unknown>;
+  }): Promise<void> {
+    const operator = input.operator;
+    await this.activityLogService.createLog({
+      userId: operator?.id ?? 0,
+      userEmail: operator?.email ?? 'system@epopkon.com',
+      method: input.method,
+      requestUrl: input.requestUrl,
+      actionType: ActivityLogActionType.API_ACCESS_CONFIG_MODIFY,
+      ipAddress: '',
+      statusCode: 200,
+      result: ActivityLogResult.SUCCESS,
+      responseTime: 0,
+      requestParams: {
+        operation: input.operation,
+        ...input.params,
+      },
+    });
+  }
+
   // ─── 다중키/회전 credential 관리 (PR2 Phase 6) ───────────
   // accountId(=external_api_account.id) → api_app(sourceAccountId) 해석 후 credential 발급/조회/회수.
   // guard 는 credential.apiKeyHash(활성) 단건 조회라 한 app 에 복수 활성 credential 이 동시 인증 가능.
 
   // 추가 credential 발급(기존 활성키 유지 = 다중키). 평문 1회 반환.
   @Transactional()
-  async issueCredential(accountId: string): Promise<{ apiKey: string; credentialId: string }> {
+  async issueCredential(
+    accountId: string,
+    operator?: ILoginUserInfo,
+  ): Promise<{ apiKey: string; credentialId: string }> {
     const app = await this.resolveAppOrThrow(accountId);
-    return this.createCredentialForApp(app.id);
+    const issuedAt = new Date();
+    const result = await this.createCredentialForApp(app.id, issuedAt);
+    await this.recordApiAccessConfigLog({
+      operator,
+      method: 'POST',
+      requestUrl: '/user-management/api-keys/:accountId/credentials',
+      operation: 'CREDENTIAL_ISSUE',
+      params: {
+        accountId,
+        apiAppId: app.id,
+        credentialId: result.credentialId,
+        issuedAt,
+      },
+    });
+    return result;
   }
 
   // app 의 credential 목록(메타, raw key 미노출).
@@ -1784,7 +1833,7 @@ export class UserManagementService {
 
   // 특정 credential 회수(다중키 중 하나). 이미 회수면 멱등 no-op.
   @Transactional()
-  async revokeCredential(accountId: string, credentialId: string): Promise<void> {
+  async revokeCredential(accountId: string, credentialId: string, operator?: ILoginUserInfo): Promise<void> {
     const app = await this.resolveAppOrThrow(accountId);
     const credential = await this.apiCredentialRepository.findOne({
       where: { id: credentialId, apiAppId: app.id },
@@ -1798,15 +1847,47 @@ export class UserManagementService {
     credential.isActive = false;
     credential.revokedAt = new Date();
     await this.apiCredentialRepository.save(credential);
+    await this.recordApiAccessConfigLog({
+      operator,
+      method: 'DELETE',
+      requestUrl: '/user-management/api-keys/:accountId/credentials/:credentialId',
+      operation: 'CREDENTIAL_REVOKE',
+      params: {
+        accountId,
+        apiAppId: app.id,
+        credentialId,
+        beforeIsActive: true,
+        afterIsActive: false,
+        revokedAt: credential.revokedAt,
+      },
+    });
   }
 
   // 회전: 기존 활성 credential 전부 회수 + 신규 1건 발급. 평문 1회 반환.
   @Transactional()
-  async rotateCredential(accountId: string): Promise<{ apiKey: string; credentialId: string }> {
+  async rotateCredential(
+    accountId: string,
+    operator?: ILoginUserInfo,
+  ): Promise<{ apiKey: string; credentialId: string }> {
     const app = await this.resolveAppOrThrow(accountId);
     const now = new Date();
-    await this.deactivateActiveCredentials(app.id, now);
-    return this.createCredentialForApp(app.id, now);
+    const revokedActiveCredentialCount = await this.deactivateActiveCredentials(app.id, now);
+    const result = await this.createCredentialForApp(app.id, now);
+    await this.recordApiAccessConfigLog({
+      operator,
+      method: 'POST',
+      requestUrl: '/user-management/api-keys/:accountId/credentials/rotate',
+      operation: 'CREDENTIAL_ROTATE',
+      params: {
+        accountId,
+        apiAppId: app.id,
+        credentialId: result.credentialId,
+        revokedActiveCredentialCount,
+        issuedAt: now,
+        revokedAt: now,
+      },
+    });
+    return result;
   }
 
   // ─── 3계층 매핑모드 고객 매핑 CRUD (PR2 Phase 7) ──────────
@@ -1814,7 +1895,11 @@ export class UserManagementService {
   // active-only unique(generated active_key)로 활성 중복 차단, soft-delete 후 재등록 허용.
 
   @Transactional()
-  async createCustomerMapping(accountId: string, dto: CreateCustomerMappingReqDto): Promise<CustomerMappingResDto> {
+  async createCustomerMapping(
+    accountId: string,
+    dto: CreateCustomerMappingReqDto,
+    operator?: ILoginUserInfo,
+  ): Promise<CustomerMappingResDto> {
     const app = await this.resolveAppOrThrow(accountId);
     await this.assertBillingUserAllowed(dto.billingUserId);
     const externalCustomerId = dto.externalCustomerId.trim();
@@ -1839,6 +1924,20 @@ export class UserManagementService {
       }
       throw e;
     }
+    await this.recordApiAccessConfigLog({
+      operator,
+      method: 'POST',
+      requestUrl: '/user-management/api-keys/:accountId/customer-mappings',
+      operation: 'CUSTOMER_MAPPING_CREATE',
+      params: {
+        accountId,
+        apiAppId: app.id,
+        mappingId: saved.id,
+        externalCustomerId: saved.externalCustomerId,
+        beforeBillingUserId: null,
+        afterBillingUserId: saved.billingUserId,
+      },
+    });
     return this.toMappingRes(saved);
   }
 
@@ -1856,6 +1955,7 @@ export class UserManagementService {
     accountId: string,
     mappingId: string,
     dto: UpdateCustomerMappingReqDto,
+    operator?: ILoginUserInfo,
   ): Promise<CustomerMappingResDto> {
     const app = await this.resolveAppOrThrow(accountId);
     await this.assertBillingUserAllowed(dto.billingUserId);
@@ -1865,13 +1965,28 @@ export class UserManagementService {
     if (!mapping) {
       throw new NotFoundException('매핑을 찾을 수 없습니다.');
     }
+    const beforeBillingUserId = mapping.billingUserId;
     mapping.billingUserId = dto.billingUserId;
     const saved = await this.apiCustomerMappingRepository.save(mapping);
+    await this.recordApiAccessConfigLog({
+      operator,
+      method: 'PATCH',
+      requestUrl: '/user-management/api-keys/:accountId/customer-mappings/:mappingId',
+      operation: 'CUSTOMER_MAPPING_UPDATE',
+      params: {
+        accountId,
+        apiAppId: app.id,
+        mappingId,
+        externalCustomerId: saved.externalCustomerId,
+        beforeBillingUserId,
+        afterBillingUserId: saved.billingUserId,
+      },
+    });
     return this.toMappingRes(saved);
   }
 
   @Transactional()
-  async deleteCustomerMapping(accountId: string, mappingId: string): Promise<void> {
+  async deleteCustomerMapping(accountId: string, mappingId: string, operator?: ILoginUserInfo): Promise<void> {
     const app = await this.resolveAppOrThrow(accountId);
     const mapping = await this.apiCustomerMappingRepository.findOne({
       where: { id: mappingId, apiAppId: app.id },
@@ -1880,6 +1995,20 @@ export class UserManagementService {
       throw new NotFoundException('매핑을 찾을 수 없습니다.');
     }
     await this.apiCustomerMappingRepository.softRemove(mapping);
+    await this.recordApiAccessConfigLog({
+      operator,
+      method: 'DELETE',
+      requestUrl: '/user-management/api-keys/:accountId/customer-mappings/:mappingId',
+      operation: 'CUSTOMER_MAPPING_DELETE',
+      params: {
+        accountId,
+        apiAppId: app.id,
+        mappingId,
+        externalCustomerId: mapping.externalCustomerId,
+        beforeBillingUserId: mapping.billingUserId,
+        afterBillingUserId: null,
+      },
+    });
   }
 
   // billing user 정책범위 검증(PR2 확정 정책):
