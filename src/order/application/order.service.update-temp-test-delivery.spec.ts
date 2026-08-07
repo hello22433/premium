@@ -69,8 +69,23 @@ describe('OrderService updateTemp 테스트 발송 이력·한도 승계', () =>
     service.resolveOrderExpireAt = jest.fn(() => null);
     service.cryptoCipher = { encryptDeliveryTarget: jest.fn((target: string) => target) };
 
+    service.lockedOrderQuery = false;
+    // 락을 잡은 순서. 데드락 방지를 위해 order -> orderProductMapping 이어야 한다.
+    service.lockOrder = [];
     service.orderRepository = {
-      findOne: jest.fn(() => Promise.resolve({ id: ORDER_ID, userId: user.id, status: IOrderStatus.TEMP })),
+      // updateTemp 는 주문 행을 먼저 잠근다(락 순서 통일). 잠금 여부를 기록해 검증한다.
+      createQueryBuilder: jest.fn(() => {
+        const builder: any = {
+          setLock: jest.fn((mode: string) => {
+            service.lockedOrderQuery = mode === 'pessimistic_write';
+            service.lockOrder.push('order');
+            return builder;
+          }),
+          where: jest.fn(() => builder),
+          getOne: jest.fn(() => Promise.resolve({ id: ORDER_ID, userId: user.id, status: IOrderStatus.TEMP })),
+        };
+        return builder;
+      }),
       save: jest.fn(),
     };
     service.userRepository = {
@@ -87,6 +102,7 @@ describe('OrderService updateTemp 테스트 발송 이력·한도 승계', () =>
         const builder: any = {
           setLock: jest.fn((mode: string) => {
             service.lockedMappingQuery = mode === 'pessimistic_write';
+            service.lockOrder.push('orderProductMapping');
             return builder;
           }),
           where: jest.fn(() => builder),
@@ -101,6 +117,7 @@ describe('OrderService updateTemp 테스트 발송 이력·한도 승계', () =>
         return Promise.resolve(entity);
       }),
     };
+    service.logger = { error: jest.fn(), warn: jest.fn(), log: jest.fn() };
     service.orderDeliveryRepository = { delete: jest.fn(), insert: jest.fn() };
     service.orderManualEntryRepository = { delete: jest.fn(), insert: jest.fn() };
     service.testOrderDeliveryRepository = {
@@ -109,6 +126,20 @@ describe('OrderService updateTemp 테스트 발송 이력·한도 승계', () =>
         return Promise.resolve({ affected: 1 });
       }),
       softDelete: jest.fn(() => Promise.resolve({ affected: 1 })),
+      // 고아화 직전 WAIT 경보 마킹. 대상 라인 id 를 기록해 검증한다.
+      createQueryBuilder: jest.fn(() => {
+        const builder: any = {
+          update: jest.fn(() => builder),
+          set: jest.fn(() => builder),
+          where: jest.fn((_clause: string, params?: any) => {
+            if (params?.orphanedLineIds) service.escalatedLineIds = params.orphanedLineIds;
+            return builder;
+          }),
+          andWhere: jest.fn(() => builder),
+          execute: jest.fn(() => Promise.resolve({ affected: service.escalatedAffected ?? 0 })),
+        };
+        return builder;
+      }),
     };
 
     return service;
@@ -188,6 +219,16 @@ describe('OrderService updateTemp 테스트 발송 이력·한도 승계', () =>
     expect(service.testOrderDeliveryRepository.softDelete.mock.calls[0][0].orderProductMappingId.value).toEqual([6]);
   });
 
+  // 매핑이 삭제되면 잔류 정리(discardStaleTestDeliveries)가 그 이력에 도달할 수 없다.
+  // 아직 매핑 id 로 특정 가능한 시점에 경보를 남겨야 운영이 인지할 수 있다.
+  it('고아가 되는 라인의 WAIT 이력에 경보를 남긴다', async () => {
+    const service = buildService([existingMapping(5, 1, 1), existingMapping(6, 2, 2)]);
+
+    await service.updateTemp(user, body([line(5, 1)]));
+
+    expect(service.escalatedLineIds).toEqual([6]);
+  });
+
   it('삭제된 라인이 없으면 정리하지 않는다', async () => {
     const service = buildService([existingMapping(5, 1, 1)]);
 
@@ -202,5 +243,16 @@ describe('OrderService updateTemp 테스트 발송 이력·한도 승계', () =>
     await service.updateTemp(user, body([line(5, 1)]));
 
     expect(service.lockedMappingQuery).toBe(true);
+  });
+
+  // 락 순서는 order -> order_product_mapping -> test_order_delivery 한 방향이어야 한다.
+  // 주문을 먼저 잠그는 경로(deliveryRequest / deliveryConfirmed)와 순서가 반대면 데드락 사이클이 생긴다.
+  it('주문 행을 매핑보다 먼저 잠근다 (락 순서 통일 — 데드락 방지)', async () => {
+    const service = buildService([existingMapping(5, 1, 1)]);
+
+    await service.updateTemp(user, body([line(5, 1)]));
+
+    expect(service.lockedOrderQuery).toBe(true);
+    expect(service.lockOrder).toEqual(['order', 'orderProductMapping']);
   });
 });

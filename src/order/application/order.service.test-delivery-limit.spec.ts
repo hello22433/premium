@@ -18,8 +18,8 @@ import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.st
 
 /**
  * 테스트 발송(testDelivery) 정책 검증:
- *  - 운영관리자/최고관리자는 상품당 2회 제한을 우회한다 (횟수제한 예외로 막히지 않음).
- *  - 기업관리자(CORPORATE_ADMIN)는 상품당 2회 제한이 유지된다.
+ *  - 운영관리자/최고관리자는 상품 행당 2회 제한을 우회한다 (횟수제한 예외로 막히지 않음).
+ *  - 기업관리자(CORPORATE_ADMIN)는 상품 행당 2회 제한이 유지된다.
  *  - 한도 용량은 발송 전 조건부 UPDATE(test_delivery_count < 2) 로 원자 선점되어 동시 요청 초과가 차단된다.
  *  - 발송 실패 시 저장한 이력 정리 + 선점 한도 보상 차감(-1) 이 수행된다.
  *  - 이력은 TEMP(저장) → WAIT(발송 직전) → COMPLETE(발송 성공 후) 로 전이한다.
@@ -36,7 +36,7 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
     (DeliveryCreateCouponImage as jest.Mock).mockReset().mockResolvedValue({ path: 'test-coupon.png' });
   });
 
-  const LIMIT_MSG = '테스트발송은 상품당 최대 2회입니다.';
+  const LIMIT_MSG = '테스트발송은 상품 행당 최대 2회입니다.';
   const MISMATCH_MSG = '주문 정보와 상품 정보가 일치하지 않습니다.';
 
   // 주문 소유자 userId=10, 주문 id=77.
@@ -66,16 +66,24 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
     return builder;
   };
 
-  /** orderProductMapping 조회 builder. testDeliveryCount/ orderId 를 주입한다. */
+  /**
+   * orderProductMapping 조회 builder. testDeliveryCount/ orderId 를 주입한다.
+   *
+   * setLock 이 호출되면 선점 트랜잭션의 매핑 생존 확인(잠금 조회)이다. mappingAlive=false 면
+   * updateTemp 가 매핑을 재생성해 이 id 가 사라진 상황을 재현한다.
+   */
   const createMappingBuilder = (mapping: any, mappingAlive = true) => {
+    let locked = false;
     const builder: any = {
       innerJoinAndSelect: jest.fn().mockReturnThis(),
       leftJoinAndSelect: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
-      getOne: jest.fn(() => Promise.resolve(mapping)),
-      // 이력 저장 직전 매핑 생존 확인. false 면 updateTemp 가 매핑을 재생성한 상황이다.
-      getExists: jest.fn(() => Promise.resolve(mappingAlive)),
+      setLock: jest.fn(() => {
+        locked = true;
+        return builder;
+      }),
+      getOne: jest.fn(() => Promise.resolve(locked && !mappingAlive ? null : mapping)),
     };
     return builder;
   };
@@ -86,8 +94,8 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
    * 한도 선점(claim)과 보상 차감(rollback) 이 각각 이 체인을 쓴다.
    */
   const createUpdateBuilder = (affectedQueue: number[]) => {
-    const captured: Array<{ set: any; where: string[]; isSoftDelete?: boolean }> = [];
-    let current: { set: any; where: string[]; isSoftDelete?: boolean };
+    const captured: Array<{ set: any; where: string[]; isSoftDelete?: boolean; id?: number }> = [];
+    let current: { set: any; where: string[]; isSoftDelete?: boolean; id?: number };
     const builder: any = {
       update: jest.fn(() => {
         current = { set: undefined, where: [] };
@@ -102,16 +110,22 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
         current.set = v;
         return builder;
       }),
-      where: jest.fn((clause: string) => {
+      where: jest.fn((clause: string, params?: any) => {
         current.where.push(clause);
+        if (params && 'id' in params) current.id = params.id;
         return builder;
       }),
-      andWhere: jest.fn((clause: string) => {
+      andWhere: jest.fn((clause: string, params?: any) => {
         current.where.push(clause);
+        if (params && 'id' in params) current.id = params.id;
         return builder;
       }),
       execute: jest.fn(() => {
         captured.push(current);
+        // 보상 차감(-1)의 대상 id 를 기록한다. 승계된 새 매핑을 대상으로 하는지 검증하기 위함이다.
+        if (current.set?.testDeliveryCount && String(current.set.testDeliveryCount()).includes('- 1')) {
+          builder.lastCompensateId = current.id;
+        }
         if (current.isSoftDelete) {
           const clause = current.where.join(' ');
           // 실패 보상 경로의 이력 삭제(id 지정). 삭제 성공 여부가 한도 차감 여부를 가른다.
@@ -144,6 +158,12 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
       staleAffected?: number;
       staleUnclaimedAffected?: number;
       mappingAlive?: boolean;
+      /** 승계로 이력이 옮겨간 새 매핑 id. 보상이 이 id 를 대상으로 하는지 검증한다. */
+      carriedMappingId?: number;
+      /** 잔류 정리로 한도가 회수된 뒤의 카운트. 사전 확인이 최신 값을 읽는지 검증한다. */
+      countAfterDiscard?: number;
+      /** 잔류 정리가 이력을 지운 상황. WAIT 전환 0행의 원인 구분에 쓰인다. */
+      historyRemoved?: boolean;
     } = {},
   ) => {
     const fullMapping = {
@@ -187,6 +207,16 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
         alias ? createMappingBuilder(fullMapping, opts.mappingAlive ?? true) : updateBuilder,
       ),
       increment: jest.fn().mockResolvedValue({ affected: 1 }),
+      // 사전 한도 확인용 재조회. 잔류 정리가 회수한 만큼 줄어든 최신 카운트를 돌려준다.
+      // 정리 이전 값(mapping.testDeliveryCount)을 그대로 주면 회수분이 반영되지 않아
+      // 실제로는 쓸 수 있는 요청이 사전 확인에서 막힌다.
+      findOne: jest.fn(() =>
+        Promise.resolve({
+          id: mapping.id,
+          testDeliveryCount:
+            opts.countAfterDiscard ?? Math.max(mapping.testDeliveryCount - (opts.staleAffected ?? 0), 0),
+        }),
+      ),
     };
     service.updateBuilder = updateBuilder;
 
@@ -203,6 +233,18 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
       save: jest.fn().mockResolvedValue({ id: 101 }),
       softDelete: jest.fn().mockResolvedValue({ affected: 1 }),
       createQueryBuilder: jest.fn(() => confirmBuilder),
+      // 이력 조회. 잔류 정리가 지운 경우(historyRemoved)는 null 을 준다.
+      // 보상 대상 재조회에도 쓰이며, updateTemp 가 승계했으면 매핑 id 가 새 행을 가리킨다.
+      findOne: jest.fn(() =>
+        Promise.resolve(
+          opts.historyRemoved
+            ? null
+            : {
+                id: 101,
+                orderProductMappingId: opts.carriedMappingId ?? mapping.id,
+              },
+        ),
+      ),
     };
     service.confirmBuilder = confirmBuilder;
     service.deliveryBatchService = {
@@ -257,7 +299,7 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
   });
 
   // 관리자는 무제한이라 한도(test_delivery_count)를 아예 건드리지 않는다.
-  // 여기서 카운트를 올리면 기업관리자 한도(상품당 2회)를 관리자 발송이 대신 소진한다.
+  // 여기서 카운트를 올리면 기업관리자 한도(상품 행당 2회)를 관리자 발송이 대신 소진한다.
   it('운영관리자: 한도를 증가시키지 않고 무제한 발송된다 (우회)', async () => {
     const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 99 });
 
@@ -456,9 +498,9 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
       expect(service.logger.warn).toHaveBeenCalled();
     });
 
-    // 준비 단계(이미지 생성·이력 저장)도 선점 이후의 외부 I/O 라 실패 시 한도를 보상해야 한다.
-    // 보상하지 않으면 실제 발송 없이 2회 한도만 영구 소진된다.
-    it('쿠폰 이미지 생성이 실패하면 이력 저장 전이라도 선점 한도를 보상 차감(-1)한다', async () => {
+    // 이미지 생성(외부 I/O)은 선점보다 먼저 수행된다. 실패해도 선점한 적이 없으므로 보상할 것도 없다.
+    // 선점을 이 뒤로 옮긴 이유가 이것이다 — "선점만 있고 이력이 없는" 상태를 아예 만들지 않는다.
+    it('쿠폰 이미지 생성이 실패하면 선점 자체가 일어나지 않는다 (보상할 대상 없음)', async () => {
       const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 0 }, { claimAffected: [1] });
       (DeliveryCreateCouponImage as jest.Mock).mockRejectedValueOnce(new Error('image gen failed'));
 
@@ -469,15 +511,20 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
       // 이력 저장 전 실패라 저장·삭제는 일어나지 않는다.
       expect(service.testOrderDeliveryRepository.save).not.toHaveBeenCalled();
       expect(rollbackDeletes(service).length).toBe(0);
-      // 발송도 하지 않았으므로 선점한 한도는 되돌아와야 한다.
       expect(service.deliveryBatchService.oneSend).not.toHaveBeenCalled();
-      const compensation = service.updateBuilder.captured[1];
-      expect(compensation).toBeDefined();
-      expect(compensation.set.testDeliveryCount()).toContain('test_delivery_count - 1');
-      expect(compensation.where.some((c: string) => c.includes('test_delivery_count > 0'))).toBe(true);
+
+      // 선점(+1)도 보상(-1)도 발행되지 않아야 한다.
+      const counterUpdates = service.updateBuilder.captured.filter((c: any) => {
+        if (!c.set?.testDeliveryCount) return false;
+        const expression = String(c.set.testDeliveryCount());
+        return expression.includes('test_delivery_count + 1') || expression.includes('test_delivery_count - 1');
+      });
+      expect(counterUpdates.length).toBe(0);
     });
 
-    it('테스트 발송 이력 저장이 실패하면 선점 한도를 보상 차감(-1)한다', async () => {
+    // 이력 저장은 선점(+1)과 같은 트랜잭션이다. 저장이 실패하면 선점도 함께 롤백되므로
+    // 별도 보상이 필요 없다. "선점만 커밋되고 이력이 없는" 상태가 구조적으로 만들어지지 않는다.
+    it('테스트 발송 이력 저장이 실패하면 선점도 함께 롤백되어 보상이 필요 없다', async () => {
       const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 0 }, { claimAffected: [1] });
       service.testOrderDeliveryRepository.save.mockRejectedValue(new Error('save failed'));
 
@@ -486,10 +533,16 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
       expect(service.deliveryBatchService.oneSend).not.toHaveBeenCalled();
       // 저장 자체가 실패해 이력 id 가 없으므로 삭제는 시도하지 않는다.
       expect(rollbackDeletes(service).length).toBe(0);
-      expect(service.updateBuilder.captured[1]?.set.testDeliveryCount()).toContain('test_delivery_count - 1');
+
+      // 보상 차감(-1)은 발행되지 않아야 한다. 트랜잭션 롤백이 선점을 이미 되돌린다.
+      const compensations = service.updateBuilder.captured.filter((c: any) => {
+        if (!c.set?.testDeliveryCount) return false;
+        return String(c.set.testDeliveryCount()).includes('test_delivery_count - 1');
+      });
+      expect(compensations.length).toBe(0);
     });
 
-    it('발송 준비 중 매핑이 재생성됐으면 이력을 저장하지 않고 발송 전에 중단한다', async () => {
+    it('발송 준비 중 매핑이 재생성됐으면 선점도 이력도 남기지 않고 중단한다', async () => {
       const service = buildService(
         { id: 5, orderId: 77, testDeliveryCount: 0 },
         { claimAffected: [1], mappingAlive: false },
@@ -502,7 +555,55 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
       // 이력을 남기지 않아야 조회 불가능한 고아 행이 생기지 않는다.
       expect(service.testOrderDeliveryRepository.save).not.toHaveBeenCalled();
       expect(service.deliveryBatchService.oneSend).not.toHaveBeenCalled();
-      expect(service.updateBuilder.captured[1]?.set.testDeliveryCount()).toContain('test_delivery_count - 1');
+
+      // 선점(+1)은 매핑 생존 확인 이후에 수행되므로 아예 실행되지 않는다.
+      // 선점이 없으니 보상(-1)도 필요 없다 — 한도 누수가 구조적으로 발생하지 않는다.
+      const claims = service.updateBuilder.captured.filter((c: any) => {
+        if (!c.set?.testDeliveryCount) return false;
+        return String(c.set.testDeliveryCount()).includes('test_delivery_count + 1');
+      });
+      expect(claims.length).toBe(0);
+      const compensations = service.updateBuilder.captured.filter((c: any) => {
+        if (!c.set?.testDeliveryCount) return false;
+        return String(c.set.testDeliveryCount()).includes('test_delivery_count - 1');
+      });
+      expect(compensations.length).toBe(0);
+    });
+
+    // 매핑 소실과 한도 초과는 원인이 다르므로 안내도 달라야 한다.
+    // 저장으로 매핑이 사라진 건데 "한도 초과"로 안내하면 사용자가 원인을 오인한다.
+    it('사전 확인에서 매핑이 사라졌으면 한도 초과가 아니라 매핑 소실로 안내한다', async () => {
+      const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 0 }, { claimAffected: [1] });
+      service.orderProductMappingRepository.findOne = jest.fn(() => Promise.resolve(null));
+
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).rejects.toThrow(
+        '주문이 저장되어 테스트 발송이 취소되었습니다. 다시 시도해주세요.',
+      );
+
+      expect(service.deliveryBatchService.oneSend).not.toHaveBeenCalled();
+      expect(service.testOrderDeliveryRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('승계로 매핑이 바뀌면 보상은 옛 id 가 아니라 승계된 새 매핑을 대상으로 한다', async () => {
+      // oneSend 실패로 보상이 도는 상황. 그 사이 updateTemp 가 매핑을 5 -> 900 으로 재생성·승계했다.
+      const service = buildService(
+        { id: 5, orderId: 77, testDeliveryCount: 0 },
+        { claimAffected: [1], carriedMappingId: 900 },
+      );
+      service.deliveryBatchService.oneSend.mockResolvedValue(false);
+
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).rejects.toThrow(
+        '테스트 발송에 실패했습니다. 수신자 정보를 확인해주세요.',
+      );
+
+      // 보상 UPDATE 가 승계된 새 매핑 id(900)를 대상으로 발행돼야 선점분이 실제로 회수된다.
+      // 옛 id(5)로 발행하면 affected=0 이 되어 새 행에 +1 이 영구히 남는다.
+      const compensation = service.updateBuilder.captured.find((c: any) => {
+        if (!c.set?.testDeliveryCount) return false;
+        return String(c.set.testDeliveryCount()).includes('test_delivery_count - 1');
+      });
+      expect(compensation).toBeDefined();
+      expect(service.updateBuilder.lastCompensateId).toBe(900);
     });
 
     it('mapping 이 없으면 발송·선점 없이 거부된다', async () => {
@@ -730,13 +831,26 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
       expect(wait.where.some((c: string) => c.includes('deleted_at IS NULL'))).toBe(true);
     });
 
+    // 선점 TX 가 끝나면 매핑 잠금이 풀린다. 그 사이 updateTemp 가 재생성하면 이력은 새 매핑으로
+    // 승계되지만 발송 payload 는 요청 초입에 조회한 낡은 매핑 기준이라, 바뀌기 전 설정으로 발송된다.
+    it('WAIT 전환은 이력의 매핑이 그대로일 때만 수행한다 (승계 후 낡은 설정 발송 차단)', async () => {
+      const service = buildService({ id: 5, orderId: 77, testDeliveryCount: 0 }, { claimAffected: [1] });
+
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).resolves.toBeUndefined();
+
+      const [wait] = statusTransitions(service);
+      expect(wait.where.some((c: string) => c.includes('order_product_mapping_id = :orderProductMappingId'))).toBe(
+        true,
+      );
+    });
+
     it('WAIT 전환이 0행이면(잔류 정리가 이력을 회수함) 발송하지 않고 한도 보상도 하지 않는다', async () => {
       // 이 요청이 정지된 사이 다른 인스턴스가 TEMP 이력을 soft delete 하고 한도까지 회수한 상황.
       // 그대로 발송하면 성공 이력 없이 한도만 소진되고, 여기서 보상하면 회수분을 이중 차감한다.
       // affected 큐: 경보 마킹 0행, WAIT 전환 0행.
       const service = buildService(
         { id: 5, orderId: 77, testDeliveryCount: 0 },
-        { claimAffected: [1], confirmAffected: [0, 0] },
+        { claimAffected: [1], confirmAffected: [0, 0], historyRemoved: true },
       );
 
       await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).rejects.toThrow(
@@ -749,6 +863,23 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
       // 선점(+1) 외에 보상(-1) UPDATE 가 없어야 한다.
       expect(service.updateBuilder.captured.length).toBe(1);
       expect(service.logger.error).toHaveBeenCalled();
+    });
+
+    // 같은 0행이라도 이력이 살아있으면 승계로 매핑만 바뀐 것이라 선점이 새 행에 남아 보상해야 한다.
+    // 잔류 정리 케이스와 묶어 처리하면 그 선점이 영구 누수된다.
+    it('WAIT 전환이 0행이어도 이력이 살아있으면(승계) 한도를 보상한다', async () => {
+      const service = buildService(
+        { id: 5, orderId: 77, testDeliveryCount: 0 },
+        { claimAffected: [1], confirmAffected: [0, 0], carriedMappingId: 900 },
+      );
+
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).rejects.toThrow(
+        '테스트 발송 요청이 만료되었습니다. 다시 시도해주세요.',
+      );
+
+      expect(service.deliveryBatchService.oneSend).not.toHaveBeenCalled();
+      // 승계된 새 매핑(900)을 대상으로 보상이 나가야 한다.
+      expect(service.updateBuilder.lastCompensateId).toBe(900);
     });
 
     it('확정 UPDATE 가 실패하면 이력 삭제·한도 보상을 하지 않는다 (중복 발송 방지)', async () => {
