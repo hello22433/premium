@@ -45,6 +45,7 @@ export enum UserAuthSubEnum {
   SETTLEMENT_CODE = 'SETTLEMENT_CODE', // 정산코드 관리
   SETTLE_CREDIT = 'SETTLE_CREDIT', // 여신관리 탭 조회 + 월한도 설정 (PR2)
   SETTLE_PARTNER_CONFIRM = 'SETTLE_PARTNER_CONFIRM', // 정산확정/해제 + 조정 승인 + review/orphan 해소 (PR1C~)
+  SETTLE_DISCOUNT = 'SETTLE_DISCOUNT', // 정산조건(할인율) 예약·소급 변경 관리 (PR3B)
   DEPOSIT_HISTORY = 'DEPOSIT_HISTORY', // 입금내역 조회
 
   // 고객 센터
