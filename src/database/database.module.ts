@@ -111,6 +111,11 @@ import { PartnerProviderEventInboxEntity } from '../entity/partner.provider.even
 import { PartnerCreditConfigEntity } from '../entity/partner.credit.config.entity';
 import { PartnerCreditConfigHistoryEntity } from '../entity/partner.credit.config.history.entity';
 import { BankDepositEntity } from '../entity/bank.deposit.entity';
+import { PartnerSettleReviewResolutionEntity } from '../entity/partner.settle.review.resolution.entity';
+import { PartnerSettleReviewAuditEntity } from '../entity/partner.settle.review.audit.entity';
+import { PartnerProviderManualEventProposalEntity } from '../entity/partner.provider.manual.event.proposal.entity';
+import { PartnerProviderManualLedgerProposalEntity } from '../entity/partner.provider.manual.ledger.proposal.entity';
+import { PartnerSettleTransitionResolutionEntity } from '../entity/partner.settle.transition.resolution.entity';
 
 @Module({
   imports: [
@@ -229,6 +234,11 @@ import { BankDepositEntity } from '../entity/bank.deposit.entity';
           PartnerCreditConfigEntity,
           PartnerCreditConfigHistoryEntity,
           BankDepositEntity,
+          PartnerSettleReviewResolutionEntity,
+          PartnerSettleReviewAuditEntity,
+          PartnerProviderManualEventProposalEntity,
+          PartnerProviderManualLedgerProposalEntity,
+          PartnerSettleTransitionResolutionEntity,
         ],
         extra: {
           connectionLimit: +configService.get('DATABASE_CONNECTION_LIMIT', 50),

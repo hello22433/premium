@@ -54,6 +54,14 @@ export function buildProviderTransitionKey(
 export function buildReversalKey(baseKey: string, reversesLedgerId: number): string {
   return `${baseKey}:${assertPositiveId('reversesLedgerId', reversesLedgerId)}`;
 }
+/**
+ * 수동 전이 해소 allocation 멱등키. 하나의 resolution 이 여러 ledger row 를 만들 수 있으므로 순번을 포함한다.
+ */
+export function buildManualResolutionKey(resolutionId: number, sequenceNo: number): string {
+  return (
+    `MANUAL_RESOLUTION:${assertPositiveId('resolutionId', resolutionId)}:` + assertPositiveId('sequenceNo', sequenceNo)
+  );
+}
 
 function assertPositiveId(label: string, value: number): number {
   if (!Number.isInteger(value) || value <= 0) {

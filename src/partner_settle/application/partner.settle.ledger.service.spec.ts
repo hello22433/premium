@@ -3,6 +3,7 @@ import { IPartnerCompanyType } from '../../partner_company/interface/partner.com
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
 import { PricingOutcome } from '../domain/partner.settle.pricing';
 import { SubItemKeyUnresolvedError } from '../domain/settle.sub.item.key';
+import { buildManualResolutionKey, SettleIdempotencyKeyError } from '../domain/settle.idempotency.key';
 import { parseKstDateTime } from '../domain/settle.time';
 import { LedgerAppendCommand, LedgerInvariantError, PartnerSettleLedgerService } from './partner.settle.ledger.service';
 import { MissingTransactionError } from './partner.settle.transaction.guard';
@@ -223,6 +224,39 @@ describe('PartnerSettleLedgerService.appendLedger', () => {
     expect(inserted.applied_discount_history_id).toBe(77);
     expect(inserted.applied_price_percent).toBe('1.5');
   });
+  it('정상 전이는 allocation 1을 명시해 raw INSERT에 함께 저장한다', async () => {
+    const { service, ledgerRepository } = build();
+
+    await service.appendLedger(
+      appendCommand({
+        transition: {
+          observationId: 41,
+          sequenceNo: 1,
+          allocationNo: 1,
+          sourceEventIdOrigin: 'PROVIDER',
+        },
+      }),
+    );
+
+    expect(ledgerRepository.inserts[0]).toMatchObject({
+      transition_observation_id: 41,
+      transition_sequence_no: 1,
+      transition_allocation_no: 1,
+      source_event_id_origin: 'PROVIDER',
+    });
+  });
+  it('manager가 주어지면 그 repository에서 멱등 조회와 INSERT를 수행한다', async () => {
+    const { service, ledgerRepository } = build();
+    const manager = {
+      manager: { queryRunner: { isTransactionActive: true } },
+      getRepository: jest.fn(() => ledgerRepository),
+    };
+
+    await service.appendLedger(appendCommand(), manager as never);
+
+    expect(manager.getRepository).toHaveBeenCalled();
+    expect(ledgerRepository.inserts).toHaveLength(1);
+  });
 
   it('같은 멱등키 재호출은 새 row 를 만들지 않고 기존 row 를 돌려준다', async () => {
     const { service, ledgerRepository } = build();
@@ -383,6 +417,35 @@ describe('PartnerSettleLedgerService.appendReversal', () => {
     expect(inserted.pricing_resolution).toBe('HISTORY_MATCH');
     expect(inserted.reverses_ledger_id).toBe(1);
   });
+  it('복수 역분개 allocation은 같은 전이 순번에서 각각 raw INSERT로 보존한다', async () => {
+    const { service, ledgerRepository } = build(HISTORY_MATCH, [originalRow()]);
+
+    await service.appendReversal({
+      ...reversalCommand,
+      baseIdempotencyKey: 'EXC:multi-1',
+      cancelBaseAmount: 3_000n,
+      transition: {
+        observationId: 88,
+        sequenceNo: 2,
+        allocationNo: 1,
+        sourceEventIdOrigin: 'MANUAL',
+      },
+    });
+    await service.appendReversal({
+      ...reversalCommand,
+      baseIdempotencyKey: 'EXC:multi-2',
+      cancelBaseAmount: 7_000n,
+      transition: {
+        observationId: 88,
+        sequenceNo: 2,
+        allocationNo: 2,
+        sourceEventIdOrigin: 'MANUAL',
+      },
+    });
+
+    expect(ledgerRepository.inserts.map((inserted) => inserted.transition_allocation_no)).toEqual([1, 2]);
+    expect(ledgerRepository.inserts.map((inserted) => inserted.transition_sequence_no)).toEqual([2, 2]);
+  });
 
   it('역분개 멱등키에 원본 id suffix 를 붙인다', async () => {
     const { service, ledgerRepository } = build(HISTORY_MATCH, [originalRow()]);
@@ -488,6 +551,16 @@ describe('PartnerSettleLedgerService.appendReversal', () => {
   });
 });
 
+describe('buildManualResolutionKey', () => {
+  it('resolution과 allocation 순번으로 수동 해소 멱등키를 만든다', () => {
+    expect(buildManualResolutionKey(12, 3)).toBe('MANUAL_RESOLUTION:12:3');
+  });
+
+  it.each([0, -1, 1.5])('양의 정수가 아닌 입력은 거부한다: %p', (value) => {
+    expect(() => buildManualResolutionKey(value, 1)).toThrow(SettleIdempotencyKeyError);
+    expect(() => buildManualResolutionKey(1, value)).toThrow(SettleIdempotencyKeyError);
+  });
+});
 function camelOf(column: string): string {
   return column.replace(/_([a-z])/g, (_all, letter: string) => letter.toUpperCase());
 }

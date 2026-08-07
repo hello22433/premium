@@ -66,6 +66,8 @@ type LedgerTransitionRef = {
   observationId: number;
   /** 같은 observation 안의 event 순번. 정상 감지 = 1 */
   sequenceNo: number;
+  /** 같은 전이 내 역분개 allocation 순번. forward·단일 reversal = 1, multi reversal = 1..N */
+  allocationNo: number;
   sourceEventIdOrigin: IPartnerSettleSourceEventIdOrigin;
 };
 
@@ -93,6 +95,8 @@ export type LedgerAppendCommand = {
   transition?: LedgerTransitionRef | null;
   /** 자동 claim 한 orphan lane inbox row */
   orphanInboxRowId?: number | null;
+  /** 수동 orphan 승인 proposal id */
+  manualLedgerProposalId?: number | null;
   memo?: string | null;
   /** provider 가 정의 외 코드를 보낸 경우 — 금액 없이 `UNKNOWN_PROVIDER_EVENT` 로 격리한다 */
   unknownProviderEvent?: boolean;
@@ -112,6 +116,8 @@ export type LedgerReversalCommand = {
   providerEvidenceHash?: string | null;
   transition?: LedgerTransitionRef | null;
   memo?: string | null;
+  /** 수동 orphan 승인 proposal id */
+  manualLedgerProposalId?: number | null;
 };
 
 type LedgerRow = RawRow;
@@ -134,13 +140,16 @@ export class PartnerSettleLedgerService {
     return manager ? manager.getRepository(PartnerSettleLedgerEntity) : this.ledgerRepository;
   }
 
-
   /**
    * 잠금 순서 1~2단계. producer 는 원천을 읽기 **전에** 이걸 먼저 부른다.
    *
    * 순서를 producer 마다 다르게 잡으면 일일 배치와 push 수신이 교차 데드락에 걸린다.
    */
-  async lockForAppend(partnerCompanyId: number, orderDeliveryId: number | null, manager?: EntityManager): Promise<void> {
+  async lockForAppend(
+    partnerCompanyId: number,
+    orderDeliveryId: number | null,
+    manager?: EntityManager,
+  ): Promise<void> {
     // 트랜잭션이 없으면 raw FOR UPDATE 가 에러 없이 무력화된다(autocommit). 잠근 줄 알고 진행하는 게 최악이다.
     assertInTransaction(manager ?? this.ledgerRepository, '정산 원장 잠금(lockForAppend)');
 
@@ -155,17 +164,16 @@ export class PartnerSettleLedgerService {
    *
    * 재스캔·재시도·동시 poll 이 모두 이 경로로 들어오므로, 멱등이 아니면 같은 사건이 여러 번 정산된다.
    */
-  async appendLedger(command: LedgerAppendCommand): Promise<PartnerSettleLedgerEntity> {
-    assertInTransaction(this.ledgerRepository, '정산 원장 append(appendLedger)');
+  async appendLedger(command: LedgerAppendCommand, manager?: EntityManager): Promise<PartnerSettleLedgerEntity> {
+    assertInTransaction(manager ?? this.ledgerRepository, '정산 원장 append(appendLedger)');
 
-    const existing = await this.findByIdempotencyKey(command.idempotencyKey);
+    const existing = await this.findByIdempotencyKey(command.idempotencyKey, manager);
     if (existing) return existing;
 
     // 미등록 하위항목은 격리조차 못 한다(subItemKey NOT NULL·불변). 원장을 만들지 않고 실패시킨다.
     const subItemKey = resolveSubItemKey(command.subItem);
-
-    const row = await this.buildAppendRow(command, subItemKey);
-    return this.insertRow(row, command.idempotencyKey);
+    const row = await this.buildAppendRow(command, subItemKey, manager);
+    return this.insertRow(row, command.idempotencyKey, manager);
   }
 
   /**
@@ -231,6 +239,7 @@ export class PartnerSettleLedgerService {
         // 음수 배분은 orphan 정산 UNIQUE 에서 제외된다(generated key 가 NULL). 원본만 ingress 를 점유한다.
         orphanInboxRowId: null,
         memo: command.memo,
+        manualLedgerProposalId: command.manualLedgerProposalId ?? null,
       }),
       reverses_ledger_id: original.id,
       status: original.status,
@@ -282,7 +291,11 @@ export class PartnerSettleLedgerService {
     }
   }
 
-  private async buildAppendRow(command: LedgerAppendCommand, subItemKey: string): Promise<LedgerRow> {
+  private async buildAppendRow(
+    command: LedgerAppendCommand,
+    subItemKey: string,
+    manager?: EntityManager,
+  ): Promise<LedgerRow> {
     const common = this.commonColumns({
       partnerCompanyId: command.partnerCompanyId,
       subItemKey,
@@ -297,6 +310,7 @@ export class PartnerSettleLedgerService {
       transition: command.transition,
       orphanInboxRowId: command.orphanInboxRowId ?? null,
       memo: command.memo,
+      manualLedgerProposalId: command.manualLedgerProposalId ?? null,
     });
 
     // ① provider 정의 외 코드 — 사건은 남기되 금액을 만들지 않는다.
@@ -328,6 +342,7 @@ export class PartnerSettleLedgerService {
       command.partnerCompanyId,
       command.occurredAt.date,
       command.snapshot,
+      manager,
     );
 
     // ④ 이력 손상 — 현재값 fallback 은 틀린 금액을 확정시킨다. 금액을 비우고 격리한다.
@@ -394,6 +409,7 @@ export class PartnerSettleLedgerService {
     providerEvidenceHash?: string | null;
     transition?: LedgerTransitionRef | null;
     orphanInboxRowId: number | null;
+    manualLedgerProposalId: number | null;
     memo?: string | null;
   }): LedgerRow {
     return {
@@ -410,15 +426,21 @@ export class PartnerSettleLedgerService {
       provider_evidence_hash: input.providerEvidenceHash ?? null,
       transition_observation_id: input.transition?.observationId ?? null,
       transition_sequence_no: input.transition?.sequenceNo ?? null,
+      transition_allocation_no: input.transition?.allocationNo ?? null,
       source_event_id_origin: input.transition?.sourceEventIdOrigin ?? null,
       orphan_inbox_row_id: input.orphanInboxRowId,
       memo: input.memo ?? null,
+      manual_ledger_proposal_id: input.manualLedgerProposalId,
       settle_batch_id: null,
     };
   }
 
   /** append 결과는 항상 멱등키로 재조회한다 — 신규 INSERT 든 **멱등키** 충돌이든 답은 같은 row 다. */
-  private async insertRow(row: LedgerRow, idempotencyKey: string, manager?: EntityManager): Promise<PartnerSettleLedgerEntity> {
+  private async insertRow(
+    row: LedgerRow,
+    idempotencyKey: string,
+    manager?: EntityManager,
+  ): Promise<PartnerSettleLedgerEntity> {
     try {
       await insertRawRow(this.repo(manager), 'partner_settle_ledger', row, {
         idempotentConstraints: [LEDGER_IDEMPOTENCY_CONSTRAINT],
@@ -461,7 +483,10 @@ export class PartnerSettleLedgerService {
     throw error;
   }
 
-  private findByIdempotencyKey(idempotencyKey: string, manager?: EntityManager): Promise<PartnerSettleLedgerEntity | null> {
+  private findByIdempotencyKey(
+    idempotencyKey: string,
+    manager?: EntityManager,
+  ): Promise<PartnerSettleLedgerEntity | null> {
     return this.repo(manager).findOne({ where: { idempotencyKey } });
   }
 
