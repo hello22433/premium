@@ -39,15 +39,12 @@ export class PartnerSettlePricingResolverService {
   async lockPolicyForRead(partnerCompanyId: number, manager?: EntityManager): Promise<void> {
     assertInTransaction(manager ?? this.epochRepository, '협력사 정산조건 정책 잠금(lockPolicyForRead)');
 
-    const epochRepo = manager
-      ? manager.getRepository(PartnerDiscountPolicyEpochEntity)
-      : this.epochRepository;
+    const epochRepo = manager ? manager.getRepository(PartnerDiscountPolicyEpochEntity) : this.epochRepository;
 
     // 정책 변경이 한 번도 없던 협력사는 epoch row 자체가 없다. 없으면 잠글 대상도 없으므로 만든다.
-    await epochRepo.query(
-      'INSERT IGNORE INTO partner_discount_policy_epoch (partner_company_id) VALUES (?)',
-      [partnerCompanyId],
-    );
+    await epochRepo.query('INSERT IGNORE INTO partner_discount_policy_epoch (partner_company_id) VALUES (?)', [
+      partnerCompanyId,
+    ]);
 
     const locked = await epochRepo
       .createQueryBuilder('epoch')
@@ -71,8 +68,10 @@ export class PartnerSettlePricingResolverService {
     partnerCompanyId: number,
     occurredAt: Date,
     snapshot: PricingProductSnapshot,
+    manager?: EntityManager,
   ): Promise<PricingOutcome> {
-    const rows = await this.historyRepository.find({
+    const historyRepo = manager ? manager.getRepository(PartnerDiscountHistoryEntity) : this.historyRepository;
+    const rows = await historyRepo.find({
       where: { partnerCompanyId, supersededByHistoryId: IsNull() },
     });
 

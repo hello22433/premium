@@ -104,6 +104,8 @@ import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-w
 import { SsgTryError } from '../../partner_company_extern/infra/ssg.issue';
 import { DeferredDeliveryError } from '../interface/deferred.delivery.error';
 import { PinIssueCommandService } from './pin-issue-command.service';
+import { InventoryPinAllocationService } from '../../inventory_coupon/application/inventory.pin.allocation.service';
+import { InventoryPinSendService } from '../../inventory_coupon/application/inventory.pin.send.service';
 
 /**
  * 배치 단건 처리 결과 (§4.1 2-pass).
@@ -112,6 +114,92 @@ import { PinIssueCommandService } from './pin-issue-command.service';
 type BatchDeliveryOutcome =
   | { kind: 'done'; result: { deliveryHistory: DeliverySendHistoryEntity; orderId: number } | null }
   | { kind: 'deferred' };
+
+/**
+ * 재각인(restamp) 로그에 실을 **상세 항목 수 상한**.
+ *
+ * ⚠️ **로그는 감사 저장소가 아니다.** 이 점을 잘못 알고 한 번 설계가 뒤집혔으므로 근거를 남긴다.
+ *
+ *    한때 이 상수를 '청크 크기'로 바꿔 전량을 `ceil(n/50)` 줄에 나눠 찍었다. 목적은
+ *    "이전 파기일을 하나도 잃지 않는다"였는데, **그 보장이 성립하지 않았다**:
+ *      · logger 는 stdout 이고 보존정책·전송보장이 없다. 수집기의 단일 이벤트/처리량 제한에
+ *        걸리면 코드가 몇 줄을 찍었든 남지 않는다 — "전량 보존"은 코드가 줄 수 없는 약속이다.
+ *      · 그러면서 비용은 실재했다. 5만 건이면 @Transactional 락 보유 구간에서 warn 1,001회 +
+ *        대형 문자열 포매팅이 돌아 **배치 지연과 로그 폭주**를 만든다(PR#52 리뷰 P1).
+ *    즉 얻는 것은 없고 장애 위험만 늘었다. 그래서 상한으로 되돌린다.
+ *
+ *    대신 **요약은 전량에서 낸다**(건수 · 이전 파기일 범위 · 출처 분포). 요약은 문자열을 만들지
+ *    않는 스칼라 집계라 대량에서도 저렴하고, "무엇을 잃었는지"의 윤곽은 남는다.
+ *
+ * ⚠️ 상세를 잘라도 **이전 파기일은 DB 에서 덮여 복구 경로가 없다.** 이 상한은 그 손실을 해결하지
+ *    않고 **인정**한다. 진짜로 잃지 않으려면 로그가 아니라 `order_delivery` 전용 컬럼이나 영속
+ *    감사 테이블이 필요하며, 그건 별건이다. 여기서 늘리는 것으로 대신하려 하지 말 것.
+ *
+ * ⚠️ 아래 UNKNOWN_ID_LOG_LIMIT 과 **성격이 다르다. 값이 같다고 합치지 말 것.**
+ *    그쪽은 잘려도 다음 회차가 재보고하지만, 이쪽은 잘린 만큼 영구 소실이다.
+ */
+const RESTAMP_AUDIT_LOG_LIMIT = 50;
+
+/**
+ * "이미 파기됐으나 파기 시각을 알 수 없는" 발송건 id 로그 상한.
+ *
+ * 이쪽은 **소실이 없다.** 그 행들은 각인 대상에서 의도적으로 제외되어 destroyed_at 이 NULL 로
+ * 남으므로, 다음 회차가 다시 보고하고 migration §4-1 이 언제든 재산출한다. 생략 건수를 적는
+ * 것은 소실 때문이 아니라 두 로그의 표기를 통일하기 위해서다.
+ */
+const UNKNOWN_ID_LOG_LIMIT = 50;
+
+/**
+ * 감사 로그용 시각 문자열. **어떤 입력에도 throw 하지 않는다.**
+ *
+ * `value?.toISOString?.()` 로는 부족하다 — optional call 은 **메서드 부재**만 막고,
+ * Invalid Date(`new Date('x')`)의 `toISOString()` 은 `RangeError: Invalid time value` 를 던진다.
+ * 이 함수는 정기파기 `@Transactional` 구간에서 호출되므로, 행 하나의 값이 이상하다는 이유로
+ * 그 회차 전체가 롤백되면 **PII 가 하루 더 살아남는다** — 로그 한 줄과 바꿀 수 없는 손해다.
+ * (PR#52 리뷰 P2)
+ *
+ * 세 결과를 구분한다. 감사 흔적이므로 "값이 없었다"와 "값이 깨져 있었다"는 다른 사실이다:
+ *   · null / undefined        → `'null'`
+ *   · Date 아님 / Invalid Date → `'invalid-date'`
+ *   · 정상                     → ISO 8601
+ */
+const formatAuditTimestamp = (value: Date | null | undefined): string => {
+  if (value === null || value === undefined) return 'null';
+  const time = value.getTime?.();
+  if (typeof time !== 'number' || Number.isNaN(time)) return 'invalid-date';
+  return new Date(time).toISOString();
+};
+
+/**
+ * 재각인 대상의 **전량 요약**.
+ *
+ * 상세 목록은 RESTAMP_AUDIT_LOG_LIMIT 에서 잘리므로, 잘린 부분의 윤곽은 여기서 남긴다.
+ * 문자열을 만들지 않는 단일 패스 스칼라 집계라 5만 건 회차에서도 비용이 무시할 수준이다
+ * — 그래서 이쪽만 전량을 본다.
+ */
+const summarizeRestampRows = (rows: { destroyedAt: Date | null; destroyedAtSource: string | null }[]): string => {
+  let oldest: number | null = null;
+  let newest: number | null = null;
+  let unreadable = 0;
+  const bySource = new Map<string, number>();
+
+  for (const row of rows) {
+    const time = row.destroyedAt?.getTime?.();
+    if (typeof time === 'number' && !Number.isNaN(time)) {
+      if (oldest === null || time < oldest) oldest = time;
+      if (newest === null || time > newest) newest = time;
+    } else {
+      unreadable += 1;
+    }
+    const source = row.destroyedAtSource ?? 'null';
+    bySource.set(source, (bySource.get(source) ?? 0) + 1);
+  }
+
+  const range =
+    oldest === null ? '없음' : `${new Date(oldest).toISOString()} ~ ${new Date(newest as number).toISOString()}`;
+  const sources = [...bySource.entries()].map(([source, count]) => `${source}=${count}`).join(' ');
+  return `갱신 전 파기일 ${range}${unreadable > 0 ? ` (읽을 수 없는 값 ${unreadable}건)` : ''} / 출처 ${sources}`;
+};
 
 @Injectable()
 export class DeliveryBatchService {
@@ -169,6 +257,8 @@ export class DeliveryBatchService {
     private readonly orderFromService: OrderFromService,
     private readonly cutoverGuard: DeliveryCutoverGuardService,
     private readonly refundAttemptExecutor: RefundAttemptExecutorService,
+    private readonly inventoryPinAllocationService: InventoryPinAllocationService,
+    private readonly inventoryPinSendService: InventoryPinSendService,
   ) {}
 
   private readonly logger = new Logger('batch');
@@ -1486,6 +1576,47 @@ export class DeliveryBatchService {
     const isInitialSend = !(await this.resolveResendEntry(orderDelivery));
 
     // 1. PIN 발급 (barCode가 없는 경우)
+    // DIRECT_PIN 재고형 쿠폰은 별도 allocation/outbox 경로를 사용한다 (rev5 §7.4).
+    const isDirectPin = orderDelivery.orderProductMapping?.emailSendType === OrderEmailSendType.DIRECT_PIN;
+    if (isDirectPin) {
+      // 재고형 PIN: allocation + outbox 생성 → outbox processor가 이메일 발송 (rev5 §7.4)
+      try {
+        const allocation = await this.inventoryPinAllocationService.allocate(orderDelivery);
+        if (!allocation || !allocation.item || !allocation.outbox) {
+          throw new Error('PIN allocation returned no item/outbox');
+        }
+        // allocation 성공 후 즉시 outbox 소비 시도 (비동기 실패 시 outbox processor가 재시도)
+        this.inventoryPinSendService.processOutbox(orderDelivery.id).catch(sendErr => {
+          this.logger.warn(`[BATCH] DIRECT_PIN outbox 즉시소비 실패 (processor가 재시도) - delivery=${orderDelivery.id}: ${sendErr}`);
+        });
+      } catch (error) {
+        this.logger.error(`[BATCH] DIRECT_PIN allocation 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+        // 재고 없음/allocation 중단은 resendiable FAIL — 자동 환불 미생성 (rev5 §7.4)
+        this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
+        if (claimToken) {
+          await this.updateDeliveryOwned(
+            orderDelivery.id, claimToken,
+            { status: orderDelivery.status, failedAt: orderDelivery.failedAt },
+            'DIRECT_PIN allocation 실패', order.id,
+          );
+        }
+        const deliveryHistory = new DeliverySendHistoryEntity();
+        deliveryHistory.context = JSON.stringify({ mode: 'DIRECT_PIN', error: String(error) });
+        deliveryHistory.isSuccess = false;
+        deliveryHistory.target = orderDelivery.deliveryTarget;
+        deliveryHistory.deliveryMethod = orderDelivery.deliveryMethod;
+        return { deliveryHistory, orderId: order.id };
+      }
+      // DIRECT_PIN은 outbox worker가 실제 발송 — isSuccess는 false (PENDING 상태)
+      // 발송 완료는 outbox worker의 applyOutcome에서 status=COMPLETE로 전환됨
+      const deliveryHistory = new DeliverySendHistoryEntity();
+      deliveryHistory.context = JSON.stringify({ mode: 'DIRECT_PIN', result: 'ALLOCATED_PENDING_SEND' });
+      deliveryHistory.isSuccess = false;
+      deliveryHistory.target = orderDelivery.deliveryTarget;
+      deliveryHistory.deliveryMethod = orderDelivery.deliveryMethod;
+      return { deliveryHistory, orderId: order.id };
+    }
+
     if (!orderDelivery.barCode && !isChoiceCoupon && !isEmailDelivery) {
       try {
         let ssgEvent: SsgEventEntity | null = null;
@@ -3472,17 +3603,36 @@ export class DeliveryBatchService {
       // ── 파기 시각 각인 ────────────────────────────────────────────────────────
       // 재수집된 행은 두 종류이고, 각인 여부가 반대다.
       //
-      //  (가) **부분 파기 재수집** — 이전 회차에 deliveryTarget 만 '-' 가 되고 나머지가 남은 행.
-      //       기존 값 **유지**. 근거는 사실이 아니라 **정의**다: 이 시스템에서 "파기됐다"의 판정
-      //       술어는 deliveryTarget 단일이고(destruction.certificate.gate.ts / 파기일 계산 모두),
-      //       그 컬럼이 사라진 시점이 곧 파기일이다. 나머지 컬럼이 늦게 정리되는 것은 이 정의상
-      //       파기일을 바꾸지 않는다. (술어를 5종 전부로 바꾸는 정책이 되면 이 분기도 뒤집어야
-      //       한다 — 그때는 '완료 시점 갱신'이 맞다.)
+      //  (가) **부분 파기 재수집** — 이전 회차에 일부 컬럼만 '-' 가 되고 나머지가 남은 행.
+      //       기존 값 **유지**.
+      //       ⚠️ 다만 여기서 말하는 '일부'는 isDeliveryDestroyed 가 보는 2축(deliveryTarget /
+      //          emailReceiverPhone) **밖의** 컬럼일 때만이다. 즉 bankAccount ·
+      //          bankAccountOwner · originalDeliveryTarget 이 남아 있던 경우다. 그 셋이
+      //          늦게 정리되는 것은 파기일을 바꾸지 않는다.
+      //          ⚠️ **파기일 축에서만 무해하다.** 확인서 발행 축에서는 같은 모집단이 사각지대다 —
+      //             술어가 '파기됨'으로 읽어 게이트가 막지 않는다. 계량은 migration §4-9.
+      //       ⚠️ emailReceiverPhone 이 남아 있던 행은 **(나)로 분류된다** — 부활한 적이 없어도.
+      //          술어가 2축이라 그 행은 "지금 파기돼 있지 않음"이 되기 때문이다. 아래 (나) 참조.
+      //       (초기 주석은 "판정 술어는 deliveryTarget 단일" 이라고 적고, 술어가 5종으로 바뀌면
+      //        이 분기를 뒤집으라는 재검토 조건을 달아 두었다. 술어는 그 뒤 2축으로 넓어졌으므로
+      //        조건이 일부 충족된 상태다 — 리뷰 4차 M-1. 5종 전부로 넓히는 정책이 되면 그때는
+      //        (가)도 '완료 시점 갱신'으로 뒤집어야 한다.)
       //
-      //  (나) **부활 후 재파기** — 파기된 뒤 CS 수신정보 변경으로 수신처가 다시 채워진 행
-      //       (customer.service.service.ts 참조. 사후 CS 대응을 위해 **의도적으로 허용**된 경로다).
-      //       그 행의 PII 는 재입력 시점부터 지금까지 실제로 살아 있었으므로, 옛 날짜를 유지하면
-      //       "그때 이미 지웠다"는 거짓 증명이 된다 → 새 시각으로 **갱신**.
+      //  (나) **재파기 시 시각 갱신 대상** — 마스킹 이전 스냅샷에서 isDeliveryDestroyed 가
+      //       false 인데 destroyedAt 이 이미 있던 행. 두 경로가 섞여 있고 **데이터만으로는
+      //       구분할 수 없다**:
+      //         · 파기 후 CS 수신정보 변경으로 수신처가 다시 채워진 행(사후 CS 대응을 위해
+      //           **의도적으로 허용**된 경로. customer.service.service.ts 참조)
+      //         · PII 5종 확대 이전에 emailReceiverPhone 이 마스킹되지 않은 레거시 행
+      //           (되살아난 적 없음. migration §4-8 로 계량하며 2026-07-31 운영 실측은 합집합 0건
+      //            이다 — 레거시 단독 부존재의 근거는 아니다. 그 쿼리는 둘을 구분하지 못한다.)
+      //       ⚠️ 위 둘 중 **destroyedAt 이 아예 없는** 레거시 행은 여기가 아니라 firstDestroyIds
+      //          로 간다. 그러면 오래 전 부분 파기된 행에 오늘 날짜가 BATCH(=실측)로 각인된다.
+      //          현재 그런 행은 실측 0건이지만 구조적으로 열려 있는 경로이므로 적어 둔다.
+      //       어느 쪽이든 **그 컬럼의 PII 는 지금 이 회차 직전까지 살아 있었다.** 옛 날짜를
+      //       유지하면 "그때 이미 지웠다"는 거짓 증명이 되므로 새 시각으로 **갱신**한다.
+      //       (갱신 전 값은 아래 로그에 남긴다 — 덮어쓰면 복구할 수 없으므로 감사 흔적이 필요하다.
+      //        전량이 남는다 — 여러 줄로 나뉠 뿐이다. 아래 restampPrevious 참조.)
       //
       // 두 경우를 SQL 한 줄로 가를 수 없다. 위 마스킹 UPDATE 가 이미 돌아서 지금 DB 의
       // deliveryTarget 은 전부 '-' 이기 때문이다. 판정 근거는 **마스킹 이전 상태**이므로,
@@ -3491,9 +3641,23 @@ export class DeliveryBatchService {
       // 잘못 처리된다 — 특히 (각인 없음 + 이미 파기됨)을 '신규 각인'으로 넣으면 **파기 시점을
       // 모르는 행에 오늘 날짜를 실측으로 박제**하게 된다(리뷰 HIGH-2). 그 행의 PII 는 이전
       // 회차에 이미 사라졌으므로 오늘은 사실이 아니고, 한 번 찍히면 되돌릴 수 없다.
-      const revivedIds = orderDeliveryList
-        .filter((od) => od.destroyedAt !== null && !isDeliveryDestroyed(od))
-        .map((od) => od.id);
+      // 이름을 '부활'로 두지 않는다 — 부활한 적 없는 레거시 부분마스킹 행도 여기 들어오므로
+      // (위 (나) 참조), '부활'이라 부르면 로그가 없는 CS 오남용을 있다고 보고하게 된다.
+      //
+      // ★ 한 번만 필터하고 두 번 map 한다. 같은 술어를 두 벌 쓰면 (a) 한쪽만 고쳤을 때 각인
+      //   대상과 감사 로그가 조용히 어긋나고(잡을 테스트가 없다), (b) 이 블록이 @Transactional
+      //   안이라 로그 생성이 크리티컬 패스에 있다 — 불필요한 순회를 늘릴 이유가 없다.
+      const restampRows = orderDeliveryList.filter((od) => od.destroyedAt !== null && !isDeliveryDestroyed(od));
+      const restampIds = restampRows.map((od) => od.id);
+      // 덮어쓰기 전 값 — 갱신하면 복구 불가라 감사 흔적으로 남긴다(아래 warn 로그).
+      //
+      // ★ 요약은 **전량**에서, 상세는 **상한까지만**. 그 근거는 RESTAMP_AUDIT_LOG_LIMIT 주석에 있다.
+      //   slice 를 map **앞에** 둔다 — 대량 회차에서 버릴 문자열을 @Transactional 구간에서
+      //   만들지 않기 위해서다.
+      const restampSummary = summarizeRestampRows(restampRows);
+      const restampPrevious = restampRows
+        .slice(0, RESTAMP_AUDIT_LOG_LIMIT)
+        .map((od) => `${od.id}:${formatAuditTimestamp(od.destroyedAt)}/${od.destroyedAtSource ?? 'null'}`);
       const firstDestroyIds = orderDeliveryList
         .filter((od) => od.destroyedAt === null && !isDeliveryDestroyed(od))
         .map((od) => od.id);
@@ -3502,7 +3666,7 @@ export class DeliveryBatchService {
       const unknownDestroyedAtIds = orderDeliveryList
         .filter((od) => od.destroyedAt === null && isDeliveryDestroyed(od))
         .map((od) => od.id);
-      const stampIdList = [...firstDestroyIds, ...revivedIds];
+      const stampIdList = [...firstDestroyIds, ...restampIds];
 
       if (stampIdList.length > 0) {
         // UpdateQueryBuilder 는 soft-delete 필터를 자동 부착하지 않으므로(TypeORM 은 select 에만
@@ -3523,25 +3687,50 @@ export class DeliveryBatchService {
       // 때문에 최대 5년치가 누적되어 단조 증가한다(위 성능 주석 참조). 로그 한 줄 때문에
       // 대량 회차에서 이중 루프를 돌 이유가 없다.
       const stampIdSet = new Set(stampIdList);
+      // ⚠️ keptCount 는 '각인하지 않은 전부'라 두 종류가 섞인다 — 최초일을 **유지**하는 행(가)과
+      //    애초에 최초일이 **없는** 행(unknownDestroyedAtIds). 후자를 '유지'로 뭉뚱그리면 아래
+      //    error 로그와 합계가 어긋나 보이므로 괄호로 분리해 적는다.
       const keptCount = destroyIdList.filter((id) => !stampIdSet.has(id)).length;
       this.logger.log(
         `[정기파기] 대상 ${destroyIdList.length}건 — 신규 각인 ${firstDestroyIds.length}건, ` +
-          `부활 재파기 갱신 ${revivedIds.length}건, 최초일 유지(부분 파기 재수집) ${keptCount}건`,
+          `파기일 갱신 ${restampIds.length}건, 각인 안 함 ${keptCount}건` +
+          `(그중 시각 미상 ${unknownDestroyedAtIds.length}건, 나머지는 최초일 유지)`,
       );
       if (unknownDestroyedAtIds.length > 0) {
         // 정상 운영에서는 나오지 않아야 한다. 백필 누락이거나 배포 순서 사고다.
+        const unknownShown = unknownDestroyedAtIds.slice(0, UNKNOWN_ID_LOG_LIMIT);
+        // 생략 건수는 상수가 아니라 **실제 출력 길이**에서 유도한다. 상수에서 빼면 slice 인자만
+        // 바뀌었을 때 카운트가 조용히 거짓말한다(리뷰 5차 M-4).
+        const unknownOmitted = unknownDestroyedAtIds.length - unknownShown.length;
         this.logger.error(
           `[정기파기] 이미 파기됐으나 파기 시각을 알 수 없는 발송건 ${unknownDestroyedAtIds.length}건 — ` +
-            `orderDeliveryIds=[${unknownDestroyedAtIds.slice(0, 50).join(', ')}]. ` +
-            `오늘 날짜를 실측으로 박제하지 않고 비워 둔다(해당 주문의 파기일은 null 로 응답된다).`,
+            `orderDeliveryIds=[${unknownShown.join(', ')}]` +
+            (unknownOmitted > 0 ? ` 외 ${unknownOmitted}건 생략` : '') +
+            `. 오늘 날짜를 실측으로 박제하지 않고 비워 둔다(해당 주문의 파기일은 null 로 응답된다).`,
         );
       }
-      if (revivedIds.length > 0) {
-        // 정상 경로이지만 드물어야 한다. 잦아지면 CS 수신정보 변경이 파기 건에 반복 적용되고
-        // 있다는 신호이므로 운영이 알아야 한다.
+      if (restampIds.length > 0) {
+        // ⚠️ 문구를 원인으로 단정하지 않는다. 두 원인이 섞여 있고 데이터로는 구분되지 않는다
+        //    (위 (나) 참조) — "수신처가 재입력됐다"고 쓰면 부활한 적 없는 레거시 부분마스킹 행까지
+        //    CS 오남용으로 보고되어, 운영이 존재하지 않는 사건을 추적하게 된다(리뷰 4차 M-1).
+        //    구분이 필요하면 migration §4-8 로 레거시 모집단을 먼저 계량할 것.
+        // 이전 값을 함께 남긴다 — 덮어쓰면 복구 경로가 없다.
+        //
+        // ★ **한 줄이다.** 요약은 전량에서 내고 상세는 상한까지만 싣는다.
+        //   한때 전량을 청크로 나눠 여러 줄로 찍었으나, 로그는 전송·보존을 보장하지 않아
+        //   "전량 보존"이 애초에 성립하지 않으면서 대량 회차에서 배치 지연만 만들었다.
+        //   근거는 RESTAMP_AUDIT_LOG_LIMIT 주석 — 되돌리기 전에 반드시 읽을 것(PR#52 리뷰 P1).
+        // ⚠️ 생략 건수는 상수가 아니라 **실제 출력 길이**에서 유도한다. 상수에서 빼면 slice 인자만
+        //    바뀌었을 때 카운트가 조용히 거짓말한다.
+        const restampOmitted = restampIds.length - restampPrevious.length;
         this.logger.warn(
-          `[정기파기] 파기 후 수신처가 재입력됐던 발송건을 재파기하고 파기일을 갱신함 — ` +
-            `orderDeliveryIds=[${revivedIds.slice(0, 50).join(', ')}]. 이전 파기일은 더 이상 유효하지 않다.`,
+          `[정기파기] 이미 파기 시각이 있으나 PII 가 남아 있어 파기일을 갱신함 ${restampIds.length}건 ` +
+            `(원인: CS 수신정보 변경 후 재파기 또는 레거시 부분마스킹 — 데이터로 구분 불가). ` +
+            `요약(전량): ${restampSummary}. ` +
+            `상세 id:시각/출처=[${restampPrevious.join(', ')}]` +
+            (restampOmitted > 0
+              ? ` 외 ${restampOmitted}건 로그 생략 — 그 행들의 이전 파기일은 DB 에서도 덮여 영구 소실`
+              : ''),
         );
       }
 

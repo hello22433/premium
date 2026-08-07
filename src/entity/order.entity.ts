@@ -55,25 +55,25 @@ export class OrderEntity extends BaseEntity {
   })
   settledAmountSnapshot: number | null;
 
-  @Column({ default: 0, comment: '배송 완료 리포트 pdf 카운트' })
+  @Column({ default: 0, comment: '배송 완료 리포트 발행 카운트 (pdf 다운로드 + 메일전송)' })
   deliveryCompleteReportCount: number;
 
   @Column({
     type: 'varchar',
     length: 20,
     nullable: true,
-    comment: '마지막 배송 완료 리포트 발행 소스 ex) DOCUMENT: 문서함, DIRECT: 직접발행',
+    comment: '마지막 배송 완료 리포트 발행 소스 ex) DOCUMENT: 문서함, DIRECT: 직접발행, EMAIL: 메일전송',
   })
   deliveryReportLastSource: string | null;
 
-  @Column({ default: 0, comment: '거래명세서 pdf 카운트' })
+  @Column({ default: 0, comment: '거래명세서 발행 카운트 (pdf 다운로드 + 메일전송)' })
   orderCompleteReportCount: number;
 
   @Column({
     type: 'varchar',
     length: 20,
     nullable: true,
-    comment: '마지막 거래명세서 발행 소스 ex) DOCUMENT: 문서함, DIRECT: 직접발행',
+    comment: '마지막 거래명세서 발행 소스 ex) DOCUMENT: 문서함, DIRECT: 직접발행, EMAIL: 메일전송',
   })
   transactionStatementLastSource: string | null;
 

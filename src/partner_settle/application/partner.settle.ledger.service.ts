@@ -66,6 +66,8 @@ type LedgerTransitionRef = {
   observationId: number;
   /** 같은 observation 안의 event 순번. 정상 감지 = 1 */
   sequenceNo: number;
+  /** 같은 전이 내 역분개 allocation 순번. forward·단일 reversal = 1, multi reversal = 1..N */
+  allocationNo: number;
   sourceEventIdOrigin: IPartnerSettleSourceEventIdOrigin;
 };
 
@@ -93,6 +95,8 @@ export type LedgerAppendCommand = {
   transition?: LedgerTransitionRef | null;
   /** 자동 claim 한 orphan lane inbox row */
   orphanInboxRowId?: number | null;
+  /** 수동 orphan 승인 proposal id */
+  manualLedgerProposalId?: number | null;
   memo?: string | null;
   /** provider 가 정의 외 코드를 보낸 경우 — 금액 없이 `UNKNOWN_PROVIDER_EVENT` 로 격리한다 */
   unknownProviderEvent?: boolean;
@@ -112,7 +116,31 @@ export type LedgerReversalCommand = {
   providerEvidenceHash?: string | null;
   transition?: LedgerTransitionRef | null;
   memo?: string | null;
+  /** 수동 orphan 승인 proposal id */
+  manualLedgerProposalId?: number | null;
 };
+
+export type LedgerVarianceAdjustmentCommand = {
+  partnerCompanyId: number;
+  /** 승인된 `partner_settle_payment_variance_proposal.id`. 멱등키·provenance·UNIQUE 의 축 */
+  paymentVarianceProposalId: number;
+  /**
+   * 원장 금액 = `-(actualPaidAmount - calculatedPaidAmount)` (정본 §5 318행).
+   * 과지급이면 음수 = 다음 sweep 지급액 차감. 0 은 variance 가 아니므로 계약 위반이다.
+   */
+  settleAmount: bigint;
+  /** 승인 transaction 의 DB 기준 `T_decision`. proposal.approvedAt 과 **같은 값**이어야 한다 */
+  occurredAt: KstInstant;
+  memo?: string | null;
+};
+
+/** variance ADJUSTMENT 전용 하위항목 sentinel (정본 §5 163행). 일반 원장은 이 값을 쓸 수 없다. */
+export const PAYMENT_VARIANCE_SUB_ITEM_KEY = 'PAYMENT_VARIANCE';
+
+/** variance ADJUSTMENT 멱등키. DB CHECK 가 같은 형식을 강제한다. */
+export function buildPaymentVarianceKey(proposalId: number): string {
+  return `PAYMENT_VARIANCE:${proposalId}`;
+}
 
 type LedgerRow = RawRow;
 
@@ -134,13 +162,16 @@ export class PartnerSettleLedgerService {
     return manager ? manager.getRepository(PartnerSettleLedgerEntity) : this.ledgerRepository;
   }
 
-
   /**
    * 잠금 순서 1~2단계. producer 는 원천을 읽기 **전에** 이걸 먼저 부른다.
    *
    * 순서를 producer 마다 다르게 잡으면 일일 배치와 push 수신이 교차 데드락에 걸린다.
    */
-  async lockForAppend(partnerCompanyId: number, orderDeliveryId: number | null, manager?: EntityManager): Promise<void> {
+  async lockForAppend(
+    partnerCompanyId: number,
+    orderDeliveryId: number | null,
+    manager?: EntityManager,
+  ): Promise<void> {
     // 트랜잭션이 없으면 raw FOR UPDATE 가 에러 없이 무력화된다(autocommit). 잠근 줄 알고 진행하는 게 최악이다.
     assertInTransaction(manager ?? this.ledgerRepository, '정산 원장 잠금(lockForAppend)');
 
@@ -155,17 +186,16 @@ export class PartnerSettleLedgerService {
    *
    * 재스캔·재시도·동시 poll 이 모두 이 경로로 들어오므로, 멱등이 아니면 같은 사건이 여러 번 정산된다.
    */
-  async appendLedger(command: LedgerAppendCommand): Promise<PartnerSettleLedgerEntity> {
-    assertInTransaction(this.ledgerRepository, '정산 원장 append(appendLedger)');
+  async appendLedger(command: LedgerAppendCommand, manager?: EntityManager): Promise<PartnerSettleLedgerEntity> {
+    assertInTransaction(manager ?? this.ledgerRepository, '정산 원장 append(appendLedger)');
 
-    const existing = await this.findByIdempotencyKey(command.idempotencyKey);
+    const existing = await this.findByIdempotencyKey(command.idempotencyKey, manager);
     if (existing) return existing;
 
     // 미등록 하위항목은 격리조차 못 한다(subItemKey NOT NULL·불변). 원장을 만들지 않고 실패시킨다.
     const subItemKey = resolveSubItemKey(command.subItem);
-
-    const row = await this.buildAppendRow(command, subItemKey);
-    return this.insertRow(row, command.idempotencyKey);
+    const row = await this.buildAppendRow(command, subItemKey, manager);
+    return this.insertRow(row, command.idempotencyKey, manager);
   }
 
   /**
@@ -231,6 +261,7 @@ export class PartnerSettleLedgerService {
         // 음수 배분은 orphan 정산 UNIQUE 에서 제외된다(generated key 가 NULL). 원본만 ingress 를 점유한다.
         orphanInboxRowId: null,
         memo: command.memo,
+        manualLedgerProposalId: command.manualLedgerProposalId ?? null,
       }),
       reverses_ledger_id: original.id,
       status: original.status,
@@ -241,6 +272,70 @@ export class PartnerSettleLedgerService {
       applied_discount_history_id: original.appliedDiscountHistoryId,
       pricing_resolution: original.pricingResolution,
       ...amountColumns(amounts),
+    };
+
+    return this.insertRow(row, idempotencyKey, manager);
+  }
+
+  /**
+   * 지급 차이 승인 ADJUSTMENT append (정본 §5.7.2 · §5 318행 · PR3A).
+   *
+   * 일반 append 와 달리 **정산조건 matcher 를 타지 않는다**(`DIRECT_AMOUNT`). 지급 차이는 상품·조건에서
+   * 도출되는 금액이 아니라 실송금액과 계산액의 차이를 사람이 승인한 확정값이기 때문이다.
+   *
+   * `settleBatchId = NULL` · `occurredAt = T_decision` 이므로 **이미 확정된 batch 에 소급 편입되지 않고**
+   * 승인 후 최초 eligible confirm sweep 에 정확히 한 번 편입된다.
+   */
+  async appendVarianceAdjustment(
+    command: LedgerVarianceAdjustmentCommand,
+    manager?: EntityManager,
+  ): Promise<PartnerSettleLedgerEntity> {
+    assertInTransaction(manager ?? this.ledgerRepository, '지급 차이 원장 append(appendVarianceAdjustment)');
+
+    if (command.settleAmount === 0n) {
+      throw new LedgerInvariantError('지급 차이 0 은 조정 원장을 만들지 않는다');
+    }
+    this.assertBaseAmountBound(command.settleAmount);
+
+    const idempotencyKey = buildPaymentVarianceKey(command.paymentVarianceProposalId);
+    const existing = await this.findByIdempotencyKey(idempotencyKey, manager);
+    if (existing) return existing;
+
+    const row: LedgerRow = {
+      ...this.commonColumns({
+        partnerCompanyId: command.partnerCompanyId,
+        subItemKey: PAYMENT_VARIANCE_SUB_ITEM_KEY,
+        sourceType: 'ADJUSTMENT',
+        // 지급 차이는 특정 발송건에 귀속되지 않는 협력사 단위 조정이다.
+        orderDeliveryId: null,
+        galaxiaBarcodeLogId: null,
+        idempotencyKey,
+        occurredAt: command.occurredAt,
+        vatCalculationMode: 'NONE',
+        orphanInboxRowId: null,
+        manualLedgerProposalId: null,
+        memo: command.memo,
+      }),
+      payment_variance_proposal_id: command.paymentVarianceProposalId,
+      reverses_ledger_id: null,
+      status: 'NORMAL' satisfies IPartnerSettleLedgerStatus,
+      review_code: null,
+      review_resolution: null,
+      // DIRECT_AMOUNT 는 조건 스냅샷을 쓰지 않는다. DB CHECK 가 percent=0·DISCOUNT·history NULL 을 요구한다.
+      applied_price_percent: '0',
+      applied_price_adjustment: 'DISCOUNT',
+      applied_discount_history_id: null,
+      pricing_resolution: 'DIRECT_AMOUNT',
+      // 구성금액(수수료·VAT)은 만들지 않는다. 차이 그대로가 정산 금액이다.
+      ...amountColumns({
+        baseAmount: command.settleAmount,
+        discountAmount: 0n,
+        receivingCommissionAmount: 0n,
+        givingCommissionAmount: 0n,
+        vatAmount: 0n,
+        feeTotalAmount: 0n,
+        settleAmount: command.settleAmount,
+      }),
     };
 
     return this.insertRow(row, idempotencyKey, manager);
@@ -282,7 +377,11 @@ export class PartnerSettleLedgerService {
     }
   }
 
-  private async buildAppendRow(command: LedgerAppendCommand, subItemKey: string): Promise<LedgerRow> {
+  private async buildAppendRow(
+    command: LedgerAppendCommand,
+    subItemKey: string,
+    manager?: EntityManager,
+  ): Promise<LedgerRow> {
     const common = this.commonColumns({
       partnerCompanyId: command.partnerCompanyId,
       subItemKey,
@@ -297,6 +396,7 @@ export class PartnerSettleLedgerService {
       transition: command.transition,
       orphanInboxRowId: command.orphanInboxRowId ?? null,
       memo: command.memo,
+      manualLedgerProposalId: command.manualLedgerProposalId ?? null,
     });
 
     // ① provider 정의 외 코드 — 사건은 남기되 금액을 만들지 않는다.
@@ -328,6 +428,7 @@ export class PartnerSettleLedgerService {
       command.partnerCompanyId,
       command.occurredAt.date,
       command.snapshot,
+      manager,
     );
 
     // ④ 이력 손상 — 현재값 fallback 은 틀린 금액을 확정시킨다. 금액을 비우고 격리한다.
@@ -394,6 +495,7 @@ export class PartnerSettleLedgerService {
     providerEvidenceHash?: string | null;
     transition?: LedgerTransitionRef | null;
     orphanInboxRowId: number | null;
+    manualLedgerProposalId: number | null;
     memo?: string | null;
   }): LedgerRow {
     return {
@@ -410,15 +512,21 @@ export class PartnerSettleLedgerService {
       provider_evidence_hash: input.providerEvidenceHash ?? null,
       transition_observation_id: input.transition?.observationId ?? null,
       transition_sequence_no: input.transition?.sequenceNo ?? null,
+      transition_allocation_no: input.transition?.allocationNo ?? null,
       source_event_id_origin: input.transition?.sourceEventIdOrigin ?? null,
       orphan_inbox_row_id: input.orphanInboxRowId,
       memo: input.memo ?? null,
+      manual_ledger_proposal_id: input.manualLedgerProposalId,
       settle_batch_id: null,
     };
   }
 
   /** append 결과는 항상 멱등키로 재조회한다 — 신규 INSERT 든 **멱등키** 충돌이든 답은 같은 row 다. */
-  private async insertRow(row: LedgerRow, idempotencyKey: string, manager?: EntityManager): Promise<PartnerSettleLedgerEntity> {
+  private async insertRow(
+    row: LedgerRow,
+    idempotencyKey: string,
+    manager?: EntityManager,
+  ): Promise<PartnerSettleLedgerEntity> {
     try {
       await insertRawRow(this.repo(manager), 'partner_settle_ledger', row, {
         idempotentConstraints: [LEDGER_IDEMPOTENCY_CONSTRAINT],
@@ -461,7 +569,10 @@ export class PartnerSettleLedgerService {
     throw error;
   }
 
-  private findByIdempotencyKey(idempotencyKey: string, manager?: EntityManager): Promise<PartnerSettleLedgerEntity | null> {
+  private findByIdempotencyKey(
+    idempotencyKey: string,
+    manager?: EntityManager,
+  ): Promise<PartnerSettleLedgerEntity | null> {
     return this.repo(manager).findOne({ where: { idempotencyKey } });
   }
 

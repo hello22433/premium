@@ -6,4 +6,5 @@ export enum IPartnerCompanyType {
   GALAXIA = 'GALAXIA', // 갤럭시아
   SSG = 'SSG', // 신세계
   DAOU = 'DAOU', // 다우기술
+  PIN_INVENTORY = 'PIN_INVENTORY', // 해외 재고형 쿠폰 (기술 협력사)
 }

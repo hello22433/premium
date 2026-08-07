@@ -94,4 +94,9 @@ export class OrderDeliveryRefundEntity {
 
   @Column({ type: 'datetime', precision: 6, name: 'ssg_recover_escalated_at', nullable: true })
   ssgRecoverEscalatedAt: Date | null;
+  // ── 재고형 쿠폰 결제 체인 환불 멱등성 (rev5 §4.9) ──
+
+  @Index('uk_order_delivery_refund_billing_chain', { unique: true })
+  @Column({ type: 'bigint', name: 'inventory_pin_billing_chain_id', nullable: true })
+  inventoryPinBillingChainId: string | null;
 }

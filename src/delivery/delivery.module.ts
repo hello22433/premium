@@ -1,4 +1,5 @@
 import { Module, forwardRef } from '@nestjs/common';
+import { InventoryCouponModule } from '../inventory_coupon/inventory.coupon.module';
 import { DeliveryAlimTalkInfoBankHttp } from './infra/delivery.alim.talk.info.bank.http';
 import { HttpModule } from '@nestjs/axios';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -85,11 +86,12 @@ import { DeliveryCancelIntentService } from './application/delivery-cancel-inten
     FileModule,
     PartnerCompanyExternModule,
     SsgEventModule,
-    UserManagementModule,
+    forwardRef(() => UserManagementModule),
     SsgInsertStateModule,
     OrderFromModule,
     DeliveryCutoverModule,
     forwardRef(() => WalletModule),
+    forwardRef(() => InventoryCouponModule),
   ],
   providers: [
     {

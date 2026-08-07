@@ -12,8 +12,54 @@
 -- 실행 순서 (중요)
 --   ① 이 스크립트의 §1(컬럼 추가)  → ② §2~§4(백필)  → ③ 코드 배포  → ④ §2~§4 재실행
 --   ④가 필요한 이유: ②와 ③ 사이에 자정 정기파기 배치가 돌면 그 회차 행은 destroyed_at 이
---   비어 있다(코드가 아직 각인을 안 하므로). 백필은 전 구간 멱등이므로 그냥 다시 돌리면 된다.
---   ③을 ②보다 먼저 하면 파기된 행이 잠시 파기일 null 로 표시된다(거짓은 아니지만 공백).
+--   비어 있다(코드가 아직 각인을 안 하므로). 그 행이 속한 주문은 **파기확인서 발행이 막힌다**
+--   (아래와 같은 이유). 백필은 전 구간 멱등이므로 그냥 다시 돌리면 즉시 풀린다.
+--
+--   ⚠️ ③을 ②보다 먼저 하면 **레거시 파기완료 주문의 파기확인서 발행이 전면 차단된다.**
+--      (초기 문구는 "잠시 파기일 null 로 표시된다(공백)"였다. 그때는 게이트가 destroyed_at 을
+--       보지 않아 표시에만 영향을 줬으나, 게이트가 파기일 축을 교차검증하게 되면서
+--       — destruction.certificate.gate.ts — 결과가 '표시 공백'에서 '기능 정지'로 격상됐다.)
+--      경로: destroyed_at IS NULL → resolveDeliveryDestroyAt 분기 ③ → 주문 파기일 null
+--            → 게이트가 DESTROY_TIME_UNKNOWN 으로 차단 → 목록 발행 버튼과 메일 발송 경로가
+--              함께 막힘(order.service.ts 가 BadRequestException).
+--      **'백필 → 코드 배포' 순서는 권고가 아니라 필수다.** 백필로 회복되므로 비가역은 아니다.
+--      ⚠️ 여기의 원문자 ①②③④ 는 **실행 단계**이고, 아래 §1·§2·§3·§4 는 **이 파일의 절**이다.
+--         숫자가 겹치니 혼동하지 말 것 — '②→③'(백필→배포)은 필수, '§2→§3'(2절→3절)은 권고다.
+--
+-- 실행 기록 (운영, 2026-07-31)
+--   ① 컬럼 2개 추가 (MySQL 8.4.8) → ② §2 8,960건 / §3 27,813건 각인 → ③ 코드 배포 완료
+--   파기완료 36,773행 = BACKFILL_EARLY 8,960 + BACKFILL_ESTIMATE 27,813, 잔여 0.
+--   §4-1~4-8 검증 전종 0. 조기파기 요청서 50건(전부 매핑 전체 지정), soft-delete 요청서 0건.
+--   ⚠️ **§4-9 는 신설 후 미실행이다**(리뷰 5차 M-4 로 추가). "§4 전종 0" 으로 읽지 말 것 —
+--      그 절이 재는 모집단은 아직 한 번도 측정된 적이 없다.
+--   ★ §2·§3 **양쪽 모두** `od.updated_at = od.updated_at` 절을 포함한 상태로 실행했다.
+--     ⚠️ 이 문장의 근거는 **실행자 진술뿐이다.** 동시대 기록(3573012e 커밋 본문)은 §2 의
+--        8,960건만 든다 — §3 의 27,813건에 대한 당대 근거는 없다. 아래 검증 범위 한정과
+--        같은 이유로, 이 줄도 "확인된 사실"이 아니라 "진술"로 읽을 것.
+--     ⚠️ 다만 **검증은 §2 범위에서만** 했다. 직후 확인한 쿼리가
+--        `destroyed_at_source='BACKFILL_EARLY' AND DATE(updated_at)=CURDATE()` = 0 이라,
+--        §3 이 각인한 27,813행(BACKFILL_ESTIMATE)은 그 술어 **밖**이다. 미검증 모집단이 검증된
+--        쪽의 3배이므로 "운영 전체가 안 밀렸다"고 단정하지 않는다. 확인하려면 넓혀서 볼 것:
+--          SELECT destroyed_at_source, COUNT(*)
+--            FROM order_delivery
+--           WHERE destroyed_at_source IN ('BACKFILL_EARLY','BACKFILL_ESTIMATE')
+--             AND DATE(updated_at) = DATE('2026-07-31')      -- 백필 실행일
+--           GROUP BY destroyed_at_source;
+--        ⚠️ 결과 해석은 **비대칭이다.** 원래 쿼리는 백필 직후 CURDATE() 로 돌려 다른 갱신이
+--           섞일 여지가 작았지만, 이 쿼리는 절대일자 고정이라 사후 언제든 돌릴 수 있는 대신
+--           **그날 정상 운영으로 갱신된 행까지 전부 잡는다.**
+--             · 0 이면 → 밀림 없음 **확정**
+--             · 0 이 아니면 → 밀림의 증거가 **아니다.** destroyed_at 과 updated_at 의 시:분
+--               근접도로 2차 판별할 것(백필이 밀렸다면 둘이 거의 같은 시각이다).
+--     ⚠️ 그리고 **운영 실행분이 당시 레포 파일과 달랐다.** `od.updated_at = od.updated_at` 절은
+--        커밋 3573012e(2026-07-31 20:48)에 처음 레포로 들어왔고 운영 백필은 그보다 앞서므로,
+--        그날 운영에는 "레포에 없던 수정본"을 손으로 얹어 실행한 것이다. 결과는 의도대로였으나
+--        이 파일이 근거로 삼는 **"파일 원문 실행" 워크플로우가 한 번 깨진 사건**이라 기록한다.
+--        확인 명령(접두어 `od.` 를 빼면 롤백 절만 잡혀 **다른 답**이 나온다 — 주의):
+--          git log -S "od.updated_at = od.updated_at" --oneline -- migration/order-delivery-destroyed-at.sql
+--        지금은 파일과 실행분이 일치하므로 재현하려면 현재 §2·§3 을 그대로 쓰면 된다.
+--   ⚠️ 개발 DB(2026-07-31 18:18)는 이 절이 추가되기 **전에** 돌려 79건의 updated_at 이 밀렸다.
+--      원래 값을 남기지 않아 복구 불가이며, 수용하기로 결정했다.
 --
 -- 요구: MySQL 8.0+ (information_schema 기반 재실행 가드, LEAST). 실행 전 SELECT VERSION(); 확인.
 -- 대상 테이블이 크면 §3/§4 는 배치 분할 실행을 권장한다(맨 아래 참고).
@@ -28,13 +74,19 @@
 --        (같은 쿼리가 실행 시점에 따라 '대상 수'와 '잔량 검증'이 된다 — 조건이 동일하므로.)
 --        ※ 이 쿼리를 빠뜨려도 순서 사고는 나지 않는다 — 방어는 §3 UPDATE 의 NOT EXISTS 에
 --          들어 있다. 이건 규모 파악용이지 게이트가 아니다.
---      · §3 대상 건수:
+--      · §3 대상 건수 — ⚠️ **§3 UPDATE 의 WHERE 를 그대로 복사해야** 한다. 아래 두 절을
+--        빠뜨리면 안 된다. NOT EXISTS 를 빼면 §2 가 가져갈 행까지 세어 과대
+--        보고되고(§2 **전에** 돌릴 때 특히), DATE_ADD(...) IS NOT NULL 을 빼면 §3 이 애초에
+--        건드리지 못하는 계산 불가 행이 섞인다 — 원인이 서로 다른 두 절이다.
 --          SELECT COUNT(*) AS `S3_대상건수`
 --          FROM `order_delivery` od
 --          JOIN `order_product_mapping` opm ON opm.id = od.order_product_mapping_id
 --          WHERE od.destroyed_at IS NULL AND od.delivery_target = '-'
 --            AND opm.send_request_at IS NOT NULL
---            AND opm.request_to_destroy_personal_info_day IS NOT NULL;
+--            AND opm.request_to_destroy_personal_info_day IS NOT NULL
+--            AND DATE_ADD(DATE(opm.send_request_at),
+--                         INTERVAL opm.request_to_destroy_personal_info_day DAY) IS NOT NULL
+--            AND NOT EXISTS ( ... §3 의 NOT EXISTS 절 그대로 ... );
 --      · 그중 미래로 튀어 NOW() 로 눌리는(= 근거가 가장 약한) 건수까지 미리 보려면 위 쿼리에
 --          AND DATE_ADD(DATE(opm.send_request_at),
 --                       INTERVAL opm.request_to_destroy_personal_info_day DAY) > NOW()
@@ -42,20 +94,35 @@
 --
 -- (나) 되돌리기 — 백필이 각인한 값만 정확히 지운다:
 --        UPDATE `order_delivery`
---        SET destroyed_at = NULL, destroyed_at_source = NULL
+--        SET destroyed_at = NULL, destroyed_at_source = NULL, updated_at = updated_at
 --        WHERE destroyed_at_source IN ('BACKFILL_EARLY', 'BACKFILL_ESTIMATE');
 --      런타임 각인(EARLY/BATCH)과 섞이지 않고 골라낼 수 있는 것은 **출처 컬럼 덕분**이다
 --      (출처 컬럼의 부수 효과 — 없었다면 날짜만으로는 분리가 불가능했다).
---      코드 배포(③) 전이면 이걸로 완전한 원상복구다. 배포 후에 돌려도 런타임이 남긴 실측은
---      보존되므로 안전하다. 되돌린 뒤 §2 → §3 → §4 를 순서대로 다시 돌리면 된다.
+--      ★ `updated_at = updated_at` 을 **여기에도** 반드시 붙인다. 이 UPDATE 는 대상이 백필
+--        각인 전량(운영 기준 36,773행)이라, 빠뜨리면 §2·§3 이 막으려던 피해가 롤백 경로로
+--        그대로 재현된다. 근거는 아래 §2 의 같은 줄 주석.
+--      ⚠️ **"완전한 원상복구"가 아니다.** 두 컬럼 값은 되돌아가지만 이 UPDATE 가 남기는 흔적
+--        (바이너리 로그·복제 지연·행 버전)까지 되돌지는 않으며, 위 절을 빠뜨렸다면
+--        updated_at 은 복구 불가다. 되돌린 뒤 §2 → §3 → §4 를 순서대로 다시 돌리면 값은
+--        같아진다(멱등). 코드 배포(③) 후에 돌려도 런타임이 남긴 실측(EARLY/BATCH)은 보존된다.
 --      ⚠️ 컬럼 자체를 되돌리는 것(§1 취소 = DROP COLUMN)은 코드 배포 후에는 order_delivery
 --         조회 경로가 전면 실패하므로 **코드를 먼저 롤백**해야 한다.
 --
 -- (다) 트랜잭션 — §2 · §3 은 각각 단일 UPDATE 라 그 자체로 원자적이다. 둘을 하나로 묶고
 --      싶으면 START TRANSACTION; (§2) (§3) COMMIT; 로 감쌀 수 있으나, 대형 테이블에서는
 --      언두 로그가 커지고 락 보유 시간이 길어지므로 권장하지 않는다. 중간에 끊겨도 전 구간이
---      `destroyed_at IS NULL` 조건이라 재실행이 안전하다(멱등). 단 **순서(§2 → §3)만은
---      지켜야 한다** — §3 이 선점하면 §2 는 영원히 못 고친다(§3 가드 참조).
+--      `destroyed_at IS NULL` 조건이라 재실행이 안전하다(멱등).
+--      ※ 순서(§2 → §3)는 **지키는 편이 좋지만 어겨도 데이터가 상하지는 않는다.**
+--        (초기 문구는 "§3 이 선점하면 §2 는 영원히 못 고친다"였는데, 그건 §3 에 NOT EXISTS
+--         방어가 들어가기 전 이야기다. 지금은 §3 이 조기파기 후보 행을 구조적으로 건너뛰므로
+--         §3 을 먼저 돌려도 실측이 덮이지 않고, 뒤늦게 §2 를 돌리면 정확히 채워진다.
+--         근거는 §3 의 NOT EXISTS 가 §2 후보 UNION ALL 과 절 단위로 동치라는 정적 사실이며,
+--         로컬 DB 로도 재현했다. 자세한 것은 §3 헤더 참조 — 그쪽이 정본이다.)
+--        그러면 순서를 왜 여전히 권하나 — **④ 재실행 때의 관측 가능성 때문이다.** §2 를 먼저
+--        돌려야 §3 앞의 카운트가 '0' 이라는 명확한 진행 신호를 주고, 어긋났을 때 어느 절이
+--        덜 돌았는지 바로 읽힌다. 순서를 섞으면 값은 결국 같아지지만 중간 판단 근거가 사라진다.
+--        (②~③ 구간에는 게이트가 아직 배포돼 있지 않으므로 '발행 차단 창' 은 이 순서와 무관하다.
+--         차단 창은 ③ 이후 ④ 전까지만 존재한다 — 위 실행 순서 주석 참조.)
 
 -- ── 1. 컬럼 추가 (재실행 안전) ────────────────────────────────────────────────
 -- nullable + 테이블 끝 추가라 MySQL 8.0 은 INSTANT 로 처리할 수 있다.
@@ -119,10 +186,10 @@ PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
 --        · 이미 파기된 행을 다시 파기        → 최초 시각 **유지** (early.destroy.service.ts)
 --          = MIN 과 일치
 --        · 파기 후 CS 수신정보 변경으로 되살아난 행을 재파기 → **새 시각으로 갱신**
---          (delivery.batch.service.ts 의 '부활 재파기' 각인 분기)   = MIN 과 **불일치**
+--          (delivery.batch.service.ts 의 restampIds = 파기일 갱신 분기)  = MIN 과 **불일치**
 --      백필은 두 번째를 표현하지 못한다. 부활 이력이 파기 때 함께 마스킹돼 데이터만으로는
 --      "이 행이 되살아났다가 다시 지워진 것인지"를 판별할 수 없기 때문이다.
---      결과적으로 **부활 재파기된 레거시 행은 최초 파기 시각이 BACKFILL_EARLY(=실측) 로
+--      결과적으로 **파기일이 갱신된 레거시 행은 최초 파기 시각이 BACKFILL_EARLY(=실측) 로
 --      각인된다 — 값은 최신 파기가 아닌데 딱지는 '사실'이다.** 빈도는 낮지만(조기파기 +
 --      CS 수신처 변경 + 재파기가 모두 겹쳐야 한다) 방향이 나쁘므로 여기 남긴다.
 --      후보에서 빼는 방안(출처 미상으로 남김)은 판별이 불가능해 멀쩡한 실측까지 버리게 되므로
@@ -171,7 +238,24 @@ JOIN (
   GROUP BY c.delivery_id
 ) x ON x.delivery_id = od.id
 SET od.destroyed_at = x.destroyed_at,
-    od.destroyed_at_source = 'BACKFILL_EARLY'   -- 실측(요청서 executed_at 복사)
+    od.destroyed_at_source = 'BACKFILL_EARLY',  -- 실측(요청서 executed_at 복사)
+    -- ★★ updated_at 보존 — 빠뜨리면 되돌릴 수 없는 부작용이 난다.
+    --   order_delivery.updated_at 은 DDL 이 `on update CURRENT_TIMESTAMP(6)` 라, SET 절에
+    --   적지 않아도 **MySQL 이 알아서 오늘로 갱신한다.** 이 컬럼은 발송이력 표시일자의
+    --   최종 폴백이므로, 백필이 건드린 행 중 앞의 두 컬럼이 모두 NULL 인 건이 영향을 받는다.
+    --   ⚠️ 영향 축이 **표시 하나가 아니라 셋이다.** 같은 파일
+    --      src/partner_company_extern_history/application/partner.company.extern.history.service.ts
+    --        :96  COALESCE(orderDelivery.actualSendAt, failedAt, updatedAt)  → 기간 **필터**
+    --        :127 같은 식의 raw 표현                                          → **정렬** 키
+    --        :290 actualSendAt ?? failedAt ?? updatedAt                       → **표시** 값
+    --      그래서 증상은 "날짜가 틀리게 보인다"보다 **"과거 기간으로 조회하면 행이 목록에서
+    --      사라진다"** 가 크다 — 필터가 먼저 걸리기 때문이다.
+    --      (규모는 좁다: 목록이 status IN (FAIL...) OR resendAt IS NOT NULL 로 좁혀지고 FAIL 행은
+    --       failedAt 이 채워져 COALESCE 가 updatedAt 까지 내려가는 모집단이 제한적이다.
+    --       화면도 SUPER_ADMIN 전용(/send/fail-history)이라 대외 노출은 없다.)
+    --   원래 값을 어디에도 남기지 않으므로 복구가 불가능하다.
+    --   자기 값으로 명시하면 MySQL 이 자동 갱신을 적용하지 않는다(실증 완료).
+    od.updated_at = od.updated_at
 WHERE od.destroyed_at IS NULL
   AND od.delivery_target = '-';   -- 실제로 지워진 행에만 각인(기록과 행 상태 불일치 방어)
 
@@ -247,7 +331,8 @@ SET od.destroyed_at = LEAST(
       DATE_ADD(DATE(opm.send_request_at), INTERVAL opm.request_to_destroy_personal_info_day DAY),
       NOW()
     ),
-    od.destroyed_at_source = 'BACKFILL_ESTIMATE'   -- ★ 추정. 이 값만 사실이 아니다.
+    od.destroyed_at_source = 'BACKFILL_ESTIMATE',  -- ★ 추정. 이 값만 사실이 아니다.
+    od.updated_at = od.updated_at                  -- ★ 자동 갱신 방지. 근거는 §2 의 같은 줄 주석.
 WHERE od.destroyed_at IS NULL
   AND od.delivery_target = '-'
   AND opm.send_request_at IS NOT NULL
@@ -304,7 +389,7 @@ WHERE od.delivery_target = '-' AND od.destroyed_at IS NULL;
 -- 4-2. 미파기 행에 시각이 찍혀 있는 건. **백필 직후에만 0 이어야 한다.**
 --      ⚠️ "항상 반드시 0"이 아니다 — 운영 중에는 **정상적으로 발생하는 상태**가 있다:
 --         파기된 뒤 CS 수신정보 변경으로 수신처가 되살아나고 아직 다음 배치 회차가 오지 않은 행.
---         배치는 그 행을 '부활 재파기'로 분류해 새 시각으로 갱신하도록 설계돼 있다
+--         배치는 그 행을 파기일 갱신(restamp) 대상으로 분류해 새 시각을 쓰도록 설계돼 있다
 --         (delivery.batch.service.ts 의 각인 분기). 즉 이 조합 자체는 결함이 아니다.
 --      백필 직후(코드 배포 전)에는 부활 경로가 아직 개입하지 않았으므로 0 이어야 하고,
 --      0 이 아니면 백필 조건 오류다(살아있는 PII 에 "파기 완료" 도장).
@@ -367,6 +452,93 @@ WHERE destroyed_at IS NOT NULL
   AND created_at IS NOT NULL
   AND destroyed_at < DATE_SUB(created_at, INTERVAL MICROSECOND(created_at) MICROSECOND);
 
+-- 4-8. 레거시 '부분 마스킹' 모집단 (리뷰 4차 H-2). §4 중 **수명이 다른** 쿼리다 — 나머지는
+--      백필 직후 1회 확인용이지만(§4-2·4-3·4-5 는 운영 중 조회도 의미가 있다) 이건 백필과
+--      무관하게 **계속 발생할 수 있는 상태**를 센다. 백필 종료 후에는 런북/모니터링 쪽으로
+--      옮기는 것이 맞다(이 파일은 언젠가 아카이브된다).
+--
+--      무엇을 세나 — `delivery_target = '-'` 인데 `email_receiver_phone` 이 살아 있는 행.
+--      두 경로로 생긴다:
+--        (가) PII 5종 확대 이전에 2종만 마스킹된 레거시 행
+--        (나) 파기 후 CS 수신정보 변경(EMAIL+핀발급 분기)이 emailReceiverPhone 만 되살린 행
+--      §4-1~4-7 은 전부 `delivery_target = '-'` **단일 축**이라 이 모집단을 하나도 세지 못한다.
+--
+--      왜 계속 봐야 하나 — 이 행들은 유효기간 가드에 따라 결과가 갈리고 **양쪽 다 문제다**:
+--        · 만료/expireAt NULL/soft-delete → 배치가 재수집해 파기일 갱신 분류로 보내고 파기일이
+--          **오늘로** 바뀐다. (가)는 되살아난 적이 없으므로 날짜가 실제보다 늦어진다.
+--          ('부활'이라 부르지 않는다 — 그 라벨이 오보를 만든다는 것이 개명의 근거였다.
+--           delivery.batch.service.ts 의 restampIds 분기 참조.)
+--        · 유효기간 잔존 → 재수집되지 않아 isDeliveryDestroyed 가 false 로 유지되고, 게이트가
+--          그 기간 내내 파기확인서 발행을 막는다(대개 NOT_DESTROYED).
+--
+--      ⚠️ 1열은 **근사다.** 유효기간 가드 축만 복제했을 뿐, 실제 재수집 조건은 5절 AND 다
+--         (파기예정일 도래 / order.status = DELIVERY_COMPLETE / 환불 PROGRESS·APPROVE 제외 /
+--          PII 미파기 / 유효기간 가드). 환불 진행중이거나 주문이 DELIVERY_COMPLETE 를 이탈한
+--         행은 실제로는 재수집되지 않는데 1열에 섞인다 → **2열(발행 차단)이 과소 보고된다.**
+--         정확한 분류가 필요하면 order_product_mapping·order 를 조인해 나머지 절을 복제할 것.
+--
+--      ⚠️ 2026-07-31 운영 실측 = 0 / 0 이다. 이것은 "**지금 미마스킹 잔량이 없다**"는 뜻이지
+--         "(가)가 존재한 적 없다"는 뜻이 **아니다.** 유효기간이 이미 만료된 (가) 행은 배치가
+--         재수집해 마스킹을 끝냈으므로 이 쿼리에 잡히지 않는다. 따라서 앞으로 값이 올라가면
+--         (나)일 **가능성이 높다**는 미래형 진술만 성립한다. **0 이 아니게 되면 알림 대상.**
+SELECT
+  COALESCE(SUM(CASE WHEN od.expire_at IS NULL OR DATE(od.expire_at) < DATE(NOW()) OR od.deleted_at IS NOT NULL
+      THEN 1 ELSE 0 END), 0) AS `재수집후보__파기일이_오늘로_밀림_가능`,
+  COALESCE(SUM(CASE WHEN od.expire_at IS NOT NULL AND DATE(od.expire_at) >= DATE(NOW()) AND od.deleted_at IS NULL
+      THEN 1 ELSE 0 END), 0) AS `재수집안됨__유효기간동안_발행차단`
+FROM `order_delivery` od
+WHERE od.delivery_target = '-'
+  AND od.email_receiver_phone IS NOT NULL
+  AND od.email_receiver_phone <> '-';
+
+-- 4-9. **술어 사각지대** — 2축 밖 PII 만 남은 행 (리뷰 5차 M-4).
+--
+--      §4-8 은 emailReceiverPhone 축만 센다. 그런데 마스킹 대상은 **5종**이다
+--      (delivery.batch.service.ts 의 마스킹 UPDATE: deliveryTarget / originalDeliveryTarget /
+--       emailReceiverPhone / bankAccount / bankAccountOwner).
+--      술어 isDeliveryDestroyed 는 그중 **deliveryTarget 과 emailReceiverPhone 둘만**
+--      본다(위 나열 순서로는 1·3번째다 — "앞 둘"이 아니다. originalDeliveryTarget 은
+--       술어 **밖**이다). 따라서
+--        bankAccount · bankAccountOwner · originalDeliveryTarget **만** 살아 있는 행은
+--      술어가 "파기됨(true)"으로 읽고 → 게이트가 발행을 막지 않아 →
+--      **살아있는 금융 PII 옆에 "전량 파기 완료" 확인서가 발행될 수 있다.**
+--
+--      ⚠️ 오류 방향이 §4-8 과 정반대다. §4-8 이 세는 행은 파기일이 실제보다 늦어지는(=우리에게
+--         불리한) 오류지만, 이쪽은 **허위 안심**이다. 그래서 더 위험하다.
+--      ⚠️ 이 모집단은 **한 번도 측정된 적이 없다.** 술어를 5종으로 통일할지는 정책 판단이지만,
+--         그 결정보다 **계량이 먼저**다. "실측 0건으로 해소"로 닫지 말 것.
+--      ⚠️ **이 수치는 행 단위 상한(superset)이지 발행 건수가 아니다** — §4-8 의 '근사' 경고와
+--         같은 성격이다. 게이트(destruction.certificate.gate.ts:51-86)는 여기에 없는 축을
+--         셋 더 요구한다:
+--           · order.status = DELIVERY_COMPLETE (게이트 첫 분기)
+--           · **형제 발송건 전부** delivery_target='-' (게이트는 주문 단위 every 판정, 이 쿼리는 행 단위)
+--           · destroyed_at 으로 파기일을 답할 수 있을 것 (아니면 DESTROY_TIME_UNKNOWN 으로 차단)
+--         soft-delete 행(deleted_at IS NOT NULL)도 포함된다 — 배치는 withDeleted 로 세지만
+--         게이트가 읽는 관계 목록에는 통상 없다. 그래서 아래에 분모와 soft-delete 열을 함께 둔다.
+--         0 이 아니게 나와도 "허위 확인서 N건"으로 **보고하지 말 것.** 그 N 에서 위 세 축을
+--         조인해 좁힌 값이 실제 노출 건수다.
+SELECT
+  COUNT(*)                                                            AS `분모__술어가_파기로_읽는_행_전체`,
+  COALESCE(SUM(CASE WHEN od.bank_account IS NOT NULL AND od.bank_account <> '-'
+      THEN 1 ELSE 0 END), 0)                                          AS `계좌번호_생존`,
+  COALESCE(SUM(CASE WHEN od.bank_account_owner IS NOT NULL AND od.bank_account_owner <> '-'
+      THEN 1 ELSE 0 END), 0)                                          AS `예금주_생존`,
+  COALESCE(SUM(CASE WHEN od.original_delivery_target IS NOT NULL AND od.original_delivery_target <> '-'
+      THEN 1 ELSE 0 END), 0)                                          AS `최초수신처_생존`,
+  COALESCE(SUM(CASE WHEN (od.bank_account IS NOT NULL AND od.bank_account <> '-')
+                      OR (od.bank_account_owner IS NOT NULL AND od.bank_account_owner <> '-')
+                      OR (od.original_delivery_target IS NOT NULL AND od.original_delivery_target <> '-')
+      THEN 1 ELSE 0 END), 0)                                          AS `합계__2축밖_PII가_남은_행`,
+  COALESCE(SUM(CASE WHEN od.deleted_at IS NOT NULL
+                     AND ( (od.bank_account IS NOT NULL AND od.bank_account <> '-')
+                        OR (od.bank_account_owner IS NOT NULL AND od.bank_account_owner <> '-')
+                        OR (od.original_delivery_target IS NOT NULL AND od.original_delivery_target <> '-') )
+      THEN 1 ELSE 0 END), 0)                                          AS `그중_soft_delete__게이트_미도달`
+FROM `order_delivery` od
+WHERE od.delivery_target = '-'
+  -- 2축 술어가 '파기됨' 으로 판정하는 행만 (= §4-8 과 배타적)
+  AND (od.email_receiver_phone IS NULL OR od.email_receiver_phone = '-');
+
 -- ── 참고: 대용량 분할 실행 ────────────────────────────────────────────────────
 -- order_delivery 가 수백만 행이면 §3 을 한 번에 돌리지 말고 id 구간으로 쪼갠다.
 --
@@ -376,7 +548,8 @@ WHERE destroyed_at IS NOT NULL
 --
 --   UPDATE `order_delivery` od
 --   JOIN `order_product_mapping` opm ON opm.id = od.order_product_mapping_id
---   SET ... (§3 의 SET 그대로)
+--   SET od.destroyed_at = ..., od.destroyed_at_source = 'BACKFILL_ESTIMATE',
+--       od.updated_at = od.updated_at                      -- ★ 생략 금지 (유실 시 복구 불가)
 --   WHERE od.destroyed_at IS NULL AND od.delivery_target = '-'
 --     AND opm.send_request_at IS NOT NULL
 --     AND opm.request_to_destroy_personal_info_day IS NOT NULL

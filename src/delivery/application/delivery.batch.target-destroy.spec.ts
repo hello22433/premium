@@ -288,9 +288,52 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
 
   // 각인 대상 판정은 select 결과(마스킹 이전 스냅샷)로 하므로, 행에 destroyedAt/deliveryTarget 을
   // 실제로 담아야 의미 있는 검증이 된다. id 만 담으면 undefined 비교가 되어 공허 통과한다.
-  const aliveRow = (id: number) => ({ id, destroyedAt: null, deliveryTarget: '01011112222' });
-  const partiallyDestroyedRow = (id: number, at: Date) => ({ id, destroyedAt: at, deliveryTarget: '-' });
-  const revivedRow = (id: number, at: Date) => ({ id, destroyedAt: at, deliveryTarget: '01011112222' });
+  //
+  // ⚠️ emailReceiverPhone 을 반드시 담는다. 판정 술어(isDeliveryDestroyed)는 **2축**인데
+  //    픽스처가 deliveryTarget 만 담으면 emailReceiverPhone 이 undefined 로 들어가고,
+  //    그 값은 술어에서 '파기됨'으로 취급되어 **판정을 1축으로 되돌려도 전 테스트가 통과한다**
+  //    (리뷰 4차 M-5). 아래 emailRevivedRow 가 그 축의 양성 대조군이다.
+  const aliveRow = (id: number) => ({
+    id,
+    destroyedAt: null,
+    deliveryTarget: '01011112222',
+    emailReceiverPhone: null,
+    destroyedAtSource: null,
+  });
+  const partiallyDestroyedRow = (id: number, at: Date) => ({
+    id,
+    destroyedAt: at,
+    deliveryTarget: '-',
+    emailReceiverPhone: '-',
+    destroyedAtSource: 'BATCH',
+  });
+  const revivedRow = (id: number, at: Date) => ({
+    id,
+    destroyedAt: at,
+    deliveryTarget: '01011112222',
+    emailReceiverPhone: null,
+    destroyedAtSource: 'BATCH',
+  });
+  /**
+   * deliveryTarget 은 마스킹된 채 emailReceiverPhone 만 살아있는 행.
+   * CS 수신정보 변경(EMAIL+핀발급 분기)과 PII 5종 확대 이전 레거시가 만드는 모양이며,
+   * 1축 판정으로는 '파기됨'으로 오판되어 각인에서 빠진다.
+   */
+  const emailRevivedRow = (id: number, at: Date, source = 'BACKFILL_ESTIMATE') => ({
+    id,
+    destroyedAt: at,
+    deliveryTarget: '-',
+    emailReceiverPhone: 'enc-01099998888',
+    destroyedAtSource: source,
+  });
+  /** 이미 파기됐는데 각인이 없는 행 — 각인 대상에서 빠지고 error 로그로만 보고된다. */
+  const destroyedNoStampRow = (id: number) => ({
+    id,
+    destroyedAt: null,
+    deliveryTarget: '-',
+    emailReceiverPhone: '-',
+    destroyedAtSource: null,
+  });
 
   it('파기 시각(destroyedAt)을 각인한다 — 파기일을 계산이 아니라 기록으로 답하기 위해', async () => {
     // 이 값이 없으면 화면이 파기일을 `발송요청일 + 파기일수` 로 역산하는데, 파기 규칙이 바뀌면
@@ -332,6 +375,148 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
     await sut.deliveryDeliveryTargetDestroy();
 
     expect(sut.__stampQb.calls.where[0][1].ids).toEqual([3]);
+  });
+
+  it('★ deliveryTarget 은 마스킹됐지만 emailReceiverPhone 만 살아있어도 갱신 대상이다 (2축 판정)', async () => {
+    // 위 revivedRow 는 deliveryTarget 축으로 되살아난 케이스라, 판정을 1축으로 되돌려도 통과한다.
+    // 이 케이스와 바로 아래 로그 검증이 그 회귀를 잡는다(1축 복원 시 둘 다 실패 — 리뷰 4차 M-5).
+    // 1축이면 이 행은 '이미 파기됨'으로 오판되어 각인에서 빠지고, 살아있는 전화번호 옆에
+    // 과거 파기일이 그대로 남는다.
+    const first = new Date('2026-01-31T00:00:00');
+    const sut = makeSut(makeSelectQb([emailRevivedRow(4, first)]));
+
+    await sut.deliveryDeliveryTargetDestroy();
+
+    expect(sut.__stampQb.calls.where[0][1].ids).toEqual([4]);
+    expect(sut.__stampQb.calls.set[0].destroyedAtSource).toBe('BATCH');
+  });
+
+  it('★ 갱신 로그는 원인을 단정하지 않고 갱신 전 값을 남긴다 (감사 흔적)', async () => {
+    // 이 분기에는 '부활'과 '레거시 부분마스킹'이 섞이며 데이터로 구분되지 않는다.
+    // "수신처가 재입력됐다"고 단정하면 운영이 존재하지 않는 CS 오남용을 추적한다(리뷰 4차 M-1).
+    const first = new Date('2026-01-31T00:00:00');
+    const sut = makeSut(makeSelectQb([emailRevivedRow(4, first, 'BACKFILL_ESTIMATE')]));
+
+    await sut.deliveryDeliveryTargetDestroy();
+
+    const warned = sut.logger.warn.mock.calls.map((c: any[]) => String(c[0])).join('\n');
+    expect(warned).toContain('데이터로 구분 불가');
+    expect(warned).not.toContain('재입력됐던');
+    // 덮어쓰기 전 값이 남아야 복구·감사 근거가 된다.
+    expect(warned).toContain('BACKFILL_ESTIMATE');
+    expect(warned).toContain(first.toISOString());
+  });
+
+  /**
+   * 감사 로그 절단 — 상한을 넘는 분량이 있을 때만 관측되는 경로다.
+   *
+   * 다른 케이스의 픽스처가 전부 1~2행이라 이 블록이 없으면 절단 로직이 **한 줄도 실행되지 않은 채**
+   * 그린이 된다. 그러면 누군가 생략 표기를 지우거나 slice 를 map 뒤로 되돌려도 전부 통과한다.
+   *
+   * 고정하는 계약은 넷이다:
+   *   ① 상세는 상한에서 자르되 **생략 건수와 비가역성**을 명시한다
+   *   ② **요약은 전량**에서 낸다 — 잘린 부분의 윤곽(범위·출처 분포)은 남는다
+   *   ③ **로그 줄 수는 건수와 무관하게 일정**하다 — 대량 회차에서 폭주하지 않는다(PR#52 P1)
+   *   ④ **어떤 값이 와도 throw 하지 않는다** — Invalid Date 포함(PR#52 P2)
+   *
+   * restamp 축과 unknown 축은 잘린 분의 성격이 다르다:
+   *   · restamp  — 덮어쓰므로 **영구 소실**  → 그 사실을 로그에 적는다
+   *   · unknown  — 각인하지 않아 다음 회차가 재보고 → 생략 표시만
+   * 상수 값(50)에 의존하지 않도록, 고정하는 것은 값이 아니라 위 계약이다.
+   */
+  describe('감사 로그 — 상한·요약·비가역 표기', () => {
+    const first = new Date('2026-01-31T00:00:00');
+    const rows = (n: number, make: (id: number) => any) => Array.from({ length: n }, (_, i) => make(101 + i));
+
+    it('★ 상한을 넘으면 상세는 자르되 생략 건수와 비가역성을 명시한다', async () => {
+      const sut = makeSut(makeSelectQb(rows(51, (id) => emailRevivedRow(id, first))));
+
+      await sut.deliveryDeliveryTargetDestroy();
+
+      const warned = sut.logger.warn.mock.calls.map((c: any[]) => String(c[0])).join('\n');
+      expect(warned).toContain('51건');
+      expect(warned).toContain('외 1건 로그 생략');
+      // 잘린 분이 되돌아오지 않는다는 사실이 로그에 있어야 한다 — 없으면 "나중에 조회하면
+      // 되겠지"로 오독한다.
+      expect(warned).toContain('영구 소실');
+      // 51번째는 실제로 상세에서 빠져야 한다(생략 표시만 붙고 전량이 나오면 거짓말이다).
+      expect(warned).not.toContain('151:');
+      // 로그를 잘라도 각인은 51건 전부에 대해 이뤄진다 — 표기가 처리 범위를 줄이면 안 된다.
+      expect(sut.__stampQb.calls.where[0][1].ids).toHaveLength(51);
+    });
+
+    it('★ 로그 줄 수는 건수와 무관하게 일정하다 — 대량 회차에서 로그 폭주를 만들지 않는다', async () => {
+      // 청크 분할로 되돌리면 이 케이스가 21줄이 되어 실패한다(PR#52 리뷰 P1 회귀 방지).
+      const sut = makeSut(makeSelectQb(rows(1000, (id) => emailRevivedRow(id, first))));
+
+      await sut.deliveryDeliveryTargetDestroy();
+
+      expect(sut.logger.warn).toHaveBeenCalledTimes(1);
+    });
+
+    it('★ 요약은 잘리지 않는다 — 전량의 파기일 범위와 출처 분포를 담는다', async () => {
+      // 상세가 상한에서 잘려도 "무엇을 잃었는지"의 윤곽은 남아야 한다.
+      const older = new Date('2026-01-01T00:00:00');
+      const newer = new Date('2026-03-01T00:00:00');
+      const sut = makeSut(
+        makeSelectQb([
+          ...rows(50, (id) => emailRevivedRow(id, newer, 'BATCH')),
+          emailRevivedRow(999, older, 'BACKFILL_ESTIMATE'), // 상세 상한 밖 — 요약에는 잡혀야 한다
+        ]),
+      );
+
+      await sut.deliveryDeliveryTargetDestroy();
+
+      const warned = sut.logger.warn.mock.calls.map((c: any[]) => String(c[0])).join('\n');
+      expect(warned).not.toContain('999:'); // 상세에는 없고
+      expect(warned).toContain(older.toISOString()); // 요약 범위에는 있다
+      expect(warned).toContain('BACKFILL_ESTIMATE=1');
+      expect(warned).toContain('BATCH=50');
+    });
+
+    it('상한 이하면 생략 문구를 붙이지 않는다 (경계: "외 0건 생략" 금지)', async () => {
+      const sut = makeSut(makeSelectQb(rows(50, (id) => emailRevivedRow(id, first))));
+
+      await sut.deliveryDeliveryTargetDestroy();
+
+      const warned = sut.logger.warn.mock.calls.map((c: any[]) => String(c[0])).join('\n');
+      expect(warned).toContain('50건');
+      expect(warned).not.toContain('생략');
+    });
+
+    it('★ Invalid Date 가 섞여도 throw 하지 않고 invalid-date 로 기록한다', async () => {
+      // optional call(?.) 은 메서드 부재만 막는다. Invalid Date 의 toISOString() 은
+      // RangeError 를 던져 그 회차 파기 트랜잭션 전체를 롤백시킨다(PR#52 리뷰 P2).
+      const sut = makeSut(
+        makeSelectQb([emailRevivedRow(7, new Date('nope')), emailRevivedRow(8, new Date('2026-02-01T00:00:00'))]),
+      );
+
+      await expect(sut.deliveryDeliveryTargetDestroy()).resolves.not.toThrow();
+
+      const warned = sut.logger.warn.mock.calls.map((c: any[]) => String(c[0])).join('\n');
+      expect(warned).toContain('7:invalid-date/');
+      // 'null'(값이 없었다)과 구분돼야 한다 — 감사 흔적에서 둘은 다른 사실이다.
+      expect(warned).not.toContain('7:null/');
+      expect(warned).toContain('읽을 수 없는 값 1건');
+      // 깨진 값 하나가 나머지 행의 각인을 막지 않는다.
+      expect(sut.__stampQb.calls.where[0][1].ids).toEqual([7, 8]);
+    });
+
+    it('시각 미상 error 로그도 같은 계약을 지킨다 (두 로그가 갈라지지 않게)', async () => {
+      const sut = makeSut(makeSelectQb(rows(51, destroyedNoStampRow)));
+
+      await sut.deliveryDeliveryTargetDestroy();
+
+      const errored = sut.logger.error.mock.calls.map((c: any[]) => String(c[0])).join('\n');
+      expect(errored).toContain('51건');
+      expect(errored).toContain('외 1건 생략');
+      expect(errored).not.toContain('151');
+      // 이쪽은 소실이 없다(각인하지 않으므로 다음 회차가 다시 보고한다) — restamp 쪽 문구를
+      // 복사해 오면 안 된다.
+      expect(errored).not.toContain('영구 소실');
+      // 시각 미상 행은 각인 대상에서 빠지므로 각인 UPDATE 자체가 없다.
+      expect(sut.__stampQb.calls.set).toHaveLength(0);
+    });
   });
 
   it('각인할 행이 하나도 없으면 각인 UPDATE 자체를 실행하지 않는다', async () => {
