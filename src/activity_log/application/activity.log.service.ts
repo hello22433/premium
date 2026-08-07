@@ -10,6 +10,7 @@ import { GetActivityLogListResDto, GetActionTypesResDto, ActivityLogViewDto } fr
 import { format, subMonths } from 'date-fns';
 import { DateFormatStr } from '../../common/domain/date.format.str';
 import { MaskingUtil } from '../../common/utils/masking.util';
+import { IReportHistoryType, IReportSource } from '../../order/interface/report.source';
 import {
   ACTIVITY_LOG_RETENTION_MONTHS,
   ACTIVITY_LOG_PURGE_EXCLUDED_ACTION_TYPES,
@@ -113,7 +114,7 @@ export class ActivityLogService {
   async getActivityLogList(dto: GetActivityLogListReqDto): Promise<GetActivityLogListResDto> {
     const { startAt, endAt, actionType, searchKeyword, page, take } = dto;
 
-    let queryBuilder = this.activityLogRepository
+    const queryBuilder = this.activityLogRepository
       .createQueryBuilder('activityLog')
       .where('activityLog.deletedAt IS NULL');
 
@@ -332,23 +333,61 @@ export class ActivityLogService {
   }
 
   /**
+   * 리포트 기본 타입으로 조회할 때 함께 반환할 actionType 목록.
+   *
+   * 이메일 전송도 발행으로 집계하므로(order.*ReportCount 증가), 정산 목록의 "발행" 버튼이
+   * 이메일로만 발행한 건에도 뜬다. 그때 기본 타입만 조회하면 이력이 비어 있는 모달이 열린다
+   * — 발행됐다고 표시해 놓고 근거를 못 보여주는 상태. 기본 타입 조회에 *_EMAIL 을 합쳐 해소한다.
+   *
+   * *_EMAIL 을 직접 지정한 조회(인쇄 화면들)는 그대로 이메일 이력만 받는다.
+   *
+   * ⚠️ 반드시 Map 이어야 한다 — 이중 방어의 안쪽이다.
+   *
+   * HTTP 로 오는 값의 1차 차단은 DTO 의 @IsIn(REPORT_HISTORY_TYPES) 이고(400), 그것이 있는 한
+   * 여기까지 목록 밖 문자열이 오지 않는다. Map 은 그 검증이 빠지거나(신규 호출부가 이 서비스를
+   * 직접 부르는 경우) 목록이 어긋났을 때를 대비한다.
+   *
+   * 객체 리터럴로 두면 그 상황에서 프로토타입 체인을 탄다 — reportType='constructor' 는
+   * `obj['constructor']` 가 Object 생성자(truthy)를 돌려줘 `??` 폴백이 발동하지 않고, 그 함수가
+   * IN (:...actionTypes) 로 흘러가 드라이버에서 TypeError → 500 이 된다
+   * (toString / __proto__ / valueOf 도 동일). Map 은 자체 키만 보므로 이 경로가 닫힌다.
+   */
+  private static readonly REPORT_HISTORY_ACTION_TYPES = new Map<IReportHistoryType, string[]>([
+    ['DELIVERY_COMPLETE_REPORT', ['DELIVERY_COMPLETE_REPORT', 'DELIVERY_COMPLETE_REPORT_EMAIL']],
+    ['TRANSACTION_STATEMENT', ['TRANSACTION_STATEMENT', 'TRANSACTION_STATEMENT_EMAIL']],
+  ]);
+
+  /**
    * 주문별 발행 이력 조회 (발송완료리포트/거래명세서/이메일발송)
    * @param orderId 주문 ID
-   * @param reportType 리포트 타입
+   * @param reportType 리포트 타입. 기본 타입이면 대응 *_EMAIL 이력도 함께 반환한다.
    */
   async getOrderReportHistory(
     orderId: number,
-    reportType:
-      | 'DELIVERY_COMPLETE_REPORT'
-      | 'TRANSACTION_STATEMENT'
-      | 'DELIVERY_COMPLETE_REPORT_EMAIL'
-      | 'TRANSACTION_STATEMENT_EMAIL'
-      | 'DESTRUCTION_CERTIFICATE_EMAIL',
+    reportType: IReportHistoryType,
   ): Promise<{ userEmail: string; createdAt: string; source: string | null; to: string | null; cc: string | null }[]> {
+    const actionTypes = ActivityLogService.REPORT_HISTORY_ACTION_TYPES.get(reportType) ?? [reportType];
+
     const logs = await this.activityLogRepository
       .createQueryBuilder('activityLog')
       .where('activityLog.deletedAt IS NULL')
-      .andWhere('activityLog.actionType = :actionType', { actionType: reportType })
+      .andWhere('activityLog.actionType IN (:...actionTypes)', { actionTypes })
+      // 성공 건만 "발행 이력"이다. sendReportEmail 은 발송 실패 시에도 같은 actionType 으로
+      // 로그를 남기는데(statusCode 500 / result FAILURE), 응답 DTO 에는 result 필드가 없어
+      // 화면에서 성공 행과 구별할 방법이 없다. 걸러내지 않으면 운영자가 실패한 발송을
+      // "이미 보냈다"로 읽고 재발송하지 않아 고객사가 리포트를 영영 못 받는다.
+      //
+      // ⚠️ 이 필터는 파기확약서(DESTRUCTION_CERTIFICATE_EMAIL)에도 걸린다. "보냈나?"에는 옳지만
+      //    "시도했다 실패한 적 있나?"라는 감사 질문의 UI 경로가 없어진다 — 파기확약서는 카운트
+      //    컬럼이 없어 activity_log 가 유일한 발송 기록이라 더 그렇다(리뷰 M-5).
+      //
+      //    그럼에도 현행을 유지하는 근거는 **프론트가 실패를 표현할 자리가 없다**는 것이다.
+      //      · 정산 이력 모달(ReportHistoryModal.tsx)  : 발행일시 / 발행자 / 발행경로 3열, 성공·실패 열 없음
+      //      · 파기확인서 발송 이력(personal-info/index.tsx): actionType 을 '파기확인서 이메일 발송'
+      //        으로 **하드코딩**해 렌더한다 — 실패 행이 와도 성공과 글자 그대로 동일하게 보인다.
+      //    즉 지금 필터를 풀면 위 문단의 오독 사고가 파기확약서에서 그대로 재현된다.
+      //    실패 이력을 노출하려면 프론트에 상태 열을 먼저 만들어야 하고, 그건 별건이다.
+      .andWhere('activityLog.result = :succeeded', { succeeded: ActivityLogResult.SUCCESS })
       .andWhere("JSON_EXTRACT(activityLog.requestParams, '$.orderId') = :orderId", { orderId })
       .orderBy('activityLog.createdAt', 'DESC')
       .getMany();
@@ -356,7 +395,9 @@ export class ActivityLogService {
     return logs.map((log) => ({
       userEmail: log.userEmail,
       createdAt: format(log.createdAt, DateFormatStr),
-      source: log.requestParams?.source || null,
+      // 이메일 경로는 requestParams 에 source 가 없다(to/cc 만 있다). 그 행이 어느 경로였는지
+      // 프론트가 구분할 수 있도록 EMAIL 로 채워 준다. PDF 경로는 저장된 source 를 그대로 쓴다.
+      source: log.requestParams?.source || (log.actionType.endsWith('_EMAIL') ? IReportSource.EMAIL : null),
       to: log.requestParams?.to || null,
       cc: log.requestParams?.cc || null,
     }));
