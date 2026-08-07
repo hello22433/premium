@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ThrottlerModule } from '@nestjs/throttler';
 
@@ -74,7 +74,7 @@ import { DeliveryCutoverModule } from '../delivery/delivery.cutover.module';
     ]),
     PartnerCompanyExternModule,
     SsgEventModule,
-    DeliveryModule,
+    forwardRef(() => DeliveryModule),
     ProductModule,
     AccountLifecycleModule,
     WalletModule,
