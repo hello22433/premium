@@ -67,12 +67,15 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
   };
 
   /** orderProductMapping 조회 builder. testDeliveryCount/ orderId 를 주입한다. */
-  const createMappingBuilder = (mapping: any) => {
+  const createMappingBuilder = (mapping: any, mappingAlive = true) => {
     const builder: any = {
       innerJoinAndSelect: jest.fn().mockReturnThis(),
       leftJoinAndSelect: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
       getOne: jest.fn(() => Promise.resolve(mapping)),
+      // 이력 저장 직전 매핑 생존 확인. false 면 updateTemp 가 매핑을 재생성한 상황이다.
+      getExists: jest.fn(() => Promise.resolve(mappingAlive)),
     };
     return builder;
   };
@@ -140,6 +143,7 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
       confirmAffected?: number[];
       staleAffected?: number;
       staleUnclaimedAffected?: number;
+      mappingAlive?: boolean;
     } = {},
   ) => {
     const fullMapping = {
@@ -179,7 +183,9 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
     // 한도 선점(claim), 보상 차감(rollback) 이 공유하는 update 체인.
     const updateBuilder = createUpdateBuilder(opts.claimAffected ? [...opts.claimAffected] : []);
     service.orderProductMappingRepository = {
-      createQueryBuilder: jest.fn((alias?: string) => (alias ? createMappingBuilder(fullMapping) : updateBuilder)),
+      createQueryBuilder: jest.fn((alias?: string) =>
+        alias ? createMappingBuilder(fullMapping, opts.mappingAlive ?? true) : updateBuilder,
+      ),
       increment: jest.fn().mockResolvedValue({ affected: 1 }),
     };
     service.updateBuilder = updateBuilder;
@@ -480,6 +486,22 @@ describe('OrderService testDelivery 정책 (횟수제한/IDOR)', () => {
       expect(service.deliveryBatchService.oneSend).not.toHaveBeenCalled();
       // 저장 자체가 실패해 이력 id 가 없으므로 삭제는 시도하지 않는다.
       expect(rollbackDeletes(service).length).toBe(0);
+      expect(service.updateBuilder.captured[1]?.set.testDeliveryCount()).toContain('test_delivery_count - 1');
+    });
+
+    it('발송 준비 중 매핑이 재생성됐으면 이력을 저장하지 않고 발송 전에 중단한다', async () => {
+      const service = buildService(
+        { id: 5, orderId: 77, testDeliveryCount: 0 },
+        { claimAffected: [1], mappingAlive: false },
+      );
+
+      await expect(service.testDelivery(owner(IUserAuthority.CORPORATE_ADMIN), body())).rejects.toThrow(
+        '주문이 저장되어 테스트 발송이 취소되었습니다. 다시 시도해주세요.',
+      );
+
+      // 이력을 남기지 않아야 조회 불가능한 고아 행이 생기지 않는다.
+      expect(service.testOrderDeliveryRepository.save).not.toHaveBeenCalled();
+      expect(service.deliveryBatchService.oneSend).not.toHaveBeenCalled();
       expect(service.updateBuilder.captured[1]?.set.testDeliveryCount()).toContain('test_delivery_count - 1');
     });
 

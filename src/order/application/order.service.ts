@@ -4069,16 +4069,18 @@ export class OrderService {
     const orderId: number = order.id;
 
     // mapping id 소유권/중복 검증 — 헤더 저장 이전에 실행하여 뮤테이션 전 400 보장
-    const deleteOrderProductMappingList = await this.orderProductMappingRepository.find({
-      where: {
-        orderId: orderId,
-      },
-    });
+    // 행 잠금: 테스트 발송의 한도 선점(test_delivery_count + 1)과 겹치면 승계 과정에서 증가분이 유실된다
+    const deleteOrderProductMappingList = await this.orderProductMappingRepository
+      .createQueryBuilder('orderProductMapping')
+      .setLock('pessimistic_write')
+      .where('orderProductMapping.orderId = :orderId', { orderId })
+      .getMany();
     const ownedMap = new Map<number, OwnedLine>(
       deleteOrderProductMappingList.map((m) => [
         m.id,
         {
           productId: m.productId,
+          testDeliveryCount: m.testDeliveryCount,
           snapshot: {
             snapshotProductPrice: m.snapshotProductPrice,
             snapshotProductName: m.snapshotProductName,
@@ -4180,7 +4182,23 @@ export class OrderService {
         ),
       );
 
+      // 상품이 그대로인 라인만 승계 대상. 상품이 교체되면 이력·한도는 이전 상품 것이라 넘기지 않는다
+      const carriedLineId =
+        product.id != null && ownedMap.get(product.id)?.productId === product.productId ? product.id : null;
+
+      // 초기화하면 저장할 때마다 상품당 2회 제한이 풀린다
+      orderProduct.testDeliveryCount =
+        carriedLineId != null ? (ownedMap.get(carriedLineId)?.testDeliveryCount ?? 0) : 0;
+
       await this.orderProductMappingRepository.save(orderProduct);
+
+      // 테스트 발송 이력을 신규 매핑으로 승계 (매핑 id 가 바뀌어도 조회가 끊기지 않도록)
+      if (carriedLineId != null) {
+        await this.testOrderDeliveryRepository.update(
+          { orderProductMappingId: carriedLineId },
+          { orderProductMappingId: orderProduct.id },
+        );
+      }
 
       // 상품별 발신 수단 사용
       const deliverySendMethod = orderProduct.sendMethod!;
@@ -4204,6 +4222,21 @@ export class OrderService {
     }
 
     await this.orderDeliveryRepository.insert(orderDeliveryCreateList);
+
+    // 삭제되거나 상품이 교체된 라인의 이력은 승계처가 없다. 남겨두면 조회 불가능한 행으로 누적된다
+    const carriedLineIds = new Set(
+      orderProductList
+        .filter((product) => product.id != null && ownedMap.get(product.id)?.productId === product.productId)
+        .map((product) => product.id as number),
+    );
+    const orphanedLineIds = [...ownedMap.keys()].filter((lineId) => !carriedLineIds.has(lineId));
+    if (orphanedLineIds.length) {
+      // WAIT 은 제외한다. 발송 여부 불명이라 지우면 ops_escalated_at 경보(deleted_at IS NULL)에서 빠져 운영이 놓친다
+      await this.testOrderDeliveryRepository.softDelete({
+        orderProductMappingId: In(orphanedLineIds),
+        status: Not(IOrderDeliveryStatus.WAIT),
+      });
+    }
 
     // 수기등록 원본 데이터 재생성
     if (getBody.manualEntryList?.length) {
@@ -5790,6 +5823,17 @@ export class OrderService {
         orderProductMapping.product.type,
       );
 
+      // 이미지 생성 중 updateTemp 가 매핑을 재생성했으면 이 id 는 이미 사라졌다. 그대로 저장하면
+      // 조회되지 않는 이력이 남으므로, 발송 전에 중단하고 선점한 한도를 보상한다.
+      // 행 잠금은 걸지 않는다. testDelivery 는 외부 I/O 를 트랜잭션 밖에서 수행하므로 잠글 트랜잭션이 없다.
+      const mappingAlive = await this.orderProductMappingRepository
+        .createQueryBuilder('orderProductMapping')
+        .where('orderProductMapping.id = :id', { id: orderProductMappingId })
+        .getExists();
+      if (!mappingAlive) {
+        throw new BadRequestException('주문이 저장되어 테스트 발송이 취소되었습니다. 다시 시도해주세요.');
+      }
+
       // test_order_delivery 저장 (oneSend에서 테스트 발송 여부를 판단하여 PIN 재발급 스킵)
       // 발송 전에는 TEMP 로 저장한다. COMPLETE 를 미리 넣으면 발송 중/실패 건이 성공 이력으로 노출된다.
       const testOrderDelivery = new TestOrderDeliveryEntity();
@@ -6025,13 +6069,20 @@ export class OrderService {
     }
 
     // 발송 전 +1 한 선점을 되돌린다. 0 미만으로 내려가지 않도록 조건부 차감.
-    await this.orderProductMappingRepository
+    const compensated = await this.orderProductMappingRepository
       .createQueryBuilder()
       .update()
       .set({ testDeliveryCount: () => 'test_delivery_count - 1' })
       .where('id = :id', { id: orderProductMappingId })
       .andWhere('test_delivery_count > 0')
       .execute();
+
+    // 매핑이 사라진 경우(발송 준비 중 updateTemp 가 재생성). 승계된 새 행에 선점분이 남아 한도가 1회 덜 남는다.
+    if ((compensated.affected ?? 0) === 0) {
+      this.logger.warn(
+        `테스트 발송 한도 보상 대상 없음 (orderProductMappingId: ${orderProductMappingId}) — 매핑 재생성으로 보상이 유실됐을 수 있다`,
+      );
+    }
   }
 
   /**

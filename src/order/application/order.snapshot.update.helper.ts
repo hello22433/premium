@@ -9,6 +9,7 @@ import {
 
 export type OwnedLine = {
   productId: number;
+  testDeliveryCount: number;
   snapshot?: LineProductSnapshotPart;
   partnerSettleSnapshot?: PartnerSettleSnapshotPart;
 };
