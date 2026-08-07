@@ -13,6 +13,8 @@ import { IPartnerCompanyType } from '../../partner_company/interface/partner.com
  *   **비어 있으면 아무 provider 도 켜지지 않는다**(빈 값을 "전체 허용" 으로 읽으면 kill switch 를 켜는
  *   순간 6개 provider 가 한꺼번에 원장을 쓰기 시작한다).
  * - `PARTNER_SETTLE_REVIEW_RESOLUTION_ENABLED` — NEEDS_REVIEW 해소 API 별도 kill switch.
+ * - `PARTNER_SETTLE_CONFIRM_ENABLED` — 정산확정/해제/hold-release API kill switch (PR1D).
+ * - `PARTNER_SETTLE_PAID_ENABLED` — 지급(paid) API kill switch (PR1D, PR3 variance 검증 후 활성화).
  *
  * 원장 producer와 검토 해소 API는 독립적으로 배포한다. 해소 API는 명시적으로 true인 경우에만
  * 노출되며, 미설정·오타·producer flag 활성화만으로는 켜지지 않는다.
@@ -29,6 +31,16 @@ export class PartnerSettleFeatureFlag {
   /** NEEDS_REVIEW 해소 API의 별도 kill switch. 미설정은 fail-closed다. */
   get isReviewResolutionEnabled(): boolean {
     return this.configService.get('PARTNER_SETTLE_REVIEW_RESOLUTION_ENABLED') === 'true';
+  }
+
+  /** 정산확정(confirm/unconfirm/release/hold-release/batches) API kill switch. 미설정은 fail-closed. */
+  get isConfirmEnabled(): boolean {
+    return this.configService.get('PARTNER_SETTLE_CONFIRM_ENABLED') === 'true';
+  }
+
+  /** 지급(paid) API kill switch. PR3 variance 검증 후 활성화. 미설정은 fail-closed. */
+  get isPaidEnabled(): boolean {
+    return this.configService.get('PARTNER_SETTLE_PAID_ENABLED') === 'true';
   }
 
   isEnabledFor(provider: IPartnerCompanyType | null | undefined): boolean {
