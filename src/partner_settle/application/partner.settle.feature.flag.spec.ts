@@ -71,4 +71,16 @@ describe('PartnerSettleFeatureFlag', () => {
     expect(flag.isEnabledFor(IPartnerCompanyType.GALAXIA)).toBe(true);
     expect(flag.isReviewResolutionEnabled).toBe(false);
   });
+
+  it('confirm flag 는 정확한 true 일 때만 켜진다', () => {
+    expect(build({ PARTNER_SETTLE_CONFIRM_ENABLED: 'true' }).isConfirmEnabled).toBe(true);
+    expect(build({ PARTNER_SETTLE_CONFIRM_ENABLED: 'false' }).isConfirmEnabled).toBe(false);
+    expect(build({}).isConfirmEnabled).toBe(false);
+  });
+
+  it('paid flag 는 정확한 true 일 때만 켜진다', () => {
+    expect(build({ PARTNER_SETTLE_PAID_ENABLED: 'true' }).isPaidEnabled).toBe(true);
+    expect(build({ PARTNER_SETTLE_PAID_ENABLED: 'false' }).isPaidEnabled).toBe(false);
+    expect(build({}).isPaidEnabled).toBe(false);
+  });
 });

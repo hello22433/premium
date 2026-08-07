@@ -44,14 +44,25 @@ import { PartnerProviderManualLedgerService } from './application/partner.provid
 import { PartnerSettleReviewQueryService } from './application/partner.settle.review.query.service';
 import { PartnerSettleTransitionResolutionService } from './application/partner.settle.transition.resolution.service';
 import { TransitionResolutionController } from './api/transition.resolution.controller';
+import { BatchController } from './api/batch.controller';
+import { PartnerSettleBatchService } from './application/partner.settle.batch.service';
+import { PartnerSettlePaymentService } from './application/partner.settle.payment.service';
+import { PartnerSettleBatchEntity } from '../entity/partner.settle.batch.entity';
+import { PartnerSettleBatchReleaseEntity } from '../entity/partner.settle.batch.release.entity';
+import { PartnerSettleBatchReleaseRequestEntity } from '../entity/partner.settle.batch.release.request.entity';
+import { PartnerSettleExclusionEntity } from '../entity/partner.settle.exclusion.entity';
+import { PartnerSettleConfigEntity } from '../entity/partner.settle.config.entity';
+import { PartnerSettleCancelReconEntity } from '../entity/partner.settle.cancel.recon.entity';
+import { PartnerSettlePaymentRequestEntity } from '../entity/partner.settle.payment.request.entity';
+import { PartnerSettlePaymentVarianceProposalEntity } from '../entity/partner.settle.payment.variance.proposal.entity';
 
 /**
  * 협력사 여신관리/정산확정 도메인.
  *
  * PR1A 는 정산조건 이력 스키마와 기록 훅, PR1B 는 원장(partner_settle_ledger) append 경로다.
- * PR2 는 여신 표 조회(credit/list)와 여신 설정(credit/config)을 추가한다 — 원장은 읽기 전용이며
- * 여신 API 는 feature flag(`SETTLE_CREDIT_API_ENABLED`) off 로 배포된다(§15.2).
- * 정산확정(batch)·수동 승인 API 는 후속 PR 소유이며 여기에 없다.
+ * PR2 는 여신 표 조회(credit/list)와 여신 설정(credit/config)을 추가한다.
+ * PR1C 는 NEEDS_REVIEW·orphan 해소 API 를 추가한다.
+ * PR1D 는 정산확정(batch)·해제·지급 API 를 추가한다 — feature flag off 로 배포.
  */
 @Module({
   imports: [
@@ -74,6 +85,14 @@ import { TransitionResolutionController } from './api/transition.resolution.cont
       PartnerProviderManualLedgerProposalEntity,
       PartnerSettleTransitionResolutionEntity,
       OrderProductMappingEntity,
+      PartnerSettleBatchEntity,
+      PartnerSettleBatchReleaseEntity,
+      PartnerSettleBatchReleaseRequestEntity,
+      PartnerSettleExclusionEntity,
+      PartnerSettleConfigEntity,
+      PartnerSettleCancelReconEntity,
+      PartnerSettlePaymentRequestEntity,
+      PartnerSettlePaymentVarianceProposalEntity,
     ]),
   ],
   controllers: [
@@ -84,6 +103,7 @@ import { TransitionResolutionController } from './api/transition.resolution.cont
     TransitionResolutionController,
     ManualLedgerProposalController,
     ReviewQueryController,
+    BatchController,
   ],
   providers: [
     PartnerDiscountHistoryService,
@@ -110,6 +130,8 @@ import { TransitionResolutionController } from './api/transition.resolution.cont
     PartnerSettleTransitionResolutionService,
     PartnerProviderManualLedgerService,
     PartnerSettleReviewQueryService,
+    PartnerSettleBatchService,
+    PartnerSettlePaymentService,
   ],
   exports: [
     PartnerDiscountHistoryService,
@@ -128,6 +150,8 @@ import { TransitionResolutionController } from './api/transition.resolution.cont
     PartnerSettleTransitionResolutionService,
     PartnerProviderManualLedgerService,
     PartnerSettleReviewQueryService,
+    PartnerSettleBatchService,
+    PartnerSettlePaymentService,
   ],
 })
 export class PartnerSettleModule {}
