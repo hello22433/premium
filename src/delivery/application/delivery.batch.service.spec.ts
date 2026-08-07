@@ -42,6 +42,8 @@ import { PinIssueCommandService } from './pin-issue-command.service';
 import { MessageResultReconcileService } from './message-result-reconcile.service';
 import { SsgRefundOutcome } from '../interface/ssg.refund.resolve';
 import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
+import { InventoryPinAllocationService } from '../../inventory_coupon/application/inventory.pin.allocation.service';
+import { InventoryPinSendService } from '../../inventory_coupon/application/inventory.pin.send.service';
 
 describe('DeliveryBatchService', () => {
   let service: DeliveryBatchService;
@@ -164,6 +166,8 @@ describe('DeliveryBatchService', () => {
         { provide: getRepositoryToken(OrderHistoryEntity), useValue: {} },
         { provide: getDataSourceToken(), useValue: { transaction: jest.fn() } },
         { provide: OrderFromService, useValue: { resolveSendDefaultPhone: jest.fn() } },
+        { provide: InventoryPinAllocationService, useValue: { allocate: jest.fn() } },
+        { provide: InventoryPinSendService, useValue: { processOutbox: jest.fn() } },
       ],
     }).compile();
 

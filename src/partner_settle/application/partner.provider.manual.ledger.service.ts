@@ -96,10 +96,14 @@ export class PartnerProviderManualLedgerService {
           if (active.payloadHash === hash) return { proposal: active, ledgerIds: [] };
           throw new ConflictException('해당 orphan 사건에 활성 제안이 있습니다.');
         }
+        const sourceType = resolveSourceType(context.settleMethod!);
+        if (sourceType === 'EXCLUDED') {
+          throw new BadRequestException('PREPAID_INVENTORY 상품은 수동 원장 제안 대상이 아닙니다.');
+        }
         const proposal = manager.getRepository(PartnerProviderManualLedgerProposalEntity).create({
           provider: inbox.provider,
           orderDeliveryId: inbox.orderDeliveryId,
-          sourceType: resolveSourceType(context.settleMethod!),
+          sourceType,
           inboxRowId: inbox.id,
           sourceEvidencePayload: inbox.normalizedPayload,
           proposedLedgerFacts: normalized.proposedLedgerFacts,

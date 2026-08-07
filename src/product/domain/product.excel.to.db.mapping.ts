@@ -55,5 +55,9 @@ export const ProductSettleMethodExcelToDbMapping = (settleMethod: string): IProd
     return 'PER_PRODUCT';
   }
 
-  throw new Error('정의되지 않은 정산방법입니다. (교환분, 발행분, 상품분 중 선택)');
+  if (settleMethod === '선구매재고') {
+    return 'PREPAID_INVENTORY';
+  }
+
+  throw new Error('정의되지 않은 정산방법입니다. (교환분, 발행분, 사용분, 선구매재고 중 선택)');
 };

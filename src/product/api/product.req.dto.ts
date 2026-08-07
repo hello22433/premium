@@ -371,7 +371,7 @@ export class ProductCreateReqDto {
   })
   // ================================
   @IsNotEmpty()
-  @IsIn(['PER_EXCHANGE', 'PER_ISSUANCE', 'PER_PRODUCT'])
+  @IsIn(['PER_EXCHANGE', 'PER_ISSUANCE', 'PER_PRODUCT', 'PREPAID_INVENTORY'])
   settleMethod: IProductSettleMethod;
 
   @ApiProperty({

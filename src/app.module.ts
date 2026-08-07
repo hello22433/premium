@@ -53,6 +53,7 @@ import { WalletModule } from './wallet/wallet.module';
 import { ForbiddenWordModule } from './forbidden_word/forbidden.word.module';
 import { AccountLifecycleModule } from './account_lifecycle/account.lifecycle.module';
 import { DepositModule } from './deposit/deposit.module';
+import { InventoryCouponModule } from './inventory_coupon/inventory.coupon.module';
 
 @Module({
   imports: [
@@ -112,6 +113,7 @@ import { DepositModule } from './deposit/deposit.module';
     ForbiddenWordModule,
     AccountLifecycleModule,
     DepositModule,
+    InventoryCouponModule,
   ],
   controllers: [AppController],
   providers: [],

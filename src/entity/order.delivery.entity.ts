@@ -14,6 +14,7 @@ import { OrderDeliveryRefundStatusEnum } from '../delivery/interface/order.deliv
 import { IPriceAdjustment } from '../user_discount/interface/price.adjustment';
 import { IOrderSettleDiscountType } from '../order/interface/order.settle.discount.type';
 import { IOrderDeliveryReportState } from '../delivery/interface/order.delivery.report.state';
+import { DirectPinFulfillmentStatus } from '../inventory_coupon/domain/inventory.pin.status';
 
 @Entity('order_delivery')
 export class OrderDeliveryEntity extends BaseEntity {
@@ -342,6 +343,25 @@ export class OrderDeliveryEntity extends BaseEntity {
 
   @Column({ type: 'varchar', length: 64, nullable: true, comment: 'reportSweep 회차 소유 토큰 (자기 토큰 행만 처리)' })
   reportOwnerToken: string | null;
+  // ── 직접 PIN 재고형 쿠폰 (rev5 §4.7) ──
+
+  @Column({ type: 'varchar', length: 20, nullable: true, comment: '직접 PIN fulfillment 상태 (PENDING_SEND/SENDING/SENT/FAILED/UNKNOWN/VOID)' })
+  directPinFulfillmentStatus: DirectPinFulfillmentStatus | null;
+
+  @Column({ type: 'bigint', nullable: true, comment: 'FK) inventory_pin_billing_chain.id (결제 체인)' })
+  inventoryPinBillingChainId: string | null;
+
+  @Column({ type: 'int', default: 0, comment: '수신정보 변경 시 잠금 안에서 +1' })
+  deliveryTargetVersion: number;
+
+  @Column({ type: 'bigint', nullable: true, comment: '표시용 최신 attempt ID' })
+  directPinLatestAttemptId: string | null;
+
+  @Column({ type: 'datetime', precision: 6, nullable: true, comment: '최초 SENT 시각 (이후 불변)' })
+  directPinSentAt: Date | null;
+
+  @Column({ type: 'binary', length: 32, nullable: true, comment: '외부 API 요청 payload canonical hash' })
+  externalRequestHash: Buffer | null;
 
   @ManyToOne(() => OrderProductMappingEntity, { createForeignKeyConstraints: false })
   @JoinColumn({ name: 'order_product_mapping_id' })
