@@ -93,5 +93,9 @@ import { DeliveryCutoverModule } from '../delivery/delivery.cutover.module';
     ExternalOrderRecoveryService,
     ExternalOrderRecoverySchedule,
   ],
+  exports: [
+    ApiKeyGuard,
+    ExternalApiService,
+  ],
 })
 export class ExternalApiModule {}

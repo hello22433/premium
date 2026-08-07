@@ -3,7 +3,7 @@ import { EntityManager } from 'typeorm';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
 import { IProductSettleMethod } from '../../product/interface/product.settle.method';
 import { PartnerSettleLedgerEntity } from '../../entity/partner.settle.ledger.entity';
-import { IPartnerSettleVatCalculationMode } from '../interface/partner.settle.source.type';
+import { IPartnerSettleSourceType, IPartnerSettleVatCalculationMode } from '../interface/partner.settle.source.type';
 import { PricingProductSnapshot } from '../domain/partner.settle.pricing';
 import { isSettlementEvent, ObservedEventKind, resolveSourceType } from '../domain/settle.source.type.mapping';
 import { SubItemKeyUnresolvedError } from '../domain/settle.sub.item.key';
@@ -100,7 +100,7 @@ export class PartnerSettleProducerService {
       this.ledgerService.appendLedger({
         partnerCompanyId: context.partnerCompanyId,
         subItem: { provider: context.provider, ...context.subItem },
-        sourceType: resolveSourceType(context.settleMethod as IProductSettleMethod),
+        sourceType: resolveSourceType(context.settleMethod as IProductSettleMethod) as IPartnerSettleSourceType,
         orderDeliveryId: context.orderDeliveryId,
         galaxiaBarcodeLogId: event.galaxiaBarcodeLogId ?? null,
         idempotencyKey: event.idempotencyKey,

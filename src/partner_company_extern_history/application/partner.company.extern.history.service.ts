@@ -81,6 +81,7 @@ const PartnerCompanyTypeKo: Record<IPartnerCompanyType, string> = {
   [IPartnerCompanyType.GALAXIA]: '갤럭시아',
   [IPartnerCompanyType.SSG]: '신세계',
   [IPartnerCompanyType.DAOU]: '다우기술',
+  [IPartnerCompanyType.PIN_INVENTORY]: '해외쿠폰 재고',
 };
 
 @Injectable()

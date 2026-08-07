@@ -54,5 +54,9 @@ export const ProductSettleMethodExcelMapping = (settleMethod: IProductSettleMeth
     return '사용분';
   }
 
+  if (settleMethod === 'PREPAID_INVENTORY') {
+    return '선구매재고';
+  }
+
   throw new Error('정의되지 않은 정산방법입니다.');
 };

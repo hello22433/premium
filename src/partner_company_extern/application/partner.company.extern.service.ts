@@ -60,6 +60,8 @@ export interface PartnerIssueResult {
   ssgNewIssue: boolean;
   /** 실제 PIN 이 귀속된 SSG 행사 id. 재사용 시 후보/기존 행사 id, 신규 시 ssgEvent.id, 미상 null. */
   ssgEventId: number | null;
+  /** PIN_INVENTORY 재고형 할당 시 item ID (비-재고형은 undefined) */
+  inventoryPinItemId?: string;
 }
 
 @Injectable()
@@ -329,6 +331,16 @@ export class PartnerCompanyExternService {
     const type = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
     // issue 결과(배치 재발송 선차감 정합). 기본=재사용(false)·현재 귀속 행사. SSG 신규 INSERT 시 갱신.
     const result: PartnerIssueResult = { ssgNewIssue: false, ssgEventId: orderDelivery.ssgEventId ?? null };
+    // ── PIN_INVENTORY 재고형 쿠폰 전용 분기 (rev5 §7.2) ──
+    // 외부 dedup/transactionId/history/barCode 로직 전에 전용 allocation service를 호출하고 반환한다.
+    // barCode 가짜 값, 외부 협력사 API, 취소/상태조회, pin_issue_dedup, 외부 이력을 사용하지 않는다.
+    if (type === IPartnerCompanyType.PIN_INVENTORY) {
+      return {
+        ssgNewIssue: false,
+        ssgEventId: null,
+        inventoryPinItemId: undefined, // allocation은 batch/delivery 레벨에서 처리
+      };
+    }
 
     // deliveryTarget 복호화
     const decryptedDeliveryTarget =

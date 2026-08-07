@@ -6,6 +6,9 @@ describe('resolveSourceType', () => {
     expect(resolveSourceType('PER_EXCHANGE')).toBe('EXCHANGE');
     expect(resolveSourceType('PER_PRODUCT')).toBe('USAGE');
   });
+  it('PREPAID_INVENTORY 는 공급사 정산 제외(EXCLUDED)다', () => {
+    expect(resolveSourceType('PREPAID_INVENTORY')).toBe('EXCLUDED');
+  });
 });
 
 describe('isSettlementEvent', () => {
@@ -30,5 +33,10 @@ describe('isSettlementEvent', () => {
     // 추정으로 만들면 §14 O4(settleMethod 오설정)와 겹쳐 잘못된 시점에 정산이 잡힌다.
     expect(isSettlementEvent(null, 'USAGE')).toBe(false);
     expect(isSettlementEvent(undefined, 'ISSUANCE')).toBe(false);
+  });
+  it('PREPAID_INVENTORY 는 어떤 사건에서도 정산 대상이 아니다 (rev5 §10)', () => {
+    expect(isSettlementEvent('PREPAID_INVENTORY', 'ISSUANCE')).toBe(false);
+    expect(isSettlementEvent('PREPAID_INVENTORY', 'EXCHANGE')).toBe(false);
+    expect(isSettlementEvent('PREPAID_INVENTORY', 'USAGE')).toBe(false);
   });
 });

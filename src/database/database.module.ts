@@ -111,12 +111,18 @@ import { PartnerProviderEventInboxEntity } from '../entity/partner.provider.even
 import { PartnerCreditConfigEntity } from '../entity/partner.credit.config.entity';
 import { PartnerCreditConfigHistoryEntity } from '../entity/partner.credit.config.history.entity';
 import { BankDepositEntity } from '../entity/bank.deposit.entity';
-import { PartnerSettleReviewResolutionEntity } from '../entity/partner.settle.review.resolution.entity';
-import { PartnerSettleReviewAuditEntity } from '../entity/partner.settle.review.audit.entity';
-import { PartnerProviderManualEventProposalEntity } from '../entity/partner.provider.manual.event.proposal.entity';
-import { PartnerProviderManualLedgerProposalEntity } from '../entity/partner.provider.manual.ledger.proposal.entity';
-import { PartnerSettleTransitionResolutionEntity } from '../entity/partner.settle.transition.resolution.entity';
 import { DeliveryCancelIntentEntity } from '../entity/delivery.cancel.intent.entity';
+import { InventoryCouponProductConfigEntity } from '../entity/inventory.coupon.product.config.entity';
+import { InventoryPinImportBatchEntity } from '../entity/inventory.pin.import.batch.entity';
+import { InventoryPinImportErrorEntity } from '../entity/inventory.pin.import.error.entity';
+import { InventoryPinItemEntity } from '../entity/inventory.pin.item.entity';
+import { InventoryPinEmailAttemptEntity } from '../entity/inventory.pin.email.attempt.entity';
+import { InventoryPinEmailOutboxEntity } from '../entity/inventory.pin.email.outbox.entity';
+import { InventoryPinBillingChainEntity } from '../entity/inventory.pin.billing.chain.entity';
+import { InventoryPinReissueEntity } from '../entity/inventory.pin.reissue.entity';
+import { PinInventoryPolicyEntity } from '../entity/pin.inventory.policy.entity';
+import { DirectPinDeliveryPolicyEntity } from '../entity/direct.pin.delivery.policy.entity';
+import { ExternalApiPinInventoryRequestEntity } from '../entity/external.api.pin.inventory.request.entity';
 
 @Module({
   imports: [
@@ -235,12 +241,18 @@ import { DeliveryCancelIntentEntity } from '../entity/delivery.cancel.intent.ent
           PartnerCreditConfigEntity,
           PartnerCreditConfigHistoryEntity,
           BankDepositEntity,
-          PartnerSettleReviewResolutionEntity,
-          PartnerSettleReviewAuditEntity,
-          PartnerProviderManualEventProposalEntity,
-          PartnerProviderManualLedgerProposalEntity,
-          PartnerSettleTransitionResolutionEntity,
           DeliveryCancelIntentEntity,
+          InventoryCouponProductConfigEntity,
+          InventoryPinImportBatchEntity,
+          InventoryPinImportErrorEntity,
+          InventoryPinItemEntity,
+          InventoryPinEmailAttemptEntity,
+          InventoryPinEmailOutboxEntity,
+          InventoryPinBillingChainEntity,
+          InventoryPinReissueEntity,
+          PinInventoryPolicyEntity,
+          DirectPinDeliveryPolicyEntity,
+          ExternalApiPinInventoryRequestEntity,
         ],
         extra: {
           connectionLimit: +configService.get('DATABASE_CONNECTION_LIMIT', 50),

@@ -104,6 +104,8 @@ import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-w
 import { SsgTryError } from '../../partner_company_extern/infra/ssg.issue';
 import { DeferredDeliveryError } from '../interface/deferred.delivery.error';
 import { PinIssueCommandService } from './pin-issue-command.service';
+import { InventoryPinAllocationService } from '../../inventory_coupon/application/inventory.pin.allocation.service';
+import { InventoryPinSendService } from '../../inventory_coupon/application/inventory.pin.send.service';
 
 /**
  * 배치 단건 처리 결과 (§4.1 2-pass).
@@ -255,6 +257,8 @@ export class DeliveryBatchService {
     private readonly orderFromService: OrderFromService,
     private readonly cutoverGuard: DeliveryCutoverGuardService,
     private readonly refundAttemptExecutor: RefundAttemptExecutorService,
+    private readonly inventoryPinAllocationService: InventoryPinAllocationService,
+    private readonly inventoryPinSendService: InventoryPinSendService,
   ) {}
 
   private readonly logger = new Logger('batch');
@@ -1572,6 +1576,47 @@ export class DeliveryBatchService {
     const isInitialSend = !(await this.resolveResendEntry(orderDelivery));
 
     // 1. PIN 발급 (barCode가 없는 경우)
+    // DIRECT_PIN 재고형 쿠폰은 별도 allocation/outbox 경로를 사용한다 (rev5 §7.4).
+    const isDirectPin = orderDelivery.orderProductMapping?.emailSendType === OrderEmailSendType.DIRECT_PIN;
+    if (isDirectPin) {
+      // 재고형 PIN: allocation + outbox 생성 → outbox processor가 이메일 발송 (rev5 §7.4)
+      try {
+        const allocation = await this.inventoryPinAllocationService.allocate(orderDelivery);
+        if (!allocation || !allocation.item || !allocation.outbox) {
+          throw new Error('PIN allocation returned no item/outbox');
+        }
+        // allocation 성공 후 즉시 outbox 소비 시도 (비동기 실패 시 outbox processor가 재시도)
+        this.inventoryPinSendService.processOutbox(orderDelivery.id).catch(sendErr => {
+          this.logger.warn(`[BATCH] DIRECT_PIN outbox 즉시소비 실패 (processor가 재시도) - delivery=${orderDelivery.id}: ${sendErr}`);
+        });
+      } catch (error) {
+        this.logger.error(`[BATCH] DIRECT_PIN allocation 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+        // 재고 없음/allocation 중단은 resendiable FAIL — 자동 환불 미생성 (rev5 §7.4)
+        this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
+        if (claimToken) {
+          await this.updateDeliveryOwned(
+            orderDelivery.id, claimToken,
+            { status: orderDelivery.status, failedAt: orderDelivery.failedAt },
+            'DIRECT_PIN allocation 실패', order.id,
+          );
+        }
+        const deliveryHistory = new DeliverySendHistoryEntity();
+        deliveryHistory.context = JSON.stringify({ mode: 'DIRECT_PIN', error: String(error) });
+        deliveryHistory.isSuccess = false;
+        deliveryHistory.target = orderDelivery.deliveryTarget;
+        deliveryHistory.deliveryMethod = orderDelivery.deliveryMethod;
+        return { deliveryHistory, orderId: order.id };
+      }
+      // DIRECT_PIN은 outbox worker가 실제 발송 — isSuccess는 false (PENDING 상태)
+      // 발송 완료는 outbox worker의 applyOutcome에서 status=COMPLETE로 전환됨
+      const deliveryHistory = new DeliverySendHistoryEntity();
+      deliveryHistory.context = JSON.stringify({ mode: 'DIRECT_PIN', result: 'ALLOCATED_PENDING_SEND' });
+      deliveryHistory.isSuccess = false;
+      deliveryHistory.target = orderDelivery.deliveryTarget;
+      deliveryHistory.deliveryMethod = orderDelivery.deliveryMethod;
+      return { deliveryHistory, orderId: order.id };
+    }
+
     if (!orderDelivery.barCode && !isChoiceCoupon && !isEmailDelivery) {
       try {
         let ssgEvent: SsgEventEntity | null = null;

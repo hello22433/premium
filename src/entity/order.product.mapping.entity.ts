@@ -8,6 +8,7 @@ import { IPriceAdjustment } from '../user_discount/interface/price.adjustment';
 import { IOrderSendMethod } from '../order/interface/order.send.method';
 import { OrderEmailSendType } from '../order/domain/order.email.send.type';
 import { OrderEmailFinalSendMethod } from '../order/domain/order.email.final.send.method';
+import { DirectPinEmailSnapshot } from '../inventory_coupon/domain/direct.pin.email.snapshot';
 
 @Entity('order_product_mapping')
 export class OrderProductMappingEntity extends BaseEntity {
@@ -161,4 +162,6 @@ export class OrderProductMappingEntity extends BaseEntity {
     createForeignKeyConstraints: false,
   })
   orderDeliveries: OrderDeliveryEntity[];
+  @Column({ type: 'json', nullable: true, comment: '직접 PIN 이메일 스냅샷 (DIRECT_PIN이면 필수)' })
+  directPinEmailSnapshot: DirectPinEmailSnapshot | null;
 }
