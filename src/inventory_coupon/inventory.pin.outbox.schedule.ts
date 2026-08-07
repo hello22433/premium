@@ -97,7 +97,10 @@ export class InventoryPinOutboxSchedule {
   /**
    * Stale claim reaper: lease_until이 지난 CLAIMED outbox를 PAUSED로 강제 전환.
    * 프로세스 장애로 남은 CLAIMED가 영구 고착되는 것을 방지.
-   * 단일 트랜잭션에서 이번 sweep이 잡은 ID만 변경한다.
+   *
+   * 잠금 순서: delivery → attempt → outbox (전역 규약).
+   * Non-locking scan으로 후보 ID를 수집한 뒤, 전역 순서대로
+   * CAS UPDATE를 발행하여 deadlock을 방지한다.
    */
   @Cron('40 */5 * * * *')
   async handleStaleClaims(): Promise<void> {
@@ -105,13 +108,12 @@ export class InventoryPinOutboxSchedule {
     await queryRunner.connect();
     await queryRunner.startTransaction();
     try {
-      // lease_until < NOW() — TTL 이미 lease_until에 반영되어 있으므로 이중 차감 불필요
+      // 1. Non-locking scan: stale 후보 ID 수집 (잠금 없음)
       const staleRows: { order_delivery_id: number }[] = await queryRunner.query(
         `SELECT \`order_delivery_id\`
          FROM \`inventory_pin_email_outbox\`
          WHERE \`state\` = 'CLAIMED'
-           AND \`lease_until\` < NOW(6)
-         FOR UPDATE`,
+           AND \`lease_until\` < NOW(6)`,
       );
 
       if (staleRows.length === 0) {
@@ -122,18 +124,15 @@ export class InventoryPinOutboxSchedule {
       const staleIds = staleRows.map(r => r.order_delivery_id);
       const placeholders = staleIds.map(() => '?').join(',');
 
-      // outbox → PAUSED
+      // 2. Lock delivery first (전역 잠금 순서 1번)
       await queryRunner.query(
-        `UPDATE \`inventory_pin_email_outbox\`
-         SET \`state\` = 'PAUSED',
-             \`last_error_code\` = 'STALE_CLAIM_REAPED',
-             \`owner_token\` = NULL
-         WHERE \`order_delivery_id\` IN (${placeholders})
-           AND \`state\` = 'CLAIMED'`,
+        `SELECT \`id\` FROM \`order_delivery\`
+         WHERE \`id\` IN (${placeholders})
+         FOR UPDATE`,
         staleIds,
       );
 
-      // 대응하는 attempt CLAIMED → UNKNOWN (이번 sweep ID 한정)
+      // 3. Lock + update attempt (전역 잠금 순서 2번)
       await queryRunner.query(
         `UPDATE \`inventory_pin_email_attempt\`
          SET \`status\` = 'UNKNOWN',
@@ -144,7 +143,19 @@ export class InventoryPinOutboxSchedule {
         staleIds,
       );
 
-      // fulfillment SENDING → UNKNOWN (이번 sweep ID 한정)
+      // 4. Lock + update outbox (전역 잠금 순서 3번) — CAS로 staleness 재확인
+      await queryRunner.query(
+        `UPDATE \`inventory_pin_email_outbox\`
+         SET \`state\` = 'PAUSED',
+             \`last_error_code\` = 'STALE_CLAIM_REAPED',
+             \`owner_token\` = NULL
+         WHERE \`order_delivery_id\` IN (${placeholders})
+           AND \`state\` = 'CLAIMED'
+           AND \`lease_until\` < NOW(6)`,
+        staleIds,
+      );
+
+      // 5. delivery fulfillment 상태 전환 (이미 잠금 보유)
       await queryRunner.query(
         `UPDATE \`order_delivery\`
          SET \`direct_pin_fulfillment_status\` = 'UNKNOWN'
