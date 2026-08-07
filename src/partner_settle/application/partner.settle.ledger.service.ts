@@ -120,6 +120,28 @@ export type LedgerReversalCommand = {
   manualLedgerProposalId?: number | null;
 };
 
+export type LedgerVarianceAdjustmentCommand = {
+  partnerCompanyId: number;
+  /** 승인된 `partner_settle_payment_variance_proposal.id`. 멱등키·provenance·UNIQUE 의 축 */
+  paymentVarianceProposalId: number;
+  /**
+   * 원장 금액 = `-(actualPaidAmount - calculatedPaidAmount)` (정본 §5 318행).
+   * 과지급이면 음수 = 다음 sweep 지급액 차감. 0 은 variance 가 아니므로 계약 위반이다.
+   */
+  settleAmount: bigint;
+  /** 승인 transaction 의 DB 기준 `T_decision`. proposal.approvedAt 과 **같은 값**이어야 한다 */
+  occurredAt: KstInstant;
+  memo?: string | null;
+};
+
+/** variance ADJUSTMENT 전용 하위항목 sentinel (정본 §5 163행). 일반 원장은 이 값을 쓸 수 없다. */
+export const PAYMENT_VARIANCE_SUB_ITEM_KEY = 'PAYMENT_VARIANCE';
+
+/** variance ADJUSTMENT 멱등키. DB CHECK 가 같은 형식을 강제한다. */
+export function buildPaymentVarianceKey(proposalId: number): string {
+  return `PAYMENT_VARIANCE:${proposalId}`;
+}
+
 type LedgerRow = RawRow;
 
 @Injectable()
@@ -250,6 +272,70 @@ export class PartnerSettleLedgerService {
       applied_discount_history_id: original.appliedDiscountHistoryId,
       pricing_resolution: original.pricingResolution,
       ...amountColumns(amounts),
+    };
+
+    return this.insertRow(row, idempotencyKey, manager);
+  }
+
+  /**
+   * 지급 차이 승인 ADJUSTMENT append (정본 §5.7.2 · §5 318행 · PR3A).
+   *
+   * 일반 append 와 달리 **정산조건 matcher 를 타지 않는다**(`DIRECT_AMOUNT`). 지급 차이는 상품·조건에서
+   * 도출되는 금액이 아니라 실송금액과 계산액의 차이를 사람이 승인한 확정값이기 때문이다.
+   *
+   * `settleBatchId = NULL` · `occurredAt = T_decision` 이므로 **이미 확정된 batch 에 소급 편입되지 않고**
+   * 승인 후 최초 eligible confirm sweep 에 정확히 한 번 편입된다.
+   */
+  async appendVarianceAdjustment(
+    command: LedgerVarianceAdjustmentCommand,
+    manager?: EntityManager,
+  ): Promise<PartnerSettleLedgerEntity> {
+    assertInTransaction(manager ?? this.ledgerRepository, '지급 차이 원장 append(appendVarianceAdjustment)');
+
+    if (command.settleAmount === 0n) {
+      throw new LedgerInvariantError('지급 차이 0 은 조정 원장을 만들지 않는다');
+    }
+    this.assertBaseAmountBound(command.settleAmount);
+
+    const idempotencyKey = buildPaymentVarianceKey(command.paymentVarianceProposalId);
+    const existing = await this.findByIdempotencyKey(idempotencyKey, manager);
+    if (existing) return existing;
+
+    const row: LedgerRow = {
+      ...this.commonColumns({
+        partnerCompanyId: command.partnerCompanyId,
+        subItemKey: PAYMENT_VARIANCE_SUB_ITEM_KEY,
+        sourceType: 'ADJUSTMENT',
+        // 지급 차이는 특정 발송건에 귀속되지 않는 협력사 단위 조정이다.
+        orderDeliveryId: null,
+        galaxiaBarcodeLogId: null,
+        idempotencyKey,
+        occurredAt: command.occurredAt,
+        vatCalculationMode: 'NONE',
+        orphanInboxRowId: null,
+        manualLedgerProposalId: null,
+        memo: command.memo,
+      }),
+      payment_variance_proposal_id: command.paymentVarianceProposalId,
+      reverses_ledger_id: null,
+      status: 'NORMAL' satisfies IPartnerSettleLedgerStatus,
+      review_code: null,
+      review_resolution: null,
+      // DIRECT_AMOUNT 는 조건 스냅샷을 쓰지 않는다. DB CHECK 가 percent=0·DISCOUNT·history NULL 을 요구한다.
+      applied_price_percent: '0',
+      applied_price_adjustment: 'DISCOUNT',
+      applied_discount_history_id: null,
+      pricing_resolution: 'DIRECT_AMOUNT',
+      // 구성금액(수수료·VAT)은 만들지 않는다. 차이 그대로가 정산 금액이다.
+      ...amountColumns({
+        baseAmount: command.settleAmount,
+        discountAmount: 0n,
+        receivingCommissionAmount: 0n,
+        givingCommissionAmount: 0n,
+        vatAmount: 0n,
+        feeTotalAmount: 0n,
+        settleAmount: command.settleAmount,
+      }),
     };
 
     return this.insertRow(row, idempotencyKey, manager);

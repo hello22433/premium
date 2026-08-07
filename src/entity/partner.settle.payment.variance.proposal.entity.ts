@@ -6,12 +6,13 @@ import { IPartnerSettlePaymentVarianceProposalStatus } from '../partner_settle/i
  * 지급 차이 독립 승인 proposal (정본 §5.7.2 · PR1D).
  *
  * `actualPaidAmount != calculatedPaidAmount` 시 PENDING 으로 생성.
- * approve/reject API 는 PR3 소유. PR1D 는 생성까지만 구현한다.
+ * 생성은 PR1D(paid 경로), approve/reject 는 PR3A(`PartnerSettlePaymentVarianceService`) 다.
  *
  * DB CHECK:
  * - 상태별 필드 NULL 조합
  * - 자기승인 차단 (`approvedBy != proposedBy`, `rejectedBy != proposedBy`)
  * - batch 당 PENDING proposal 1건 (generated column `activeBatchKey`)
+ * - (PR3A) result 복합 FK `(result_ledger_id, id, partner_company_id)` → ledger provenance
  */
 @Entity('partner_settle_payment_variance_proposal')
 @Index('idx_variance_proposal_batch', ['batchId'])
