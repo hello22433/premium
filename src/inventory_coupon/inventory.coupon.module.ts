@@ -15,6 +15,8 @@ import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
 import { OrderProductMappingEntity } from '../entity/order.product.mapping.entity';
 import { OrderDeliveryRefundEntity } from '../entity/order.delivery.refund.entity';
 import { ApiAppEntity } from '../entity/api.app.entity';
+import { ExternalApiAccountEntity } from '../entity/external.api.account.entity';
+import { ApiCredentialEntity } from '../entity/api.credential.entity';
 import { InventoryPinCryptoService } from './application/inventory.pin.crypto.service';
 import { InventoryPinImportService } from './application/inventory.pin.import.service';
 import { InventoryPinAllocationService } from './application/inventory.pin.allocation.service';
@@ -37,6 +39,7 @@ import { CryptoCipher } from '../common/infra/crypto.cipher';
 import { MailModule } from '../mail/mail.module';
 import { AuthModule } from '../auth/auth.module';
 import { ExternalApiModule } from '../external_api/external.api.module';
+import { AccountLifecycleModule } from '../account_lifecycle/account.lifecycle.module';
 import { WalletModule } from '../wallet/wallet.module';
 import { InventoryPinOutboxSchedule } from './inventory.pin.outbox.schedule';
 @Module({
@@ -57,9 +60,14 @@ import { InventoryPinOutboxSchedule } from './inventory.pin.outbox.schedule';
       OrderProductMappingEntity,
       OrderDeliveryRefundEntity,
       ApiAppEntity,
+      // ApiKeyGuard 는 @UseGuards(ApiKeyGuard) 로 이 모듈 컨텍스트에서 인스턴스화된다.
+      // ExternalApiModule 이 export 해도 의존성은 호스트 모듈에서 해결되므로 여기에 등록 필요.
+      ExternalApiAccountEntity,
+      ApiCredentialEntity,
     ]),
     MailModule,
     AuthModule,
+    AccountLifecycleModule,
     forwardRef(() => ExternalApiModule),
     forwardRef(() => WalletModule),
   ],
