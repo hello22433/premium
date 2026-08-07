@@ -24,8 +24,12 @@ export interface DestructionCertificateGateResult {
  *  - CS 수신처 조회 가드·마스킹 유틸·확인서 페이지 진입 검증이 모두 이 컬럼 하나로
  *    파기 여부를 판정한다 — 같은 술어를 써야 게이트 통과 후 페이지에서 튕기지 않는다.
  *
- * 환불 가드(REFUND_IN_PROGRESS)는 "미파기" 판정보다 먼저 반환하되, 전량 파기 완료면
- * 환불 여부와 무관하게 발행 가능하다 — 이미 지운 주문의 확인서를 막을 이유가 없다.
+ * 환불 가드(REFUND_IN_PROGRESS)는 **전량 마스킹이 아닌 주문에서만 평가된다.** 전량 마스킹
+ * 주문은 아래 every('-') 블록 안에서 모든 경로가 return 하므로 환불 검사에 도달하지 않는다.
+ * 그 블록의 결론은 파기일 축이 정한다 — 답할 수 있으면 발행, 없으면 차단.
+ * (초기 요약은 "환불 가드가 미파기 판정보다 **먼저** 반환한다"는 선후 프레임으로 적었는데,
+ *  그 프레임 자체가 부정확하다. 두 사유는 순서를 다투는 관계가 아니라 **서로 다른 분기**다.
+ *  아래 파기일 축 교차검증 주석 참조 — 리뷰 5차 L-2/M-2.)
  *
  * ★ 파기일 축 교차 검증 (리뷰 3차 H-1)
  *   위 술어는 deliveryTarget 단일이고, 파기일 계산은 deliveryTarget + emailReceiverPhone
@@ -67,6 +71,22 @@ export function resolveDestructionCertificateGate(order: OrderEntity): Destructi
     if (destroyAt.kind === 'SCHEDULED') {
       // 2축 술어로는 아직 안 지워진 행이 섞여 있다(수신처 부활 / 레거시 부분마스킹).
       // 사유는 NOT_DESTROYED 가 정확하다 — 실제로 남아 있는 PII 가 있다.
+      //
+      // ⚠️ **결과가 바뀐 조합은 알려진 것만 둘이다.** ('우선순위가 바뀌었다'는 부정확한 표현이다 —
+      //    REFUND_IN_PROGRESS 는 every('-') 블록 **밖**이라 전량 마스킹 주문에서는 구·신 코드
+      //    모두 구조적으로 도달할 수 없다. 바뀐 것은 순서가 아니라 **허용 → 차단**이다.)
+      //    둘 다 종전에는 위 every('-') 에서 곧바로 canIssue: true 였다:
+      //      · 전량 마스킹 + emailReceiverPhone 생존 → 여기서 NOT_DESTROYED
+      //      · 전량 마스킹 + destroyedAt 결측      → 위에서 DESTROY_TIME_UNKNOWN
+      //    ⚠️ 두 조합에 '환불 진행중'을 **한정어로 붙이지 말 것.** 위 리드 문장이 밝혔듯
+      //       환불 상태는 이 블록에 영향을 주지 않으므로, 결과가 바뀐 모집단은 환불 진행
+      //       여부와 **무관한 전량**이다. '환불 진행중'을 붙이면 배포 후 회귀 범위를 산정하는
+      //       사람이 부분집합만 보고 모집단을 과소 추정한다(리뷰 5차 M-5).
+      //    의도한 동작이다: "PII 가 남아 있다"·"파기일을 모른다"가 환불 진행 여부보다 앞선
+      //    차단 사유이고, 사용자에게도 "환불 때문에 막혔다"보다 정확한 안내다.
+      //    ⚠️ 다만 이 분기에 도달했다고 항상 NOT_DESTROYED 인 것은 아니다 — 형제 발송건 하나가
+      //       파기일 null 을 내면 주문 전체가 null 이 되어 위 DESTROY_TIME_UNKNOWN 으로 빠진다.
+      //    (규모: migration §4-8. 2026-07-31 운영 실측 0건)
       return { canIssue: false, reason: DestructionCertificateBlockReason.NOT_DESTROYED };
     }
     return { canIssue: true, reason: null };
