@@ -55,6 +55,9 @@ import { PartnerSettleConfigEntity } from '../entity/partner.settle.config.entit
 import { PartnerSettleCancelReconEntity } from '../entity/partner.settle.cancel.recon.entity';
 import { PartnerSettlePaymentRequestEntity } from '../entity/partner.settle.payment.request.entity';
 import { PartnerSettlePaymentVarianceProposalEntity } from '../entity/partner.settle.payment.variance.proposal.entity';
+import { ActivityLogModule } from '../activity_log/activity.log.module';
+import { PaymentVarianceController } from './api/payment.variance.controller';
+import { PartnerSettlePaymentVarianceService } from './application/partner.settle.payment.variance.service';
 
 /**
  * 협력사 여신관리/정산확정 도메인.
@@ -63,10 +66,12 @@ import { PartnerSettlePaymentVarianceProposalEntity } from '../entity/partner.se
  * PR2 는 여신 표 조회(credit/list)와 여신 설정(credit/config)을 추가한다.
  * PR1C 는 NEEDS_REVIEW·orphan 해소 API 를 추가한다.
  * PR1D 는 정산확정(batch)·해제·지급 API 를 추가한다 — feature flag off 로 배포.
+ * PR3A 는 지급 차이(PAYMENT_VARIANCE) 승인·반려를 추가한다 — paid flag 를 공유한다.
  */
 @Module({
   imports: [
     AuthModule,
+    ActivityLogModule,
     TypeOrmModule.forFeature([
       PartnerDiscountHistoryEntity,
       PartnerDiscountScopeEntity,
@@ -104,6 +109,7 @@ import { PartnerSettlePaymentVarianceProposalEntity } from '../entity/partner.se
     ManualLedgerProposalController,
     ReviewQueryController,
     BatchController,
+    PaymentVarianceController,
   ],
   providers: [
     PartnerDiscountHistoryService,
@@ -132,6 +138,7 @@ import { PartnerSettlePaymentVarianceProposalEntity } from '../entity/partner.se
     PartnerSettleReviewQueryService,
     PartnerSettleBatchService,
     PartnerSettlePaymentService,
+    PartnerSettlePaymentVarianceService,
   ],
   exports: [
     PartnerDiscountHistoryService,
@@ -152,6 +159,7 @@ import { PartnerSettlePaymentVarianceProposalEntity } from '../entity/partner.se
     PartnerSettleReviewQueryService,
     PartnerSettleBatchService,
     PartnerSettlePaymentService,
+    PartnerSettlePaymentVarianceService,
   ],
 })
 export class PartnerSettleModule {}

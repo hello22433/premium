@@ -176,6 +176,6 @@ export class PartnerSettleLedgerEntity extends BaseEntity {
   @Column({ type: 'int', nullable: true, comment: 'orphan lane inbox row (자동/수동 상호배타 축)' })
   orphanInboxRowId: number | null;
 
-  @Column({ type: 'int', nullable: true, comment: 'FK·CHECK 일체는 PR3' })
+  @Column({ type: 'int', nullable: true, comment: '지급 차이 승인 provenance. FK·UNIQUE·CHECK 는 PR3A 마이그레이션' })
   paymentVarianceProposalId: number | null;
 }
