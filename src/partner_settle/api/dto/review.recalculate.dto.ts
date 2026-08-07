@@ -1,4 +1,4 @@
-import { ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiHideProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
   ArrayNotEmpty,
@@ -39,6 +39,7 @@ function IsRecalculateTarget(validationOptions?: ValidationOptions): PropertyDec
 const trim = ({ value }: { value: unknown }): unknown => (typeof value === 'string' ? value.trim() : value);
 
 export class ReviewRecalculateReqDto {
+  @ApiHideProperty()
   @IsRecalculateTarget()
   private readonly target?: never;
 
