@@ -116,6 +116,7 @@ import { PartnerSettleReviewAuditEntity } from '../entity/partner.settle.review.
 import { PartnerProviderManualEventProposalEntity } from '../entity/partner.provider.manual.event.proposal.entity';
 import { PartnerProviderManualLedgerProposalEntity } from '../entity/partner.provider.manual.ledger.proposal.entity';
 import { PartnerSettleTransitionResolutionEntity } from '../entity/partner.settle.transition.resolution.entity';
+import { DeliveryCancelIntentEntity } from '../entity/delivery.cancel.intent.entity';
 
 @Module({
   imports: [
@@ -239,6 +240,7 @@ import { PartnerSettleTransitionResolutionEntity } from '../entity/partner.settl
           PartnerProviderManualEventProposalEntity,
           PartnerProviderManualLedgerProposalEntity,
           PartnerSettleTransitionResolutionEntity,
+          DeliveryCancelIntentEntity,
         ],
         extra: {
           connectionLimit: +configService.get('DATABASE_CONNECTION_LIMIT', 50),
