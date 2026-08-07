@@ -25,22 +25,16 @@ import {
  * 금액은 전부 `BIGINT`(원 단위 정수)다. 계산은 `BigInt` 정수산술로 하며 `number` 산술을 쓰지 않는다.
  * TypeORM 은 bigint 를 문자열로 반환하므로 읽는 쪽에서 `BigInt(...)` 로 파싱한다.
  *
- * DB 가 강제하는 불변식(마이그레이션 `20260804_partner_credit_pr1b_ledger.sql`):
+ * DB 가 강제하는 불변식(마이그레이션 `20260804_partner_credit_pr1b_ledger.sql` 및 PR1C):
  * - `UNIQUE(idempotencyKey)` — 전이 단위 멱등
- * - `UNIQUE(transitionObservationId, transitionSequenceNo)`
+ * - `UNIQUE(transitionObservationId, transitionSequenceNo, transitionAllocationNo)`
  * - `UNIQUE(orphanSettlementKey)` — 양수 orphan 정산은 ingress 당 1건 (음수 배분은 generated NULL 이라 제외)
  * - (status, reviewCode) 조합별 필수/금지 필드, pricingResolution 정합, reviewResolution 조합
- * - 전이 event 의 observation·순번·origin both-or-neither
+ * - 전이 event 의 observation·순번·allocation·origin both-or-neither
  */
 @Entity('partner_settle_ledger')
 @Index('idx_partner_settle_ledger_unsettled', ['partnerCompanyId', 'subItemKey', 'settleBatchId'])
-@Index('idx_partner_settle_ledger_sweep', [
-  'partnerCompanyId',
-  'settleBatchId',
-  'status',
-  'occurredAt',
-  'id',
-])
+@Index('idx_partner_settle_ledger_sweep', ['partnerCompanyId', 'settleBatchId', 'status', 'occurredAt', 'id'])
 @Index('idx_partner_settle_ledger_occurred', ['occurredAt'])
 @Index('idx_partner_settle_ledger_delivery', ['orderDeliveryId'])
 @Index('idx_partner_settle_ledger_reverses', ['reversesLedgerId'])
@@ -167,6 +161,8 @@ export class PartnerSettleLedgerEntity extends BaseEntity {
 
   @Column({ type: 'int', nullable: true, comment: '같은 observation 내 event 순번 (정상 감지 = 1)' })
   transitionSequenceNo: number | null;
+  @Column({ type: 'int', nullable: true, comment: '같은 전이 내 역분개 allocation 순번 (1..N)' })
+  transitionAllocationNo: number | null;
 
   @Column({ type: 'varchar', length: 16, nullable: true, comment: 'PROVIDER|MANUAL' })
   sourceEventIdOrigin: IPartnerSettleSourceEventIdOrigin | null;

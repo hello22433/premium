@@ -20,10 +20,7 @@ import { PartnerSettleObservationService } from './application/partner.settle.ob
 import { PartnerCreditConfigService } from './application/partner.credit.config.service';
 import { PartnerCreditListService } from './application/partner.credit.list.service';
 import { CreditFeatureFlag } from './application/credit.feature.flag';
-import {
-  GalaxiaBalanceInquiryStub,
-  GiftShowBalanceInquiryStub,
-} from './application/partner.balance.inquiry.stub';
+import { GalaxiaBalanceInquiryStub, GiftShowBalanceInquiryStub } from './application/partner.balance.inquiry.stub';
 import { PARTNER_BALANCE_INQUIRIES } from './application/partner.balance.inquiry.token';
 import { PartnerSettleFeatureFlag } from './application/partner.settle.feature.flag';
 import { PartnerSettleProducerService } from './application/partner.settle.producer.service';
@@ -31,6 +28,22 @@ import { UserDiscountEntity } from '../entity/user.discount.entity';
 import { AuthModule } from '../auth/auth.module';
 import { CreditConfigController } from './api/credit.config.controller';
 import { CreditListController } from './api/credit.list.controller';
+import { PartnerSettleReviewRecalculateService } from './application/partner.settle.review.recalculate.service';
+import { PartnerSettleReviewAuditEntity } from '../entity/partner.settle.review.audit.entity';
+import { PartnerSettleReviewResolutionEntity } from '../entity/partner.settle.review.resolution.entity';
+import { PartnerProviderManualEventProposalEntity } from '../entity/partner.provider.manual.event.proposal.entity';
+import { PartnerProviderManualLedgerProposalEntity } from '../entity/partner.provider.manual.ledger.proposal.entity';
+import { PartnerSettleTransitionResolutionEntity } from '../entity/partner.settle.transition.resolution.entity';
+import { OrderProductMappingEntity } from '../entity/order.product.mapping.entity';
+import { PartnerSettleReviewResolutionService } from './application/partner.settle.review.resolution.service';
+import { ReviewResolutionController } from './api/review.resolution.controller';
+import { ReviewRecalculateController } from './api/review.recalculate.controller';
+import { ReviewQueryController } from './api/review.query.controller';
+import { ManualLedgerProposalController } from './api/manual.ledger.proposal.controller';
+import { PartnerProviderManualLedgerService } from './application/partner.provider.manual.ledger.service';
+import { PartnerSettleReviewQueryService } from './application/partner.settle.review.query.service';
+import { PartnerSettleTransitionResolutionService } from './application/partner.settle.transition.resolution.service';
+import { TransitionResolutionController } from './api/transition.resolution.controller';
 
 /**
  * 협력사 여신관리/정산확정 도메인.
@@ -55,9 +68,23 @@ import { CreditListController } from './api/credit.list.controller';
       PartnerCompanyEntity,
       SsgEventEntity,
       UserDiscountEntity,
+      PartnerSettleReviewAuditEntity,
+      PartnerSettleReviewResolutionEntity,
+      PartnerProviderManualEventProposalEntity,
+      PartnerProviderManualLedgerProposalEntity,
+      PartnerSettleTransitionResolutionEntity,
+      OrderProductMappingEntity,
     ]),
   ],
-  controllers: [CreditConfigController, CreditListController],
+  controllers: [
+    CreditConfigController,
+    CreditListController,
+    ReviewRecalculateController,
+    ReviewResolutionController,
+    TransitionResolutionController,
+    ManualLedgerProposalController,
+    ReviewQueryController,
+  ],
   providers: [
     PartnerDiscountHistoryService,
     PartnerDiscountIntegrityService,
@@ -73,14 +100,16 @@ import { CreditListController } from './api/credit.list.controller';
     GalaxiaBalanceInquiryStub,
     {
       provide: PARTNER_BALANCE_INQUIRIES,
-      useFactory: (giftShow: GiftShowBalanceInquiryStub, galaxia: GalaxiaBalanceInquiryStub) => [
-        giftShow,
-        galaxia,
-      ],
+      useFactory: (giftShow: GiftShowBalanceInquiryStub, galaxia: GalaxiaBalanceInquiryStub) => [giftShow, galaxia],
       inject: [GiftShowBalanceInquiryStub, GalaxiaBalanceInquiryStub],
     },
     PartnerSettleFeatureFlag,
     PartnerSettleProducerService,
+    PartnerSettleReviewRecalculateService,
+    PartnerSettleReviewResolutionService,
+    PartnerSettleTransitionResolutionService,
+    PartnerProviderManualLedgerService,
+    PartnerSettleReviewQueryService,
   ],
   exports: [
     PartnerDiscountHistoryService,
@@ -94,6 +123,11 @@ import { CreditListController } from './api/credit.list.controller';
     PartnerCreditListService,
     PartnerSettleFeatureFlag,
     PartnerSettleProducerService,
+    PartnerSettleReviewRecalculateService,
+    PartnerSettleReviewResolutionService,
+    PartnerSettleTransitionResolutionService,
+    PartnerProviderManualLedgerService,
+    PartnerSettleReviewQueryService,
   ],
 })
 export class PartnerSettleModule {}
