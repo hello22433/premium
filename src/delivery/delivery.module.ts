@@ -86,7 +86,7 @@ import { DeliveryCancelIntentService } from './application/delivery-cancel-inten
     FileModule,
     PartnerCompanyExternModule,
     SsgEventModule,
-    UserManagementModule,
+    forwardRef(() => UserManagementModule),
     SsgInsertStateModule,
     OrderFromModule,
     DeliveryCutoverModule,
