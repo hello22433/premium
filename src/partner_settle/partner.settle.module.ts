@@ -58,6 +58,10 @@ import { PartnerSettlePaymentVarianceProposalEntity } from '../entity/partner.se
 import { ActivityLogModule } from '../activity_log/activity.log.module';
 import { PaymentVarianceController } from './api/payment.variance.controller';
 import { PartnerSettlePaymentVarianceService } from './application/partner.settle.payment.variance.service';
+import { PartnerDiscountReservationEntity } from '../entity/partner.discount.reservation.entity';
+import { DiscountReservationController } from './api/discount.reservation.controller';
+import { PartnerDiscountReservationService } from './application/partner.discount.reservation.service';
+import { PartnerDiscountReservationSchedule } from './application/partner.discount.reservation.schedule';
 
 /**
  * 협력사 여신관리/정산확정 도메인.
@@ -67,6 +71,7 @@ import { PartnerSettlePaymentVarianceService } from './application/partner.settl
  * PR1C 는 NEEDS_REVIEW·orphan 해소 API 를 추가한다.
  * PR1D 는 정산확정(batch)·해제·지급 API 를 추가한다 — feature flag off 로 배포.
  * PR3A 는 지급 차이(PAYMENT_VARIANCE) 승인·반려를 추가한다 — paid flag 를 공유한다.
+ * PR3B 는 정산조건 예약과 발효 cron 을 추가한다 — cron flag off 로 배포한다.
  */
 @Module({
   imports: [
@@ -98,6 +103,7 @@ import { PartnerSettlePaymentVarianceService } from './application/partner.settl
       PartnerSettleCancelReconEntity,
       PartnerSettlePaymentRequestEntity,
       PartnerSettlePaymentVarianceProposalEntity,
+      PartnerDiscountReservationEntity,
     ]),
   ],
   controllers: [
@@ -110,6 +116,7 @@ import { PartnerSettlePaymentVarianceService } from './application/partner.settl
     ReviewQueryController,
     BatchController,
     PaymentVarianceController,
+    DiscountReservationController,
   ],
   providers: [
     PartnerDiscountHistoryService,
@@ -139,6 +146,8 @@ import { PartnerSettlePaymentVarianceService } from './application/partner.settl
     PartnerSettleBatchService,
     PartnerSettlePaymentService,
     PartnerSettlePaymentVarianceService,
+    PartnerDiscountReservationService,
+    PartnerDiscountReservationSchedule,
   ],
   exports: [
     PartnerDiscountHistoryService,
@@ -160,6 +169,7 @@ import { PartnerSettlePaymentVarianceService } from './application/partner.settl
     PartnerSettleBatchService,
     PartnerSettlePaymentService,
     PartnerSettlePaymentVarianceService,
+    PartnerDiscountReservationService,
   ],
 })
 export class PartnerSettleModule {}

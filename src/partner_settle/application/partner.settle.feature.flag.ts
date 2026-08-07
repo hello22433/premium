@@ -43,6 +43,27 @@ export class PartnerSettleFeatureFlag {
     return this.configService.get('PARTNER_SETTLE_PAID_ENABLED') === 'true';
   }
 
+  /**
+   * 정산조건 예약 발효 cron kill switch (PR3B). 미설정은 fail-closed.
+   *
+   * **PR3C(소급 재계산·차액 proposal) 배포 전에는 미래 예약이라도 켜지 않는다.** cron 은 정상
+   * 동작에서도 `effectiveAt` 뒤에 돌기 때문에, 그 사이 생성된 원장은 이미 옛 조건으로 확정돼 있고
+   * 재계산 경로 없이는 조건 변경이 원장에 반영되지 않는다.
+   */
+  get isDiscountReservationCronEnabled(): boolean {
+    return this.configService.get('PARTNER_DISCOUNT_RESERVATION_CRON_ENABLED') === 'true';
+  }
+
+  /**
+   * 소급 예약(생성 시점에 `effectiveAt` 이 이미 과거) 개방 여부 (PR3B). 미설정은 fail-closed.
+   *
+   * 생성·발효 양쪽에서 검사한다. 생성만 막으면 flag 를 껐다 켠 사이에 만들어진 PENDING 이나 운영 DB
+   * 직접 삽입분이 그대로 발효된다.
+   */
+  get isDiscountRetroactiveEnabled(): boolean {
+    return this.configService.get('PARTNER_DISCOUNT_RETROACTIVE_ENABLED') === 'true';
+  }
+
   isEnabledFor(provider: IPartnerCompanyType | null | undefined): boolean {
     if (!provider || !this.isEnabled) return false;
     return this.activeProviders().includes(provider);
