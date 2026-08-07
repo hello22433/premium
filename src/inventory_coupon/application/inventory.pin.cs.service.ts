@@ -44,12 +44,11 @@ export class InventoryPinCsService {
   /**
    * PIN 원문 확인. rev5 §9.2.
    * - 현재 결제 소유자 + DEBITED + item ASSIGNED + fulfillment 비-VOID → 허용
-   * - 응답: Cache-Control: no-store
+   * - 응답 헤더 Cache-Control: no-store 는 컨트롤러의 @Header 데코레이터가 설정한다
    */
   async revealPin(orderDeliveryId: number, reason: string, operatorUserId: number): Promise<{
     primaryCode: string;
     secondaryCode: string | null;
-    headers: { 'Cache-Control': string };
   }> {
     if (!reason?.trim()) throw new BadRequestException('reason required');
 
@@ -98,11 +97,7 @@ export class InventoryPinCsService {
       secondaryCode = this.cryptoService.decrypt(item.secondaryCodeCiphertext, item.cryptoKeyVersion, secondaryAAD);
     }
 
-    return {
-      primaryCode,
-      secondaryCode,
-      headers: { 'Cache-Control': 'no-store' },
-    };
+    return { primaryCode, secondaryCode };
   }
 
   /**
