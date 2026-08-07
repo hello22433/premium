@@ -9,6 +9,7 @@ import {
   GifitiShowCheckIn,
   GiftiShowAllGoodsOut,
   GiftiShowCheckOut,
+  GiftiShowCompanyBalanceOut,
   GiftiShowCouponInfo,
   GiftiShowIssueIn,
   GiftiShowIssueOut,
@@ -166,6 +167,44 @@ export class GiftishowHttp implements IGiftiShow {
       this.logger.log(`[GiftiShow] getAllGoods response: listNum=${data.listNum}`);
 
       return { ...data, goodsList: data.goodsList ?? [] };
+    } catch (e) {
+      this.logger.error(e);
+      this.logger.error(JSON.stringify(e));
+      throw e;
+    }
+  }
+
+  /**
+   * 기업고객 포인트 잔액 조회 (0305).
+   * loanLimit(한도금액), usePosblAmt(사용가능금액) 을 그대로 반환한다.
+   */
+  async getCompanyBalance(): Promise<GiftiShowCompanyBalanceOut> {
+    const headers = {
+      api_code: '0305',
+      custom_auth_code: this.corpCode,
+      custom_auth_token: this.authToken,
+      custom_enc_flag: 'N',
+      Accept: 'application/json',
+    };
+
+    const url = `${this.url}/points/company/balance`;
+
+    try {
+      this.logger.log('[GiftiShow] getCompanyBalance → ', url);
+      const { data } = await firstValueFrom(this.httpService.get(url, { headers }));
+
+      this.logger.log(`[GiftiShow] getCompanyBalance response: ${JSON.stringify(data)}`);
+
+      return {
+        resCode: data.resCode,
+        resMsg: data.resMsg,
+        pointCompanyBalance: data.pointCompanyBalance
+          ? {
+              loanLimit: data.pointCompanyBalance.loanLimit,
+              usePosblAmt: data.pointCompanyBalance.usePosblAmt,
+            }
+          : undefined,
+      };
     } catch (e) {
       this.logger.error(e);
       this.logger.error(JSON.stringify(e));

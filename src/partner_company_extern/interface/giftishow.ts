@@ -97,6 +97,18 @@ export interface GiftiShowAllGoodsOut {
   goodsList: GiftiShowGoodsItem[];
 }
 
+// 기업고객 포인트 잔액 조회 (0305)
+export interface GiftiShowCompanyBalance {
+  loanLimit: string; // 한도금액
+  usePosblAmt: string; // 사용가능금액
+}
+
+export interface GiftiShowCompanyBalanceOut {
+  resCode: string; // 응답코드 (0000=정상)
+  resMsg: string; // 응답메시지
+  pointCompanyBalance?: GiftiShowCompanyBalance;
+}
+
 export interface IGiftiShow {
   issue(obj: GiftiShowIssueIn): Promise<GiftiShowIssueOut>;
 
@@ -105,4 +117,6 @@ export interface IGiftiShow {
   cancel(obj: GifitiShowCancelIn): Promise<void>;
 
   getAllGoods(): Promise<GiftiShowAllGoodsOut>;
+
+  getCompanyBalance(): Promise<GiftiShowCompanyBalanceOut>;
 }
