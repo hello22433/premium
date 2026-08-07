@@ -104,6 +104,7 @@ import { UserCompanyEntity } from 'src/entity/user.company.entity';
 import { CouponViewLogEntity } from '../../entity/coupon.view.log.entity';
 import { CouponViewLogResDto } from '../api/dto/customer.service.coupon.view.log.dto';
 import { calculateSettlementPrice } from '../../util/settle-fee.util';
+import { InventoryPinCsViewService } from '../../inventory_coupon/application/inventory.pin.cs.view.service';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import {
   MUTATION_CLAIM_STALE_MS,
@@ -175,6 +176,7 @@ export class CustomerServiceService {
     private readonly deliveryCancelIntentService: DeliveryCancelIntentService,
     private readonly settleFlag: PartnerSettleFeatureFlag,
     private readonly settleProducer: PartnerSettleProducerService,
+    private readonly inventoryPinCsViewService: InventoryPinCsViewService,
   ) {}
 
   /**
@@ -1099,6 +1101,9 @@ export class CustomerServiceService {
     // sendContent: order_product_mapping에서 가져오고, 대치문자 처리
     let sendContent = applyReplaceCharacters(queryBuilder.orderProductMapping.sendContent ?? '', queryBuilder);
 
+    // 재고형 PIN 직접 이메일 건이면 §4.1 계약 필드를 덧붙인다. 일반 쿠폰은 null → 기존 응답 그대로.
+    const inventoryPinView = await this.inventoryPinCsViewService.getView(queryBuilder);
+
     return {
       orderDeliveryId: queryBuilder.id,
       eventName: order.eventName,
@@ -1134,6 +1139,9 @@ export class CustomerServiceService {
       emailReceiverPhone: formattedEmailReceiverPhone,
       replacedFromId: queryBuilder.replacedFromId ?? null,
       couponIssuedAt: queryBuilder.couponIssuedAt ? format(queryBuilder.couponIssuedAt, DateFormatStr) : null,
+      ...(inventoryPinView
+        ? { brandCode: displayBrand?.code ?? '', ...inventoryPinView }
+        : {}),
     };
   }
 

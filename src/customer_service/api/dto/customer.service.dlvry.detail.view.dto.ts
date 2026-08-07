@@ -3,6 +3,14 @@ import { OrderDeliveryCouponStatus } from '../../../delivery/interface/order.del
 import { IOrderDeliveryStatus } from '../../../delivery/interface/order.delivery.status';
 import { OrderDeliveryRefundStatusEnum } from 'src/delivery/interface/order.delivery.refund.status.enum';
 import { OrderDeliveryEmailCouponStatus } from '../../../delivery/interface/order.delivery.email.coupon.status';
+import {
+  InventoryPinCsAllowedAction,
+  InventoryPinCsLatestAttemptStatus,
+} from '../../../inventory_coupon/application/inventory.pin.cs.view.service';
+import {
+  DirectPinFulfillmentStatus,
+  InventoryPinBillingChainState,
+} from '../../../inventory_coupon/domain/inventory.pin.status';
 
 export class CustomerServiceDlvryDetailViewDto {
   @ApiProperty({
@@ -189,4 +197,51 @@ export class CustomerServiceDlvryDetailViewDto {
     nullable: true,
   })
   couponIssuedAt: string | null;
+
+  // ── 해외 재고형 PIN 직접 이메일 (rev5 §4.1) ──
+  // 재고형 발송건에서만 채워진다. 일반 쿠폰은 전 필드 undefined 이며,
+  // 프론트는 deliveryContentMode 의 부재를 "일반 쿠폰"으로 처리한다.
+
+  @ApiProperty({
+    description: '재고형 PIN 직접 이메일 건이면 DIRECT_PIN, 일반 쿠폰이면 미포함',
+    required: false,
+  })
+  deliveryContentMode?: 'DIRECT_PIN';
+
+  @ApiProperty({ description: '교환처 코드 (재고형)', required: false })
+  brandCode?: string;
+
+  @ApiProperty({ description: '주 PIN 마스킹 표시값 (원문 아님)', required: false })
+  primaryPinMasked?: string;
+
+  @ApiProperty({ description: '보조 PIN 마스킹 표시값', required: false, nullable: true })
+  secondaryPinMasked?: string | null;
+
+  @ApiProperty({ description: 'PIN item 상태', required: false })
+  pinInventoryStatus?: 'ASSIGNED' | 'VOID';
+
+  @ApiProperty({ description: '직접 PIN fulfillment 상태', required: false })
+  fulfillmentStatus?: DirectPinFulfillmentStatus;
+
+  @ApiProperty({ description: '최신 이메일 발송 시도 상태', required: false })
+  latestAttemptStatus?: InventoryPinCsLatestAttemptStatus;
+
+  @ApiProperty({ description: '결제 체인 상태', required: false })
+  paymentState?: InventoryPinBillingChainState;
+
+  @ApiProperty({ description: '현재 환불·재발급 권한 소유 발송건 여부', required: false })
+  isCurrentPaymentOwner?: boolean;
+
+  @ApiProperty({ description: 'PIN 원문 확인 가능 여부', required: false })
+  canRevealPin?: boolean;
+
+  @ApiProperty({ description: '이전 소유 건의 PIN 원문 확인 가능 여부', required: false })
+  canRevealHistoricalPin?: boolean;
+
+  @ApiProperty({
+    description: '서버가 판정한 허용 CS 액션 목록',
+    required: false,
+    isArray: true,
+  })
+  allowedActions?: InventoryPinCsAllowedAction[];
 }
