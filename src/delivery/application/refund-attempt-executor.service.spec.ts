@@ -111,7 +111,28 @@ describe('RefundAttemptExecutorService', () => {
       // 예외로 끝난 콜백도 끝난 것이다 — 정지 사실을 같은 트랜잭션에서 남긴다.
       true,
     );
-    expect(result.status).toBe(RefundAttemptStatus.UNKNOWN);
+    expect(result).toEqual({
+      attemptId: '91',
+      status: RefundAttemptStatus.UNKNOWN,
+      reason: 'REFUND_EXECUTION_RESULT_UNKNOWN',
+    });
+  });
+  it('callback이 직접 반환한 FAILED reason을 executor 결과에 보존한다', async () => {
+    const { sut } = makeSut();
+
+    const result = await sut.execute({
+      ...baseInput,
+      execute: jest.fn().mockResolvedValue({
+        status: RefundAttemptStatus.FAILED,
+        reason: 'PIN_REFUND_BINDING_MISMATCH',
+      }),
+    });
+
+    expect(result).toEqual({
+      attemptId: '91',
+      status: RefundAttemptStatus.FAILED,
+      reason: 'PIN_REFUND_BINDING_MISMATCH',
+    });
   });
 
   it('콜백이 timeout 과 같은 메시지로 실패해도 timeout 으로 오인하지 않는다', async () => {
@@ -124,7 +145,11 @@ describe('RefundAttemptExecutorService', () => {
       execute: jest.fn().mockRejectedValue(new Error(REFUND_EXECUTION_TIMEOUT_REASON)),
     });
 
-    expect(result.status).toBe(RefundAttemptStatus.UNKNOWN);
+    expect(result).toEqual({
+      attemptId: '91',
+      status: RefundAttemptStatus.UNKNOWN,
+      reason: 'REFUND_EXECUTION_RESULT_UNKNOWN',
+    });
     expect(settle).toHaveBeenCalledWith(
       expect.anything(),
       { status: RefundAttemptStatus.UNKNOWN, reason: 'REFUND_EXECUTION_RESULT_UNKNOWN' },

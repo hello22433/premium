@@ -74,10 +74,16 @@ export interface ExecuteRefundInput {
   now?: Date;
 }
 
-export interface ExecuteRefundResult {
-  attemptId: string;
-  status: RefundAttemptStatus;
-}
+export type ExecuteRefundResult =
+  | {
+      attemptId: string;
+      status: RefundAttemptStatus.SUCCEEDED;
+    }
+  | {
+      attemptId: string;
+      status: RefundAttemptStatus.FAILED | RefundAttemptStatus.UNKNOWN;
+      reason: string;
+    };
 
 export interface ReconcileRefundInput {
   attemptId: string;
@@ -485,7 +491,9 @@ export class RefundAttemptExecutorService {
       throw error;
     }
 
-    return { attemptId: claimed.attempt.id, status: outcome.status };
+    return outcome.status === RefundAttemptStatus.SUCCEEDED
+      ? { attemptId: claimed.attempt.id, status: outcome.status }
+      : { attemptId: claimed.attempt.id, status: outcome.status, reason: outcome.reason };
   }
 
   private async claim(input: ExecuteRefundInput, now: Date): Promise<ClaimedRefund> {
