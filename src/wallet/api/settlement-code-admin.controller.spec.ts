@@ -1,9 +1,11 @@
 import { BadRequestException } from '@nestjs/common';
-import { SettlementCodeAdminController } from './settlement-code-admin.controller';
+import { CreateCodeReqDto, SettlementCodeAdminController } from './settlement-code-admin.controller';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
 
 describe('SettlementCodeAdminController', () => {
   let controller: SettlementCodeAdminController;
-  let walletReadService: { getSettlementCodeSnapshot: jest.Mock };
+  let walletReadService: { getSettlementCodeSnapshot: jest.Mock; getSettlementCodeDetail: jest.Mock };
   let adminService: {
     issueNewCode: jest.Mock;
     createCodeForCompany: jest.Mock;
@@ -18,7 +20,7 @@ describe('SettlementCodeAdminController', () => {
   };
 
   beforeEach(() => {
-    walletReadService = { getSettlementCodeSnapshot: jest.fn() };
+    walletReadService = { getSettlementCodeSnapshot: jest.fn(), getSettlementCodeDetail: jest.fn() };
     adminService = {
       issueNewCode: jest.fn(),
       createCodeForCompany: jest.fn(),
@@ -38,6 +40,12 @@ describe('SettlementCodeAdminController', () => {
     walletReadService.getSettlementCodeSnapshot.mockReturnValue('snapshot');
     expect(controller.list(7)).toBe('snapshot');
     expect(walletReadService.getSettlementCodeSnapshot).toHaveBeenCalledWith(7);
+  });
+
+  it('GET /detail → companyId를 포함해 rename 판단을 위임한다', () => {
+    walletReadService.getSettlementCodeDetail.mockReturnValue('detail');
+    expect(controller.detail('nvida', 7)).toBe('detail');
+    expect(walletReadService.getSettlementCodeDetail).toHaveBeenCalledWith('nvida', 7);
   });
 
   it('GET /pending → adminService.listPendingAccounts(companyId)', async () => {
@@ -75,22 +83,44 @@ describe('SettlementCodeAdminController', () => {
     expect(r).toEqual({ settlementCode: 'company-7-2' });
   });
 
-  it('POST / → adminService.createCodeForCompany(companyId, 정책/한도 옵션)', async () => {
-    adminService.createCodeForCompany.mockResolvedValue('company-7-3');
+  it('POST / → 사용자 지정 코드를 정책/한도와 함께 생성한다', async () => {
+    adminService.createCodeForCompany.mockResolvedValue('nvida');
     const r = await controller.create({
       companyId: 7,
+      settlementCode: 'nvida',
       settleCondition: 'PRE_PAYMENT',
       settleMethod: 'CARD',
       cardSurchargeApplied: false,
       creditLimit: 5000,
     });
-    expect(adminService.createCodeForCompany).toHaveBeenCalledWith(7, {
+    expect(adminService.createCodeForCompany).toHaveBeenCalledWith(7, 'nvida', {
       settleCondition: 'PRE_PAYMENT',
       settleMethod: 'CARD',
       cardSurchargeApplied: false,
       creditLimit: 5000,
     });
-    expect(r).toEqual({ settlementCode: 'company-7-3' });
+    expect(r).toEqual({ settlementCode: 'nvida' });
+  });
+
+  it('CreateCodeReqDto → trim 후 길이와 제어문자를 검증한다', async () => {
+    const valid = plainToInstance(CreateCodeReqDto, { companyId: 7, settlementCode: '  한글-code_1  ' });
+    expect(valid.settlementCode).toBe('한글-code_1');
+    await expect(validate(valid)).resolves.toHaveLength(0);
+    const boundary = plainToInstance(CreateCodeReqDto, { companyId: 7, settlementCode: ` ${'x'.repeat(50)} ` });
+    expect(boundary.settlementCode).toBe('x'.repeat(50));
+    await expect(validate(boundary)).resolves.toHaveLength(0);
+
+    for (const settlementCode of [
+      undefined,
+      '   ',
+      'x'.repeat(51),
+      'line\nbreak',
+      'tab\tcode',
+      `nul${String.fromCharCode(0)}code`,
+    ]) {
+      const dto = plainToInstance(CreateCodeReqDto, { companyId: 7, settlementCode });
+      expect(await validate(dto)).not.toHaveLength(0);
+    }
   });
 
   it('PUT /assign → adminService.assignUserToCode(userId, settlementCode)', async () => {

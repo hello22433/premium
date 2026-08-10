@@ -497,54 +497,93 @@ describe('SettlementCodeAdminService', () => {
     });
   });
 
-  // ── createCodeForCompany (계정 배정 없이 코드만 생성) ─────────────────────
+  // ── createCodeForCompany (사용자 지정 코드, 계정 배정 없음) ────────────────────
   describe('createCodeForCompany', () => {
-    it('회사 잠금 하 채번 + wallet 생성, user.settlement_code 는 건드리지 않는다', async () => {
-      fx.issuedOwnerRows = [{ ownerId: 'company-7-1' }, { ownerId: 'company-7-2' }];
-      const code = await sut.createCodeForCompany(7);
-      expect(code).toBe('company-7-3');
+    it('코드를 trim해 회사 잠금 하 wallet 생성, user.settlement_code 는 건드리지 않는다', async () => {
+      const code = await sut.createCodeForCompany(7, '  nvida  ');
+      expect(code).toBe('nvida');
       expect(billingScopeLock.lockByCompany).toHaveBeenCalledWith(7, expect.anything());
-      // 정책/한도 기본값(POST_PAYMENT/CASH/creditLimit=0) + cardSurchargeApplied 미지정 → 컬럼 제외.
-      expect(cap.queries[0].params).toEqual(['company-7-3', 7, 0, 'POST_PAYMENT', 'CASH']);
+      expect(cap.queries[0].sql).not.toMatch(/ON DUPLICATE KEY/);
+      expect(cap.queries[0].params).toEqual(['nvida', 7, 0, 'POST_PAYMENT', 'CASH']);
       expect(cap.userUpdate).toHaveLength(0);
       expect(billingScopeLock.lock).not.toHaveBeenCalled();
     });
 
     it('정산조건/정산방법/카드할증/여신한도를 wallet 생성과 단일 TX 로 반영한다', async () => {
-      await sut.createCodeForCompany(7, {
+      await sut.createCodeForCompany(7, '한글-code_1', {
         settleCondition: 'PRE_PAYMENT',
         settleMethod: 'CARD',
         cardSurchargeApplied: false,
         creditLimit: 5000,
       });
-      expect(cap.queries).toHaveLength(1); // 생성 후 별도 정책 설정 호출 없음(원자성).
+      expect(cap.queries).toHaveLength(1);
       expect(cap.queries[0].sql).toMatch(/card_surcharge_applied/);
-      expect(cap.queries[0].params).toEqual(['company-7-1', 7, 5000, 'PRE_PAYMENT', 'CARD', 0]);
+      expect(cap.queries[0].params).toEqual(['한글-code_1', 7, 5000, 'PRE_PAYMENT', 'CARD', 0]);
     });
+
+    it.each([
+      [undefined as any],
+      ['   '],
+      ['x'.repeat(51)],
+      ['line\nbreak'],
+      ['tab\tcode'],
+      [`nul${String.fromCharCode(0)}code`],
+    ])(
+      '잘못된 코드 %p → BadRequest (트랜잭션 미실행)',
+      async (code) => {
+        await expect(sut.createCodeForCompany(7, code)).rejects.toBeInstanceOf(BadRequestException);
+        expect(dataSource.transaction).not.toHaveBeenCalled();
+      },
+    );
 
     it('회사 미존재 → BadRequest (wallet 생성 없음)', async () => {
       fx.companyRow = null;
-      await expect(sut.createCodeForCompany(999)).rejects.toBeInstanceOf(BadRequestException);
+      await expect(sut.createCodeForCompany(999, 'nvida')).rejects.toBeInstanceOf(BadRequestException);
       expect(cap.queries).toHaveLength(0);
     });
 
     it('creditLimit 음수 → BadRequest', async () => {
-      await expect(sut.createCodeForCompany(7, { creditLimit: -1 })).rejects.toBeInstanceOf(BadRequestException);
+      await expect(sut.createCodeForCompany(7, 'nvida', { creditLimit: -1 })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
       expect(cap.queries).toHaveLength(0);
     });
 
-    it('uq_wallet_owner 충돌 시 1회 재시도한다', async () => {
+    it('사전 조회에서 기존 코드 발견 → 409', async () => {
+      fx.walletGetOne = { id: 'existing', ownerId: 'nvida' } as any;
+      await expect(sut.createCodeForCompany(7, 'nvida')).rejects.toBeInstanceOf(ConflictException);
+      expect(cap.queries).toHaveLength(0);
+    });
+
+    it('동시 unique 충돌 → 재시도 없이 409', async () => {
+      const duplicate: any = new Error('Duplicate entry');
+      duplicate.errno = 1062;
+      dataSource.transaction.mockImplementation(async (cb: any) => {
+        const manager = makeManager(fx, cap);
+        manager.query = jest.fn().mockRejectedValue(duplicate);
+        return cb(manager);
+      });
+
+      await expect(sut.createCodeForCompany(7, 'nvida')).rejects.toMatchObject({
+        status: 409,
+        response: expect.objectContaining({ code: 'SETTLEMENT_CODE_ALREADY_EXISTS', settlementCode: 'nvida' }),
+      });
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('데드락은 1회 재시도한다', async () => {
       let calls = 0;
       dataSource.transaction.mockImplementation(async (cb: any) => {
         calls += 1;
         if (calls === 1) {
-          const e: any = new Error('Duplicate entry');
-          e.errno = 1062;
+          const e: any = new Error('Deadlock');
+          e.errno = 1213;
           throw e;
         }
         return cb(makeManager(fx, cap));
       });
-      expect(await sut.createCodeForCompany(7)).toBe('company-7-1');
+
+      await expect(sut.createCodeForCompany(7, 'nvida')).resolves.toBe('nvida');
       expect(dataSource.transaction).toHaveBeenCalledTimes(2);
     });
   });
