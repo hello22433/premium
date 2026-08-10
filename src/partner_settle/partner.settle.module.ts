@@ -20,7 +20,10 @@ import { PartnerSettleObservationService } from './application/partner.settle.ob
 import { PartnerCreditConfigService } from './application/partner.credit.config.service';
 import { PartnerCreditListService } from './application/partner.credit.list.service';
 import { CreditFeatureFlag } from './application/credit.feature.flag';
-import { GalaxiaBalanceInquiryStub, GiftShowBalanceInquiryStub } from './application/partner.balance.inquiry.stub';
+import { GalaxiaBalanceInquiryStub } from './application/partner.balance.inquiry.stub';
+import { GiftShowBalanceInquiry } from './application/giftshow.balance.inquiry';
+import { GiftishowHttp } from '../partner_company_extern/infra/giftishow.http';
+import { HttpModule } from '@nestjs/axios';
 import { PARTNER_BALANCE_INQUIRIES } from './application/partner.balance.inquiry.token';
 import { PartnerSettleFeatureFlag } from './application/partner.settle.feature.flag';
 import { PartnerSettleProducerService } from './application/partner.settle.producer.service';
@@ -76,6 +79,7 @@ import { PartnerDiscountReservationSchedule } from './application/partner.discou
 @Module({
   imports: [
     AuthModule,
+    HttpModule.register({ timeout: 30000 }),
     ActivityLogModule,
     TypeOrmModule.forFeature([
       PartnerDiscountHistoryEntity,
@@ -129,12 +133,13 @@ import { PartnerDiscountReservationSchedule } from './application/partner.discou
     PartnerCreditConfigService,
     PartnerCreditListService,
     CreditFeatureFlag,
-    GiftShowBalanceInquiryStub,
+    GiftShowBalanceInquiry,
+    GiftishowHttp,
     GalaxiaBalanceInquiryStub,
     {
       provide: PARTNER_BALANCE_INQUIRIES,
-      useFactory: (giftShow: GiftShowBalanceInquiryStub, galaxia: GalaxiaBalanceInquiryStub) => [giftShow, galaxia],
-      inject: [GiftShowBalanceInquiryStub, GalaxiaBalanceInquiryStub],
+      useFactory: (giftShow: GiftShowBalanceInquiry, galaxia: GalaxiaBalanceInquiryStub) => [giftShow, galaxia],
+      inject: [GiftShowBalanceInquiry, GalaxiaBalanceInquiryStub],
     },
     PartnerSettleFeatureFlag,
     PartnerSettleProducerService,
