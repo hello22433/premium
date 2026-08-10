@@ -32,6 +32,7 @@ import {
 import { computePayloadHash } from '../domain/proposal.hash';
 import { retryOnLockConflict } from '../domain/lock.retry';
 import { PartnerDiscountHistoryService } from './partner.discount.history.service';
+import { PartnerSettleRepriceService } from './partner.settle.reprice.service';
 import { PartnerSettleFeatureFlag } from './partner.settle.feature.flag';
 import { ReservationCreateReqDto, ReservationQueryDto } from '../api/dto/discount.reservation.dto';
 
@@ -88,6 +89,7 @@ export class PartnerDiscountReservationService {
     @InjectRepository(UserDiscountEntity)
     private userDiscountRepository: Repository<UserDiscountEntity>,
     private readonly historyService: PartnerDiscountHistoryService,
+    private readonly repriceService: PartnerSettleRepriceService,
     private readonly featureFlag: PartnerSettleFeatureFlag,
   ) {}
 
@@ -301,6 +303,14 @@ export class PartnerDiscountReservationService {
       // 커밋하면 같은 occurredAt 에 두 할인율이 매칭돼 원장 금액이 실행 순서에 따라 달라진다.
       throw new IntervalInvariantError(violation);
     }
+
+    // 모든 예약은 발효 시점 이후에 기존 조건으로 생성된 원장이 있을 수 있다. 대상이 없으면
+    // reprice 서비스가 0/0으로 종료한다.
+    await this.repriceService.repriceForReservation(
+      { partnerCompanyId: reservation.partnerCompanyId, effectiveAt: reservation.effectiveAt },
+      resultHistoryId,
+      this.reservationRepository.manager,
+    );
 
     await this.applyToUserDiscount(reservation);
 

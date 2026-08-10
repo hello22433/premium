@@ -74,6 +74,7 @@ function ledger(overrides: Partial<PartnerSettleLedgerEntity> = {}): PartnerSett
     manualLedgerProposalId: null,
     orphanInboxRowId: null,
     paymentVarianceProposalId: null,
+    adjustmentProposalId: null,
     createdAt: new Date('2026-08-06T01:00:00Z'),
     updatedAt: new Date('2026-08-06T01:00:00Z'),
     deletedAt: null,

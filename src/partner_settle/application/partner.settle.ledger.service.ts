@@ -134,12 +134,26 @@ export type LedgerVarianceAdjustmentCommand = {
   memo?: string | null;
 };
 
+export type LedgerAdjustmentCommand = {
+  partnerCompanyId: number;
+  subItemKey: string;
+  adjustmentProposalId: number;
+  settleAmount: bigint;
+  occurredAt: KstInstant;
+  memo?: string | null;
+};
+
 /** variance ADJUSTMENT 전용 하위항목 sentinel (정본 §5 163행). 일반 원장은 이 값을 쓸 수 없다. */
 export const PAYMENT_VARIANCE_SUB_ITEM_KEY = 'PAYMENT_VARIANCE';
 
 /** variance ADJUSTMENT 멱등키. DB CHECK 가 같은 형식을 강제한다. */
 export function buildPaymentVarianceKey(proposalId: number): string {
   return `PAYMENT_VARIANCE:${proposalId}`;
+}
+
+/** adjustment proposal ADJUSTMENT 멱등키. DB CHECK 가 같은 형식을 강제한다. */
+export function buildAdjustmentProposalKey(proposalId: number): string {
+  return `ADJ:PROPOSAL:${proposalId}`;
 }
 
 type LedgerRow = RawRow;
@@ -327,6 +341,64 @@ export class PartnerSettleLedgerService {
       applied_discount_history_id: null,
       pricing_resolution: 'DIRECT_AMOUNT',
       // 구성금액(수수료·VAT)은 만들지 않는다. 차이 그대로가 정산 금액이다.
+      ...amountColumns({
+        baseAmount: command.settleAmount,
+        discountAmount: 0n,
+        receivingCommissionAmount: 0n,
+        givingCommissionAmount: 0n,
+        vatAmount: 0n,
+        feeTotalAmount: 0n,
+        settleAmount: command.settleAmount,
+      }),
+    };
+
+    return this.insertRow(row, idempotencyKey, manager);
+  }
+
+  /**
+   * adjustment proposal 승인 결과 ADJUSTMENT 원장 append (PR3C §6).
+   *
+   * `appendVarianceAdjustment` 와 동일 패턴. `DIRECT_AMOUNT` · 구성금액 전부 0 · settleBatchId NULL.
+   * 다음 eligible confirm sweep 에 정확히 한 번 편입된다.
+   */
+  async appendAdjustmentLedger(
+    command: LedgerAdjustmentCommand,
+    manager?: EntityManager,
+  ): Promise<PartnerSettleLedgerEntity> {
+    assertInTransaction(manager ?? this.ledgerRepository, '차액 제안 원장 append(appendAdjustmentLedger)');
+
+    if (command.settleAmount === 0n) {
+      throw new LedgerInvariantError('차액 0 은 조정 원장을 만들지 않는다');
+    }
+    this.assertBaseAmountBound(command.settleAmount);
+
+    const idempotencyKey = buildAdjustmentProposalKey(command.adjustmentProposalId);
+    const existing = await this.findByIdempotencyKey(idempotencyKey, manager);
+    if (existing) return existing;
+
+    const row: LedgerRow = {
+      ...this.commonColumns({
+        partnerCompanyId: command.partnerCompanyId,
+        subItemKey: command.subItemKey,
+        sourceType: 'ADJUSTMENT',
+        orderDeliveryId: null,
+        galaxiaBarcodeLogId: null,
+        idempotencyKey,
+        occurredAt: command.occurredAt,
+        vatCalculationMode: 'NONE',
+        orphanInboxRowId: null,
+        manualLedgerProposalId: null,
+        memo: command.memo,
+      }),
+      adjustment_proposal_id: command.adjustmentProposalId,
+      reverses_ledger_id: null,
+      status: 'NORMAL' satisfies IPartnerSettleLedgerStatus,
+      review_code: null,
+      review_resolution: null,
+      applied_price_percent: '0',
+      applied_price_adjustment: 'DISCOUNT',
+      applied_discount_history_id: null,
+      pricing_resolution: 'DIRECT_AMOUNT',
       ...amountColumns({
         baseAmount: command.settleAmount,
         discountAmount: 0n,
