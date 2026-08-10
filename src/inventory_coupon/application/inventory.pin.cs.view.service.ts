@@ -28,7 +28,7 @@ export interface InventoryPinCsView {
   deliveryContentMode: 'DIRECT_PIN';
   primaryPinMasked: string;
   secondaryPinMasked: string | null;
-  pinInventoryStatus: 'ASSIGNED' | 'VOID';
+  pinInventoryStatus: 'ASSIGNED' | 'VOID' | 'UNASSIGNED';
   fulfillmentStatus: DirectPinFulfillmentStatus;
   latestAttemptStatus: InventoryPinCsLatestAttemptStatus;
   paymentState: InventoryPinBillingChainState;
@@ -94,6 +94,7 @@ export class InventoryPinCsViewService {
     const fulfillmentStatus: DirectPinFulfillmentStatus = delivery.directPinFulfillmentStatus ?? 'UNKNOWN';
     const isCurrentPaymentOwner = Number(chain.currentOrderDeliveryId) === delivery.id;
     const isDebited = chain.state === 'DEBITED';
+    const isUnassigned = !item;
     const isVoided = fulfillmentStatus === 'VOID' || item?.status === 'VOID';
     const sendInProgress = !!activeClaimed;
 
@@ -107,7 +108,7 @@ export class InventoryPinCsViewService {
     const allowedActions: InventoryPinCsAllowedAction[] = [];
     const ownerActionable = isDebited && isCurrentPaymentOwner && !sendInProgress;
 
-    if (ownerActionable && !isVoided && !existingRefund) {
+    if (ownerActionable && !isVoided && !isUnassigned && !existingRefund) {
       allowedActions.push('RESEND_SAME_PIN');
     }
     // CHANGE_TARGET_BEFORE_SEND 는 아직 내려주지 않는다.
@@ -116,7 +117,7 @@ export class InventoryPinCsViewService {
     if (ownerActionable) {
       allowedActions.push('TERMINAL_CANCEL_REFUND');
     }
-    if (ownerActionable && !isVoided) {
+    if (ownerActionable && !isVoided && !isUnassigned) {
       // voidAndReissue 는 트랜잭션 안에서 allocationEnabled 를 다시 확인한다 (여기서는 표시용).
       const policy = await this.policyService.readPolicy();
       if (policy.allocationEnabled) {
@@ -128,7 +129,7 @@ export class InventoryPinCsViewService {
       deliveryContentMode: 'DIRECT_PIN',
       primaryPinMasked: item?.primaryCodeMasked ?? '',
       secondaryPinMasked: item?.secondaryCodeMasked ?? null,
-      pinInventoryStatus: item?.status === 'ASSIGNED' ? 'ASSIGNED' : 'VOID',
+      pinInventoryStatus: isUnassigned ? 'UNASSIGNED' : item.status === 'ASSIGNED' ? 'ASSIGNED' : 'VOID',
       fulfillmentStatus,
       latestAttemptStatus,
       paymentState: chain.state,

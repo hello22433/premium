@@ -218,7 +218,7 @@ export class CustomerServiceDlvryDetailViewDto {
   secondaryPinMasked?: string | null;
 
   @ApiProperty({ description: 'PIN item 상태', required: false })
-  pinInventoryStatus?: 'ASSIGNED' | 'VOID';
+  pinInventoryStatus?: 'ASSIGNED' | 'VOID' | 'UNASSIGNED';
 
   @ApiProperty({ description: '직접 PIN fulfillment 상태', required: false })
   fulfillmentStatus?: DirectPinFulfillmentStatus;

@@ -156,6 +156,17 @@ describe('InventoryPinCsViewService.getView', () => {
     expect(view!.allowedActions).not.toContain('VOID_AND_REISSUE');
   });
 
+  it('PIN 미할당(item=null) + DEBITED + FAILED → TERMINAL_CANCEL_REFUND 만 노출, UNASSIGNED 상태', async () => {
+    const { sut, delivery } = build({
+      item: null,
+      delivery: { directPinFulfillmentStatus: 'FAILED' },
+    });
+    const view = await sut.getView(delivery);
+    expect(view!.pinInventoryStatus).toBe('UNASSIGNED');
+    expect(view!.canRevealPin).toBe(false);
+    expect(view!.allowedActions).toEqual(['TERMINAL_CANCEL_REFUND']);
+  });
+
   it('최신 attempt 가 FAILED 면 그대로 내려준다', async () => {
     const { sut, delivery } = build({
       item: assignedItem,
