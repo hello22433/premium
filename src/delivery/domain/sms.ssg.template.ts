@@ -49,11 +49,11 @@ export const smsSsgTemplate = (orderDelivery: OrderDeliveryEntity) => {
 ▷발송업체: ${ssgIssueUserName}
 ▷교환기간: ${format(orderDelivery.expireAt!, 'yyyy-MM-dd')} 까지
 ▷사용처(교환처): 이마트
- 가까운 신세계이마트 위치 검색하기: http://m.enmad.com
+ 가까운 신세계이마트 위치 검색하기: https://www.epopkon.com/ssg/how2use
 
 ▷교환방법: 고객센터에 비치된
  키오스크에 쿠폰번호 인증번호 입력
- 키오스크 이용방법: http://m.enmad.com/kiosk.htm
+ 키오스크 이용방법: https://www.epopkon.com/ssg/kiosk
 
 ▷ 유의사항
 - 4만원 이하 권종은 1만원으로 분할하여 출력되니, 꼭 수량 확인 부탁드립니다.
@@ -66,6 +66,6 @@ export const smsSsgTemplate = (orderDelivery: OrderDeliveryEntity) => {
 ▷ 상품문의: 1644-3614(내선1번)
 ▷ 고객센터 운영시간: 평일 9시~18시
  (점심시간 12시~13시 / 토, 일, 공휴일 휴무)
-▷ 신세계 상품권 사용처: http://m.enmad.com/private.htm
+▷ 신세계 모바일교환권/상품권 유의사항: https://www.epopkon.com/ssg/notice
 `;
 };
