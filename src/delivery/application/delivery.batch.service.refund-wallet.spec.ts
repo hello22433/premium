@@ -47,6 +47,8 @@ import { PinIssueCommandService } from './pin-issue-command.service';
 import { MessageResultReconcileService } from './message-result-reconcile.service';
 import { OrderFromService } from '../../order_from/application/order.from.service';
 import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
+import { InventoryPinAllocationService } from '../../inventory_coupon/application/inventory.pin.allocation.service';
+import { InventoryPinSendService } from '../../inventory_coupon/application/inventory.pin.send.service';
 
 /**
  * PR2-006 — refundForFail wallet path 분기 회귀.
@@ -209,6 +211,8 @@ describe('DeliveryBatchService.refundForFail - wallet path', () => {
         { provide: getRepositoryToken(OrderPaymentAllocationEntity), useValue: { findOne: jest.fn() } },
         { provide: getRepositoryToken(OrderHistoryEntity), useValue: {} },
         { provide: getDataSourceToken(), useValue: { transaction: jest.fn() } },
+        { provide: InventoryPinAllocationService, useValue: { allocate: jest.fn() } },
+        { provide: InventoryPinSendService, useValue: { processOutbox: jest.fn() } },
         { provide: OrderFromService, useValue: { resolveSendDefaultPhone: jest.fn().mockResolvedValue('16443614') } },
       ],
     }).compile();

@@ -26,6 +26,12 @@ import { IOrderSection } from '../interface/order.section';
 import { Transform, Type } from 'class-transformer';
 import { OrderSettleCreateDto } from './dto/order.settle.create.dto';
 import { IOrderSendingType } from '../interface/order.sending.type';
+import {
+  CLIENT_SETTABLE_REPORT_SOURCES,
+  IReportHistoryType,
+  IReportSource,
+  REPORT_HISTORY_TYPES,
+} from '../interface/report.source';
 import { IOrderDateType } from '../interface/order.date.type';
 import { CompanyType } from '../../common/domain/company.type';
 
@@ -222,11 +228,18 @@ export class OrderGetDeliveryCompleteReportPdfReqDto {
   id: number;
 
   @ApiProperty({
-    description: '발행 소스 ex) DOCUMENT: 문서함, DIRECT: 직접발행',
+    description: '발행 소스 (DOCUMENT: 문서함 다운로드, DIRECT: 직접발행). 미전송 시 DOCUMENT 로 기록된다.',
+    enum: [IReportSource.DOCUMENT, IReportSource.DIRECT],
     required: false,
   })
   @IsOptional()
-  @IsString()
+  // @IsOptional() 은 null/undefined 만 건너뛰고 빈 문자열은 검증한다. 정규화 없이 @IsEnum 을 붙이면
+  // source:'' 를 보내던 기존 클라이언트가 400 을 받는다 — 종전에는 통과 후 DOCUMENT 로 저장됐다.
+  // 빈 값은 '미전송'과 같은 뜻이므로 undefined 로 접어 기존 계약을 보존한다.
+  @Transform(({ value }) => (value === '' ? undefined : value))
+  // 정산 목록의 발행 상태 문구가 이 값으로 분기하므로(settle.service.formatReportStatus) 자유 문자열을
+  // 허용하면 오타가 조용히 '다운로드 완료'로 폴백한다. EMAIL 이 목록에서 빠진 이유는 상수 주석 참고.
+  @IsEnum(CLIENT_SETTABLE_REPORT_SOURCES)
   source?: string;
 
   @ApiPropertyOptional({
@@ -250,11 +263,18 @@ export class OrderGetOrderCompleteReportPdfReqDto {
   id: number;
 
   @ApiProperty({
-    description: '발행 소스 ex) DOCUMENT: 문서함, DIRECT: 직접발행',
+    description: '발행 소스 (DOCUMENT: 문서함 다운로드, DIRECT: 직접발행). 미전송 시 DOCUMENT 로 기록된다.',
+    enum: [IReportSource.DOCUMENT, IReportSource.DIRECT],
     required: false,
   })
   @IsOptional()
-  @IsString()
+  // @IsOptional() 은 null/undefined 만 건너뛰고 빈 문자열은 검증한다. 정규화 없이 @IsEnum 을 붙이면
+  // source:'' 를 보내던 기존 클라이언트가 400 을 받는다 — 종전에는 통과 후 DOCUMENT 로 저장됐다.
+  // 빈 값은 '미전송'과 같은 뜻이므로 undefined 로 접어 기존 계약을 보존한다.
+  @Transform(({ value }) => (value === '' ? undefined : value))
+  // 정산 목록의 발행 상태 문구가 이 값으로 분기하므로(settle.service.formatReportStatus) 자유 문자열을
+  // 허용하면 오타가 조용히 '다운로드 완료'로 폴백한다. EMAIL 이 목록에서 빠진 이유는 상수 주석 참고.
+  @IsEnum(CLIENT_SETTABLE_REPORT_SOURCES)
   source?: string;
 }
 
@@ -716,24 +736,18 @@ export class OrderUpdateUseEmailContentReqBodyDto {
 export class OrderGetReportHistoryReqQueryDto {
   @ApiProperty({
     description:
-      '리포트 타입 ex) DELIVERY_COMPLETE_REPORT: 발송완료리포트, TRANSACTION_STATEMENT: 거래명세서, DELIVERY_COMPLETE_REPORT_EMAIL: 발송완료리포트 이메일 발송, TRANSACTION_STATEMENT_EMAIL: 거래명세서 이메일 발송, DESTRUCTION_CERTIFICATE_EMAIL: 파기확약서 이메일 발송',
-    enum: [
-      'DELIVERY_COMPLETE_REPORT',
-      'TRANSACTION_STATEMENT',
-      'DELIVERY_COMPLETE_REPORT_EMAIL',
-      'TRANSACTION_STATEMENT_EMAIL',
-      'DESTRUCTION_CERTIFICATE_EMAIL',
-    ],
+      '리포트 타입 ex) DELIVERY_COMPLETE_REPORT: 발송완료리포트, TRANSACTION_STATEMENT: 거래명세서, ' +
+      'DESTRUCTION_CERTIFICATE: 파기확약서 PDF 발행, DELIVERY_COMPLETE_REPORT_EMAIL: 발송완료리포트 이메일 발송, ' +
+      'TRANSACTION_STATEMENT_EMAIL: 거래명세서 이메일 발송, DESTRUCTION_CERTIFICATE_EMAIL: 파기확약서 이메일 발송',
+    enum: REPORT_HISTORY_TYPES,
   })
   // ===================================
   @IsNotEmpty()
-  @IsString()
-  reportType:
-    | 'DELIVERY_COMPLETE_REPORT'
-    | 'TRANSACTION_STATEMENT'
-    | 'DELIVERY_COMPLETE_REPORT_EMAIL'
-    | 'TRANSACTION_STATEMENT_EMAIL'
-    | 'DESTRUCTION_CERTIFICATE_EMAIL';
+  // 미검증 문자열은 조회 서비스의 actionType 매핑을 인덱싱한다. 목록 밖 값이 들어오면
+  // 200 + 빈 결과로 조용히 폴백해, 실제로 발행된 주문에 "이력 없음"이 뜬다 —
+  // 프론트 오타를 배포 후에도 아무도 모른다. 400 으로 즉시 드러낸다.
+  @IsIn(REPORT_HISTORY_TYPES as readonly string[])
+  reportType: IReportHistoryType;
 }
 
 export class OrderGetReportHistoryReqParamDto {

@@ -2,6 +2,7 @@ import { ApiProperty } from '@nestjs/swagger';
 import { IProductSettleMethod } from '../../interface/product.settle.method';
 import { IProductType } from '../../interface/product.type';
 import { IProductUseStatus } from '../../interface/product.status';
+import { IPartnerCompanyType } from '../../../partner_company/interface/partner.company.type';
 
 export class ProductDetailDto {
   id: number;
@@ -30,6 +31,13 @@ export class ProductDetailDto {
     description: '협력사 명',
   })
   partnerCompanyName: string;
+
+  @ApiProperty({
+    description: '협력사 유형 (PIN_INVENTORY = 해외 재고형 PIN 직접 이메일)',
+    enum: IPartnerCompanyType,
+    nullable: true,
+  })
+  partnerCompanyType: IPartnerCompanyType | null;
 
   @ApiProperty({
     description: '대분류 id',

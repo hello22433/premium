@@ -61,6 +61,7 @@ import {
 import { OrderEntity } from '../../entity/order.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, In, IsNull, Not, ObjectLiteral, QueryRunner, Repository, SelectQueryBuilder } from 'typeorm';
+import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { CustomerSettlementViewDto, OrderViewDto } from '../api/dto/order.view.dto';
 import { DateDateFormatStr, DateFormatStr } from '../../common/domain/date.format.str';
@@ -162,6 +163,7 @@ import {
   shouldExposeSsgBalanceCheck,
 } from '../domain/order.delivery-transition-authority.helper';
 import { IOrderDateType } from '../interface/order.date.type';
+import { IReportSource } from '../interface/report.source';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogResult } from '../../activity_log/interface/activity.log.result';
 import {
@@ -295,6 +297,22 @@ type OrderListQueryParams = {
   sendingType?: IOrderSendingType;
   dateType?: IOrderDateType;
 };
+
+/**
+ * 리포트 1종이 쓰는 발행 카운트 컬럼 쌍.
+ *
+ * 발송완료리포트와 거래명세서는 컬럼만 다를 뿐 발행 집계 규칙이 같아, 이메일 전송 공통 헬퍼
+ * (sendReportEmail)에 이 쌍을 넘겨 어느 리포트의 카운트를 올릴지 지정한다.
+ * 파기증명서는 대응 컬럼도, 정산 목록 표시 컬럼도 없으므로 이 값을 넘기지 않는다(카운트 없음).
+ *
+ * ⚠️ 두 필드를 독립 유니온으로 두면 안 된다. 그러면 2×2=4 조합이 모두 컴파일을 통과해
+ * `{ countColumn: 'orderCompleteReportCount', sourceColumn: 'deliveryReportLastSource' }` 같은
+ * 교차 쌍(거래명세서를 보냈는데 발송완료리포트의 source 가 덮이는 상태)이 타입 검사를 빠져나간다.
+ * 판별 유니온으로 두어 짝이 어긋난 조합을 애초에 표현 불가능하게 만든다.
+ */
+type ReportCounterColumns =
+  | { countColumn: 'deliveryCompleteReportCount'; sourceColumn: 'deliveryReportLastSource' }
+  | { countColumn: 'orderCompleteReportCount'; sourceColumn: 'transactionStatementLastSource' };
 
 @Injectable()
 export class OrderService {
@@ -1976,10 +1994,20 @@ export class OrderService {
     user: ILoginUserInfo,
     ipAddress: string,
   ): Promise<void> {
+    // IDOR 방지: develop(#43)이 도입한 findDeliveryCompleteOrderInViewScope 를 쓴다.
+    // 이 브랜치도 같은 구멍을 독립적으로 막고 있었으나(assertReportPdfWritable), 그쪽이
+    // view_scope + 발송완료 상태까지 함께 보는 상위 집합이라 그쪽으로 통일한다.
+    //
+    // ⚠️ 다만 그쪽은 권한 면제가 없다 — 운영 실측 근거는 §D 커밋 메시지와 PR 본문 참조.
     const order = await this.findDeliveryCompleteOrderInViewScope(user, getBody.id);
 
+    // 컬럼과 activity_log 가 같은 값을 쓰도록 한 번만 확정한다. 각자 계산하면 source 미전송 시
+    // 컬럼은 DOCUMENT, 로그는 undefined 가 되어 같은 발행 사건의 두 기록이 어긋난다
+    // (이력 조회의 '발행경로'가 빈칸으로 나오고, 프론트는 레거시 null 행과 구별하지 못한다).
+    const resolvedSource = getBody.source || IReportSource.DOCUMENT;
+
     order.deliveryCompleteReportCount++;
-    order.deliveryReportLastSource = getBody.source || 'DOCUMENT';
+    order.deliveryReportLastSource = resolvedSource;
 
     await this.orderRepository.save(order);
 
@@ -1994,7 +2022,7 @@ export class OrderService {
       statusCode: 200,
       result: ActivityLogResult.SUCCESS,
       responseTime: 0,
-      requestParams: { orderId: getBody.id, source: getBody.source, unmasked: getBody.unmasked === true },
+      requestParams: { orderId: getBody.id, source: resolvedSource, unmasked: getBody.unmasked === true },
     });
 
     return;
@@ -2102,10 +2130,14 @@ export class OrderService {
     user: ILoginUserInfo,
     ipAddress: string,
   ): Promise<void> {
+    // IDOR 방지 — 발송완료리포트 경로와 동일. 상세는 그쪽 주석 참조.
     const order = await this.findDeliveryCompleteOrderInViewScope(user, getBody.id);
 
+    // 컬럼/로그 단일 확정 — 발송완료리포트 경로와 동일한 이유.
+    const resolvedSource = getBody.source || IReportSource.DOCUMENT;
+
     order.orderCompleteReportCount++;
-    order.transactionStatementLastSource = getBody.source || 'DOCUMENT';
+    order.transactionStatementLastSource = resolvedSource;
 
     await this.orderRepository.save(order);
 
@@ -2120,7 +2152,7 @@ export class OrderService {
       statusCode: 200,
       result: ActivityLogResult.SUCCESS,
       responseTime: 0,
-      requestParams: { orderId: getBody.id, source: getBody.source },
+      requestParams: { orderId: getBody.id, source: resolvedSource },
     });
 
     return;
@@ -6320,11 +6352,25 @@ export class OrderService {
     },
     user: ILoginUserInfo,
     ipAddress: string,
-    logMeta: { requestUrl: string; actionType: string },
+    logMeta: { requestUrl: string; actionType: string; counter?: ReportCounterColumns },
   ): Promise<{ success: boolean; message: string }> {
     const { orderId, to, subject, content, pdfBase64, pdfFileName, companyType } = getBody;
 
     await this.findDeliveryCompleteOrderInViewScope(user, orderId);
+
+    // 발행 카운트용 컬럼명을 메일 발송 '전에' 해석한다.
+    // 엔티티 프로퍼티가 리네임되면 여기서 undefined 가 되는데(ReportCounterColumns 는 문자열
+    // 리터럴이라 컴파일이 못 잡는다), 발송 뒤에 터뜨리면 "메일은 나갔는데 500" → 운영자 재시도
+    // → 고객사 중복 수신이 된다. 발송 전에 확인하면 설정 오류는 fail-fast 로 드러나고
+    // 비가역 행위는 아직 일어나지 않은 상태다.
+    const countDbColumn = logMeta.counter
+      ? this.orderRepository.metadata.findColumnWithPropertyName(logMeta.counter.countColumn)?.databaseName
+      : undefined;
+    if (logMeta.counter && !countDbColumn) {
+      throw new InternalServerErrorException(
+        `[REPORT] 발행 카운트 컬럼을 해석하지 못했습니다: ${logMeta.counter.countColumn}. 엔티티 정의를 확인하세요.`,
+      );
+    }
 
     // 이메일 주소 파싱 (첫번째: to, 나머지: cc)
     const emails = to
@@ -6350,31 +6396,104 @@ export class OrderService {
       ],
     });
 
-    // 활동 로그 기록
-    await this.activityLogService.createLog({
-      userId: user.id,
-      userEmail: user.email,
-      method: 'POST',
-      requestUrl: logMeta.requestUrl,
-      actionType: logMeta.actionType,
-      ipAddress,
-      statusCode: result.success ? 200 : 500,
-      result: result.success ? ActivityLogResult.SUCCESS : ActivityLogResult.FAILURE,
-      responseTime: 0,
-      requestParams: {
-        orderId,
-        to: toEmail,
-        cc: ccEmails || null,
-        subject,
-        pdfFileName,
-        messageId: result.messageId,
-        error: result.error,
-      },
-      errorMessage: result.error || undefined,
-    });
+    // 활동 로그 기록 — best-effort. 카운터 갱신과 **같은 이유**로 삼킨다.
+    //
+    // 이 시점엔 mailSendSmtp.send() 가 이미 끝났다(비가역). 여기서 DB INSERT 가 실패해
+    // 예외가 밖으로 나가면 500 이 되고, 운영자는 "전송 실패"로 읽어 재시도한다 →
+    // 고객사가 같은 메일을 두 번 받는다. 되돌릴 수 없는 쪽(중복 발송)보다 되돌릴 수 있는
+    // 쪽(감사 기록 누락)을 택한다 — 아래 카운터 갱신에 적용한 판단과 동일하다.
+    //
+    // ⚠️ 삼키는 것은 **발송 이후**의 기록 실패뿐이다. 발송 자체의 실패(result.success=false)는
+    //    바로 아래에서 그대로 500 으로 올린다. 그 경우엔 메일이 나가지 않았으므로 재시도가 옳다.
+    try {
+      await this.activityLogService.createLog({
+        userId: user.id,
+        userEmail: user.email,
+        method: 'POST',
+        requestUrl: logMeta.requestUrl,
+        actionType: logMeta.actionType,
+        ipAddress,
+        statusCode: result.success ? 200 : 500,
+        result: result.success ? ActivityLogResult.SUCCESS : ActivityLogResult.FAILURE,
+        responseTime: 0,
+        requestParams: {
+          orderId,
+          to: toEmail,
+          cc: ccEmails || null,
+          subject,
+          pdfFileName,
+          messageId: result.messageId,
+          error: result.error,
+        },
+        errorMessage: result.error || undefined,
+      });
+    } catch (error) {
+      this.logger.error(
+        `[REPORT] 메일 발송 결과를 activity_log 에 남기지 못했다 — 발행 이력 모달이 비게 된다. ` +
+          `orderId: ${orderId}, actionType: ${logMeta.actionType}, sendSuccess: ${result.success}, ` +
+          `messageId: ${result.messageId ?? '-'}, ` +
+          `message: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
 
     if (!result.success) {
       throw new InternalServerErrorException(result.error || '이메일 발송에 실패했습니다.');
+    }
+
+    // 발행 카운트 반영 — 이메일 전송도 "발행"으로 집계한다(실무 확인 규칙).
+    // 이 갱신이 없으면 정산 목록의 발행 상태가 '-' 로 남고 isPublished=false(미발행) 필터에도
+    // 계속 잡혀, 담당자가 이미 보낸 건을 다시 발행하게 된다.
+    //
+    // 순서 주의: activity_log 기록과 실패 throw 뒤에 둔다.
+    //  - 메일 발송은 이미 나간 비가역 행위라, 카운터 갱신이 실패하더라도 발송 기록은 남아야 한다.
+    //  - 발송 실패 건은 여기 도달하지 않는다 → 실패를 '발행 완료'로 표시하지 않는다.
+    //
+    // save() 가 아니라 원자 UPDATE 를 쓰는 이유.
+    //
+    // ⚠️ "save() 는 전 컬럼을 되쓴다"가 아니다. TypeORM 0.3 의 save() 는 저장 직전 해당 행을
+    //    재조회하고(SubjectDatabaseEntityLoader) 엔티티와 비교해 **변경된 컬럼만** UPDATE 한다
+    //    (SubjectChangedColumnsComputer.computeDiffColumns). 전 컬럼 덮어쓰기는 일어나지 않는다.
+    //
+    // 실제 위험은 그 **재조회 때문에** 생기는 lost update 다. read-modify-write 인 단건 PDF 경로가
+    //   1) order.deliveryCompleteReportCount 를 0 → 1 로 올려두고
+    //   2) save() 가 재조회하기 직전에 이 경로가 `count = count + 1` 을 커밋하면
+    //   3) 재조회값(1)과 엔티티값(1)이 같아 "변경 없음"으로 판정된다
+    // → PDF 의 증가가 조용히 사라지고 lastSource 만 덮인다(발행 2회인데 count=1, 표시는
+    //   '다운로드 완료'). 창이 밀리초라 확률은 낮다.
+    //
+    // 이 경로가 `col + 1` 을 쓰면 자신의 증가는 어떤 순서에서도 유실되지 않는다.
+    // (단건 PDF 경로 deliveryCompleteReportPdf / orderCompleteReportPdf 는 아직 read-modify-write
+    //  + save() 다. 그쪽도 원자 UPDATE 로 통일하면 위 조합이 통째로 사라진다 — 별도 티켓.)
+    //
+    // count 와 source 를 한 문장으로 갱신한다. 두 문장으로 나누면 사이에서 실패했을 때
+    // count=1 / source=NULL 이 남아 formatReportStatus 폴백이 '다운로드 완료'로 오표시한다
+    // (아무도 다운로드한 적 없는데). 증가는 DB 측 `col + 1` 이라 동시 요청에도 유실되지 않는다.
+    //
+    // best-effort: 실패해도 throw 하지 않는다. 이 시점엔 메일이 이미 고객사로 나갔으므로(비가역),
+    // 여기서 500 을 올리면 운영자가 "전송 실패"로 읽고 재시도해 고객사가 같은 메일을 두 번 받는다.
+    // 집계 누락은 activity_log(actionType=*_EMAIL)로 사후 백필할 수 있지만 중복 발송은 되돌릴 수 없다.
+    // → 발송 결과를 진실대로 성공으로 응답하고, 집계 실패는 로그로 남겨 추적한다.
+    if (logMeta.counter) {
+      const { countColumn, sourceColumn } = logMeta.counter;
+      // countDbColumn 은 발송 전에 이미 확정·검증했다(위 참조). 여기 try 는 순수하게
+      // "메일은 나갔는데 DB 쓰기가 실패한" 일시적 장애만 흡수한다.
+      try {
+        await this.orderRepository
+          .createQueryBuilder()
+          .update(OrderEntity)
+          .set({
+            [countColumn]: () => `\`${countDbColumn}\` + 1`,
+            [sourceColumn]: IReportSource.EMAIL,
+          } as QueryDeepPartialEntity<OrderEntity>)
+          .where('id = :id', { id: orderId })
+          .execute();
+      } catch (error) {
+        this.logger.error(
+          `[REPORT] 메일 발송은 성공했으나 발행 카운트 반영 실패 — 정산 목록에 미발행으로 남는다. ` +
+            `orderId: ${orderId}, column: ${countColumn}, actionType: ${logMeta.actionType}, ` +
+            `message: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
 
     return {
@@ -6394,6 +6513,10 @@ export class OrderService {
     return this.sendReportEmail(getBody, user, ipAddress, {
       requestUrl: '/order/delivery-complete/report/email',
       actionType: 'DELIVERY_COMPLETE_REPORT_EMAIL',
+      counter: {
+        countColumn: 'deliveryCompleteReportCount',
+        sourceColumn: 'deliveryReportLastSource',
+      },
     });
   }
 
@@ -6408,6 +6531,10 @@ export class OrderService {
     return this.sendReportEmail(getBody, user, ipAddress, {
       requestUrl: '/order/transaction-statement/report/email',
       actionType: 'TRANSACTION_STATEMENT_EMAIL',
+      counter: {
+        countColumn: 'orderCompleteReportCount',
+        sourceColumn: 'transactionStatementLastSource',
+      },
     });
   }
 
@@ -6424,6 +6551,8 @@ export class OrderService {
     return this.sendReportEmail(getBody, user, ipAddress, {
       requestUrl: '/order/destruction-certificate/report/email',
       actionType: 'DESTRUCTION_CERTIFICATE_EMAIL',
+      // counter 없음 — 파기증명서는 발행 카운트 컬럼도, 정산 목록 표시 컬럼도 존재하지 않는다.
+      // 발행 이력은 activity_log(DESTRUCTION_CERTIFICATE_EMAIL)에만 남는다.
     });
   }
 

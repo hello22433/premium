@@ -13,6 +13,7 @@ describe('PartnerSettleFeatureFlag', () => {
     // 배포 기본값은 전부 off 다. 기본값이 on 이면 배포 즉시 원장이 쌓인다.
     expect(flag.isEnabled).toBe(false);
     expect(flag.isEnabledFor(IPartnerCompanyType.GALAXIA)).toBe(false);
+    expect(flag.isReviewResolutionEnabled).toBe(false);
   });
 
   it('전역 kill switch 가 off 면 provider 목록과 무관하게 전부 off 다', () => {
@@ -22,6 +23,7 @@ describe('PartnerSettleFeatureFlag', () => {
     });
 
     expect(flag.isEnabledFor(IPartnerCompanyType.GALAXIA)).toBe(false);
+    expect(flag.isReviewResolutionEnabled).toBe(false);
   });
 
   it('kill switch 만 켜고 provider 를 비워두면 아무것도 켜지지 않는다', () => {
@@ -53,5 +55,32 @@ describe('PartnerSettleFeatureFlag', () => {
 
     expect(flag.isEnabledFor(null)).toBe(false);
     expect(flag.isEnabledFor(undefined)).toBe(false);
+  });
+  it('검토 해소 flag는 정확한 true일 때만 켜진다', () => {
+    expect(build({ PARTNER_SETTLE_REVIEW_RESOLUTION_ENABLED: 'true' }).isReviewResolutionEnabled).toBe(true);
+    expect(build({ PARTNER_SETTLE_REVIEW_RESOLUTION_ENABLED: 'TRUE' }).isReviewResolutionEnabled).toBe(false);
+    expect(build({ PARTNER_SETTLE_REVIEW_RESOLUTION_ENABLED: 'tru' }).isReviewResolutionEnabled).toBe(false);
+  });
+
+  it('producer flag와 독립적으로 검토 해소 API를 제어한다', () => {
+    const flag = build({
+      PARTNER_SETTLE_LEDGER_ENABLED: 'true',
+      PARTNER_SETTLE_LEDGER_PROVIDERS: 'GALAXIA',
+    });
+
+    expect(flag.isEnabledFor(IPartnerCompanyType.GALAXIA)).toBe(true);
+    expect(flag.isReviewResolutionEnabled).toBe(false);
+  });
+
+  it('confirm flag 는 정확한 true 일 때만 켜진다', () => {
+    expect(build({ PARTNER_SETTLE_CONFIRM_ENABLED: 'true' }).isConfirmEnabled).toBe(true);
+    expect(build({ PARTNER_SETTLE_CONFIRM_ENABLED: 'false' }).isConfirmEnabled).toBe(false);
+    expect(build({}).isConfirmEnabled).toBe(false);
+  });
+
+  it('paid flag 는 정확한 true 일 때만 켜진다', () => {
+    expect(build({ PARTNER_SETTLE_PAID_ENABLED: 'true' }).isPaidEnabled).toBe(true);
+    expect(build({ PARTNER_SETTLE_PAID_ENABLED: 'false' }).isPaidEnabled).toBe(false);
+    expect(build({}).isPaidEnabled).toBe(false);
   });
 });

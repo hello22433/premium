@@ -60,6 +60,8 @@ export interface PartnerIssueResult {
   ssgNewIssue: boolean;
   /** 실제 PIN 이 귀속된 SSG 행사 id. 재사용 시 후보/기존 행사 id, 신규 시 ssgEvent.id, 미상 null. */
   ssgEventId: number | null;
+  /** PIN_INVENTORY 재고형 할당 시 item ID (비-재고형은 undefined) */
+  inventoryPinItemId?: string;
 }
 
 @Injectable()
@@ -329,6 +331,16 @@ export class PartnerCompanyExternService {
     const type = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
     // issue 결과(배치 재발송 선차감 정합). 기본=재사용(false)·현재 귀속 행사. SSG 신규 INSERT 시 갱신.
     const result: PartnerIssueResult = { ssgNewIssue: false, ssgEventId: orderDelivery.ssgEventId ?? null };
+    // ── PIN_INVENTORY 재고형 쿠폰 전용 분기 (rev5 §7.2) ──
+    // 외부 dedup/transactionId/history/barCode 로직 전에 전용 allocation service를 호출하고 반환한다.
+    // barCode 가짜 값, 외부 협력사 API, 취소/상태조회, pin_issue_dedup, 외부 이력을 사용하지 않는다.
+    if (type === IPartnerCompanyType.PIN_INVENTORY) {
+      return {
+        ssgNewIssue: false,
+        ssgEventId: null,
+        inventoryPinItemId: undefined, // allocation은 batch/delivery 레벨에서 처리
+      };
+    }
 
     // deliveryTarget 복호화
     const decryptedDeliveryTarget =
@@ -750,7 +762,10 @@ export class PartnerCompanyExternService {
               }
               throw new SsgProcessingError(orderDelivery.id);
             }
-            // else: 모든 후보 미제출/미등록 확정 → 새 PIN 정상 경로(아래 Mutex)
+            // else: 모든 후보 미제출/미등록 확정 → 새 PIN 정상 경로(아래 Mutex).
+            // state=ATTEMPTED(이전 INSERT 9999 등)이면 Mutex 안 SKIPPED_ACTIVE 핸들러에서
+            // resolveSsgOrphan 으로 확정한다. 여기서 markFailed 하면 동시 흐름이 만든
+            // 새 ATTEMPTED 를 덮어써 이중발급 위험(mutex 밖이라 직렬화 불가).
           }
           // 후보 0건(최초 clean 발송) → 새 PIN. 외부 SSG API 추가호출 없음(hot-path 보존).
         }
@@ -867,8 +882,98 @@ export class PartnerCompanyExternService {
               throw e;
             }
             if (markResult === MarkAttemptedResult.SKIPPED_ACTIVE) {
-              // 이미 ATTEMPTED 진행 중. 실패 확정이 아니므로 markFailed 대상 아님. orphan resolver가 확정해야 함.
-              throw new SsgIssueAttemptAlreadyActiveError(orderDelivery.id);
+              // state=ATTEMPTED (이전 INSERT 9999 등). Mutex 내부라 동시 흐름 직렬화됨.
+              // classifySsgPin 결과는 mutex 밖(stale 가능) → SSG 재확인 후 확정.
+              // resolveSsgOrphan 은 내부에 withSsgMutex 가 있어 여기서 호출하면 deadlock.
+              // 같은 로직을 mutex-free 로 인라인한다.
+              const orphanCandidates = await this.ssgIssueLogRepository.find({
+                where: { orderDeliveryId: orderDelivery.id },
+                order: { id: 'DESC' },
+              });
+              const usableCandidates = orphanCandidates.filter((c) => c.eventSeq !== null);
+              if (usableCandidates.length === 0) {
+                throw new SsgIssueAttemptAlreadyActiveError(orderDelivery.id);
+              }
+
+              let confirmedCandidate: SsgIssueLogEntity | null = null;
+              const registrationFailedVnos = new Set<string>();
+              for (const c of usableCandidates) {
+                try {
+                  const checkOut = await this.checkSsgWithRetry({
+                    eventNo: c.eventNo,
+                    eventSeq: c.eventSeq!,
+                    vno: c.personalCode,
+                  });
+                  // check 정상 응답이라도 resultCd=0103 등 등록실패 PIN 은 재사용 불가.
+                  // classifySsgPin 의 isSsgRegistrationFailed 판정과 동일 기준.
+                  const resultCd = checkOut?.response?.value?.[0]?.resultCd?.[0];
+                  if (this.isSsgRegistrationFailed(resultCd)) {
+                    registrationFailedVnos.add(c.personalCode);
+                    continue;
+                  }
+                  confirmedCandidate = c;
+                  break;
+                } catch (e) {
+                  if (e instanceof SsgCheckNotFoundError) continue;
+                  throw new SsgIssueAttemptAlreadyActiveError(orderDelivery.id);
+                }
+              }
+
+              if (confirmedCandidate) {
+                const confirmed = await this.ssgInsertStateService.markConfirmed(orderDelivery.id, {
+                  barCode: confirmedCandidate.barCode,
+                  personalCode: confirmedCandidate.personalCode,
+                  ssgTransactionId: confirmedCandidate.ssgTransactionId,
+                  couponNum: confirmedCandidate.couponNum,
+                  expireAt: confirmedCandidate.expireAt,
+                  encourageAt: confirmedCandidate.encourageAt,
+                  ssgEventId: confirmedCandidate.ssgEventId,
+                });
+                if (!confirmed) {
+                  throw new SsgIssueAttemptAlreadyActiveError(orderDelivery.id);
+                }
+                orderDelivery.barCode = confirmedCandidate.barCode;
+                orderDelivery.personalCode = confirmedCandidate.personalCode;
+                orderDelivery.ssgTransactionId = confirmedCandidate.ssgTransactionId;
+                orderDelivery.expireAt = confirmedCandidate.expireAt;
+                orderDelivery.encourageAt = confirmedCandidate.encourageAt;
+                orderDelivery.couponNum = confirmedCandidate.couponNum;
+                this.logger.log(
+                  `[SSG] Mutex 내 orphan 등록 확인 → CONFIRMED. orderDeliveryId=${orderDelivery.id}, barCode=${confirmedCandidate.barCode}`,
+                );
+                needsInsert = false;
+                return '';
+              }
+
+              // getTry: 제출 이력 있으면 SSG 처리중 → markFailed 금지.
+              // 등록실패(0103 등) 확정 후보는 getTry=Y 이지만 처리중이 아니므로 제외.
+              for (const c of usableCandidates.filter((cc) => !registrationFailedVnos.has(cc.personalCode))) {
+                try {
+                  const tryOut = await this.ssgIssue.getTry({ vno: c.personalCode });
+                  if (tryOut?.response?.value?.[0]?.tryYn?.[0] === 'Y') {
+                    this.logger.warn(
+                      `[SSG] Mutex 내 orphan cust_info 제출이력 있음(처리중) → 확정 보류. orderDeliveryId=${orderDelivery.id}`,
+                    );
+                    throw new SsgIssueAttemptAlreadyActiveError(orderDelivery.id);
+                  }
+                } catch (e) {
+                  if (e instanceof SsgIssueAttemptAlreadyActiveError) throw e;
+                  throw new SsgIssueAttemptAlreadyActiveError(orderDelivery.id);
+                }
+              }
+
+              // 진짜 미제출 확정 → FAILED 전이 후 다음 후보로 새 PIN 시도
+              const failedOk = await this.ssgInsertStateService.markFailed(orderDelivery.id);
+              if (!failedOk) {
+                throw new SsgIssueAttemptAlreadyActiveError(orderDelivery.id);
+              }
+              this.logger.log(
+                `[SSG] Mutex 내 orphan 미등록 확정 → ATTEMPTED→FAILED. orderDeliveryId=${orderDelivery.id}`,
+              );
+              orderDelivery.barCode = null;
+              orderDelivery.personalCode = null;
+              orderDelivery.ssgTransactionId = null;
+              continue;
             }
             if (markResult === MarkAttemptedResult.SKIPPED_TERMINAL) {
               // CONFIRMED 인데 새 INSERT 호출 = invariant violation. 정상 경로라면 기존 PIN 확인 단계에서 걸렸어야 함.
