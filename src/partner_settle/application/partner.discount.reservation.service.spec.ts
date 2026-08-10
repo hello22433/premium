@@ -13,6 +13,7 @@ import { IUserDiscountCategory } from '../../user_discount/interface/user.discou
 import { IUserDiscountMethod } from '../../user_discount/interface/user.discount.method';
 import { ICompareCondition } from '../../user_discount/interface/compare.condition';
 import { IPriceAdjustment } from '../../user_discount/interface/price.adjustment';
+import { computePayloadHash } from '../domain/proposal.hash';
 
 const DB_NOW = new Date('2026-08-07T05:00:00.000Z');
 
@@ -36,6 +37,17 @@ function queryBuilderStub(overrides: Record<string, unknown> = {}) {
   return qb;
 }
 
+const FIXTURE_SCOPE_KEY = 'sk1|7|PRODUCT_GROUP|-|BULK|-|모바일쿠폰|-|ALL';
+const FIXTURE_PAYLOAD_HASH = computePayloadHash(
+  {
+    scopeKey: FIXTURE_SCOPE_KEY,
+    pricePercent: 12,
+    priceAdjustment: IPriceAdjustment.DISCOUNT,
+    effectiveAt: new Date('2026-08-07T06:00:00.000Z').toISOString(),
+  },
+  'v1',
+);
+
 function reservation(overrides: Record<string, unknown> = {}) {
   return {
     id: 1,
@@ -47,7 +59,7 @@ function reservation(overrides: Record<string, unknown> = {}) {
     group: '모바일쿠폰',
     range: null,
     compareCondition: ICompareCondition.ALL,
-    scopeKey: 'sk1|7|PRODUCT_GROUP|-|BULK|-|모바일쿠폰|-|ALL',
+    scopeKey: FIXTURE_SCOPE_KEY,
     pricePercent: 12,
     priceAdjustment: IPriceAdjustment.DISCOUNT,
     effectiveAt: new Date('2026-08-07T04:00:00.000Z'),
@@ -55,7 +67,7 @@ function reservation(overrides: Record<string, unknown> = {}) {
     registeredBy: 9,
     resultHistoryId: null,
     requestKey: 'req-1',
-    payloadHash: 'v1:hash',
+    payloadHash: FIXTURE_PAYLOAD_HASH,
     payloadHashVersion: 'v1',
     isRetroactive: false,
     lastFailureCode: null,
@@ -71,6 +83,7 @@ describe('PartnerDiscountReservationService', () => {
   let historyService: any;
   let featureFlag: any;
   let service: PartnerDiscountReservationService;
+  let repriceService: any;
   let updates: any[];
   let calls: string[];
   let insertedRow: any;
@@ -130,11 +143,14 @@ describe('PartnerDiscountReservationService', () => {
 
     featureFlag = { isDiscountReservationCronEnabled: true, isDiscountRetroactiveEnabled: true };
 
+    repriceService = { repriceForReservation: jest.fn().mockResolvedValue({ directCount: 0, proposalCount: 0 }) };
+
     service = new PartnerDiscountReservationService(
       reservationRepository,
       historyRepository,
       userDiscountRepository,
       historyService,
+      repriceService,
       featureFlag,
     );
   });
@@ -363,13 +379,19 @@ describe('PartnerDiscountReservationService', () => {
       expect(historyRepository.insert).not.toHaveBeenCalled();
     });
 
-    it('지연된 미래 예약은 소급 flag 와 무관하게 발효된다 — isRetroactive 가 생성 시점 값이기 때문', async () => {
+    it('지연된 미래 예약도 발효 시 재가격한다', async () => {
       featureFlag.isDiscountRetroactiveEnabled = false;
-      stubApply(reservation({ isRetroactive: false }));
+      const row = reservation({ isRetroactive: false });
+      stubApply(row);
 
       const outcome = await service.applyReservation(1);
 
       expect(outcome.status).toBe(IPartnerDiscountReservationStatus.APPLIED);
+      expect(repriceService.repriceForReservation).toHaveBeenCalledWith(
+        { partnerCompanyId: row.partnerCompanyId, effectiveAt: row.effectiveAt },
+        100,
+        reservationRepository.manager,
+      );
     });
 
     it('같은 대상에 반대 방향 조건이 활성이면 BLOCKED — 재시도 없이 종결한다', async () => {

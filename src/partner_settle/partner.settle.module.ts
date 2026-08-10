@@ -59,9 +59,13 @@ import { ActivityLogModule } from '../activity_log/activity.log.module';
 import { PaymentVarianceController } from './api/payment.variance.controller';
 import { PartnerSettlePaymentVarianceService } from './application/partner.settle.payment.variance.service';
 import { PartnerDiscountReservationEntity } from '../entity/partner.discount.reservation.entity';
+import { PartnerSettleAdjustmentProposalEntity } from '../entity/partner.settle.adjustment.proposal.entity';
 import { DiscountReservationController } from './api/discount.reservation.controller';
+import { AdjustmentProposalController } from './api/adjustment.proposal.controller';
 import { PartnerDiscountReservationService } from './application/partner.discount.reservation.service';
 import { PartnerDiscountReservationSchedule } from './application/partner.discount.reservation.schedule';
+import { PartnerSettleAdjustmentProposalService } from './application/partner.settle.adjustment.proposal.service';
+import { PartnerSettleRepriceService } from './application/partner.settle.reprice.service';
 
 /**
  * 협력사 여신관리/정산확정 도메인.
@@ -104,6 +108,7 @@ import { PartnerDiscountReservationSchedule } from './application/partner.discou
       PartnerSettlePaymentRequestEntity,
       PartnerSettlePaymentVarianceProposalEntity,
       PartnerDiscountReservationEntity,
+      PartnerSettleAdjustmentProposalEntity,
     ]),
   ],
   controllers: [
@@ -117,6 +122,7 @@ import { PartnerDiscountReservationSchedule } from './application/partner.discou
     BatchController,
     PaymentVarianceController,
     DiscountReservationController,
+    AdjustmentProposalController,
   ],
   providers: [
     PartnerDiscountHistoryService,
@@ -148,6 +154,8 @@ import { PartnerDiscountReservationSchedule } from './application/partner.discou
     PartnerSettlePaymentVarianceService,
     PartnerDiscountReservationService,
     PartnerDiscountReservationSchedule,
+    PartnerSettleAdjustmentProposalService,
+    PartnerSettleRepriceService,
   ],
   exports: [
     PartnerDiscountHistoryService,
@@ -170,6 +178,8 @@ import { PartnerDiscountReservationSchedule } from './application/partner.discou
     PartnerSettlePaymentService,
     PartnerSettlePaymentVarianceService,
     PartnerDiscountReservationService,
+    PartnerSettleAdjustmentProposalService,
+    PartnerSettleRepriceService,
   ],
 })
 export class PartnerSettleModule {}

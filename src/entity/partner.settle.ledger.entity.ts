@@ -178,4 +178,7 @@ export class PartnerSettleLedgerEntity extends BaseEntity {
 
   @Column({ type: 'int', nullable: true, comment: '지급 차이 승인 provenance. FK·UNIQUE·CHECK 는 PR3A 마이그레이션' })
   paymentVarianceProposalId: number | null;
+
+  @Column({ type: 'int', nullable: true, comment: '차액 제안 승인 provenance. FK·UNIQUE·CHECK 는 PR3C 마이그레이션' })
+  adjustmentProposalId: number | null;
 }
