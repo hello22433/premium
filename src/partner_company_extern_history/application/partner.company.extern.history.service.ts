@@ -61,10 +61,52 @@ const HAS_RESEND_ATTEMPT_PREDICATE =
   'EXISTS (SELECT 1 FROM message_attempt ma WHERE ma.order_delivery_id = `orderDelivery`.`id` ' +
   `AND ma.attempt_type IN (${RESEND_ATTEMPT_TYPES.map((t) => `'${t}'`).join(', ')}))`;
 
-// 전환 건은 workflow 상태 진입 시각, 미전환 건은 기존 legacy 시각을 목록 기준 일시로 쓴다.
+/**
+ * 발송실패목록의 **기준 일시**. 전환 건은 workflow 상태 진입 시각, 미전환 건은 legacy 시각을 쓴다.
+ *
+ * ⚠️ 필터(startAt/endAt) · 정렬(sortDate) · 화면 표시(parseOrderDeliveryView) **세 곳이 같은 값**을
+ * 써야 한다. 어긋나면 "2월로 검색했는데 8월 건이 나온다"가 된다. TS 표시 로직(parseOrderDeliveryView
+ * 의 `legacyDisplayDate`)이 이 순서를 그대로 복제하고 있으므로 한쪽만 고치지 말 것.
+ *
+ * 칸 순서와 근거
+ *  ① wf.state_entered_at  컷오버 전환 건만. CASE 에 ELSE 가 없어 미전환 건은 NULL 로 떨어져 다음
+ *                         칸으로 넘어간다(전환 여부 분기를 COALESCE 로 표현한 것).
+ *  ② actual_send_at       실제 발송 시각.
+ *  ③ failed_at            실패 시각. 2026-02-25(1d04c425) 신설이고 **백필하지 않았다.** 그 이전
+ *                         실패 건은 영구히 NULL 이라 아래 칸으로 떨어진다.
+ *  ④ send_request_at      발송 요청·예약 시각. created_at 이 아니라 이것을 쓰는 이유 — 예약발송에서는
+ *                         주문 접수일과 발송 시도일이 갈리는데, 이 목록이 답해야 하는 것은 "언제
+ *                         실패했나"이지 "언제 주문했나"가 아니다. NULLIF 로 감싼 것은 MySQL 의
+ *                         '0000-00-00' 이 NULL 이 아니어서 COALESCE 가 그대로 채택해 버리기 때문이다.
+ *  ⑤ updated_at           최후 폴백. **의도적으로 남긴다.**
+ *
+ * ⚠️ ⑤ 를 남긴 이유와, 남기면서도 기준으로 삼지 않는 이유
+ *
+ *    updated_at 은 행을 건드리기만 하면 바뀌므로 **사건 시각이 아니다.** 실제로 ⑤ 가 사실상의
+ *    기준이던 시절, 180일 뒤 PII 파기 배치가 옛 실패 건의 updated_at 을 갱신하면서 "6개월 전 건이
+ *    오늘 실패로 목록 맨 위에 뜨는" 사고가 있었다(order_delivery 98182 — 2026-02-11 건이 2026-08-10
+ *    00:00:03 으로 표시). 돈·CS 화면에서 운영자가 그것을 당일 장애로 오인한다.
+ *
+ *    그럼에도 지우지 않는 것은 ④ 가 NOT NULL 이라 **정상 경로에서는 도달할 수 없기 때문**이다.
+ *    즉 ⑤ 도달은 그 자체로 "④ 를 못 채운 다른 버그가 있다"는 신호다. 날짜를 비워 정렬·필터를
+ *    깨뜨리는 대신, 값은 채우되 도달을 점검할 수 있게 남긴다.
+ *
+ *    ⚠️ 도달은 화면상 보이지 않는다(④ 에서 왔는지 ⑤ 에서 왔는지 응답만으로는 구분 불가). 이 사고의
+ *    원인이 정확히 그 침묵이었으므로 점검 수단을 여기 같이 둔다. 결과가 0 이 아니면 **폴백을 더
+ *    늘리지 말고** ④ 를 못 채운 경로를 찾을 것.
+ *
+ *      SELECT COUNT(*) FROM order_delivery od
+ *      LEFT JOIN delivery_workflow wf ON wf.order_delivery_id = od.id
+ *      WHERE od.deleted_at IS NULL AND wf.cutover_migrated_at IS NULL
+ *        AND od.actual_send_at IS NULL AND od.failed_at IS NULL
+ *        AND (od.send_request_at IS NULL OR od.send_request_at = '0000-00-00 00:00:00');
+ *      -- 2026-08-10 운영 실측: 0
+ */
 const LIST_DATE_EXPR =
   'COALESCE(CASE WHEN `wf`.`cutover_migrated_at` IS NOT NULL THEN `wf`.`state_entered_at` END, ' +
-  '`orderDelivery`.`actual_send_at`, `orderDelivery`.`failed_at`, `orderDelivery`.`updated_at`)';
+  '`orderDelivery`.`actual_send_at`, `orderDelivery`.`failed_at`, ' +
+  "NULLIF(`orderDelivery`.`send_request_at`, '0000-00-00 00:00:00'), " +
+  '`orderDelivery`.`updated_at`)';
 
 // claim self-heal 임계(ms). 크래시로 finally 못 탄 stale claim 만 재claim 허용.
 // claim 게이트(재claim 조건)와 거부 사유 판정(처리중 여부)이 동일 경계를 쓰도록 공유한다.
@@ -344,7 +386,12 @@ export class PartnerCompanyExternHistoryService {
       errorMessage = '문자/알림톡 발송 실패';
     }
 
-    const legacyDisplayDate = orderDelivery.actualSendAt ?? orderDelivery.failedAt ?? orderDelivery.updatedAt;
+    // ⚠️ LIST_DATE_EXPR(필터·정렬)의 칸 순서를 **그대로 복제**한 것이다. 근거와 ⑤ 를 남긴 이유는
+    // 그 상수의 주석에 있다. 한쪽만 고치면 "필터에는 걸리는데 화면 날짜는 다른" 상태가 된다.
+    // SQL 쪽 ④ 의 NULLIF 는 여기서 재현하지 않는다 — 제로날짜는 Date 객체로 들어와 ?? 로 못 거르고,
+    // 필터·정렬은 SQL 이 담당하므로 영향이 표시 한 칸에 그친다(실측 0건, 위 상수 주석의 점검 쿼리).
+    const legacyDisplayDate =
+      orderDelivery.actualSendAt ?? orderDelivery.failedAt ?? orderDelivery.sendRequestAt ?? orderDelivery.updatedAt;
 
     if (!sot) {
       return {

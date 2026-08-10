@@ -173,6 +173,83 @@ describe('실패내역 화면 SoT 렌더', () => {
     const conditions = qb.andWhere.mock.calls.map((call) => String(call[0]));
     expect(conditions).toContain('`wf`.`cutover_migrated_at` IS NULL');
   });
+
+  /**
+   * 목록 기준 일시(LIST_DATE_EXPR / legacyDisplayDate) 회귀.
+   *
+   * updated_at 이 사실상의 기준이던 시절, 발송 후 180일 PII 파기 배치가 옛 실패 건의 updated_at 을
+   * 갱신하면서 "6개월 전 건이 오늘 실패로 목록 맨 위에 뜨는" 사고가 있었다(order_delivery 98182).
+   * 되돌아가면 돈·CS 화면에서 운영자가 당일 장애로 오인하므로 칸 순서를 테스트로 고정한다.
+   */
+  describe('목록 기준 일시 — 파기 배치가 옛 건을 당일로 되살리지 않는다', () => {
+    const 표시일시 = async (overrides: Partial<OrderDeliveryEntity>) => {
+      const { sut } = await buildSut([makeDelivery(overrides)], new Map());
+      return (await sut.getHistoryList({ page: 1, take: 20 } as never)).list[0].createdAt;
+    };
+
+    it('② actual_send_at 이 있으면 그것을 쓴다', async () => {
+      const at = await 표시일시({
+        actualSendAt: new Date('2026-02-11T16:31:25'),
+        failedAt: new Date('2026-02-11T16:10:21'),
+        sendRequestAt: new Date('2026-02-11T15:38:00'),
+        updatedAt: new Date('2026-08-10T00:00:03'),
+      });
+      expect(at).toBe('2026-02-11T16:31:25');
+    });
+
+    it('③ actual_send_at 이 없으면 failed_at 을 쓴다', async () => {
+      const at = await 표시일시({
+        actualSendAt: null,
+        failedAt: new Date('2026-02-11T16:10:21'),
+        sendRequestAt: new Date('2026-02-11T15:38:00'),
+        updatedAt: new Date('2026-08-10T00:00:03'),
+      });
+      expect(at).toBe('2026-02-11T16:10:21');
+    });
+
+    // ⭐ 98182 의 실제 조합. failed_at 은 2026-02-25 신설이라 그 이전 실패 건은 영구 NULL 이다.
+    it('④ 둘 다 없으면 send_request_at 을 쓴다 — updated_at 으로 떨어지지 않는다', async () => {
+      const at = await 표시일시({
+        actualSendAt: null,
+        failedAt: null,
+        sendRequestAt: new Date('2026-02-11T15:38:00'),
+        updatedAt: new Date('2026-08-10T00:00:03'), // 파기 배치가 새로 찍은 값
+      });
+      expect(at).toBe('2026-02-11T15:38:00');
+      expect(at).not.toContain('2026-08-10');
+    });
+
+    // ⑤ 는 send_request_at 이 NOT NULL 이라 정상 경로에서 도달할 수 없다. 도달 자체가
+    // "④ 를 못 채운 다른 버그"의 신호이므로, 날짜를 비우는 대신 값은 채운다는 결정을 고정한다.
+    it('⑤ send_request_at 마저 없으면 updated_at 으로 떨어진다 (안전망, 정상 경로 도달 불가)', async () => {
+      const at = await 표시일시({
+        actualSendAt: null,
+        failedAt: null,
+        sendRequestAt: null as never,
+        updatedAt: new Date('2026-08-10T00:00:03'),
+      });
+      expect(at).toBe('2026-08-10T00:00:03');
+    });
+
+    it('필터·정렬용 SQL 이 표시 로직과 같은 칸 순서를 쓴다', async () => {
+      const { sut, qb } = await buildSut([makeDelivery()], new Map());
+
+      await sut.getHistoryList({ page: 1, take: 20 } as never);
+
+      const [expr, alias] = qb.addSelect.mock.calls[0] as [string, string];
+      expect(alias).toBe('sortDate');
+
+      // 한쪽만 고치면 "필터에는 걸리는데 화면 날짜는 다른" 상태가 되므로 순서까지 본다.
+      const 칸순서 = ['state_entered_at', 'actual_send_at', 'failed_at', 'send_request_at', 'updated_at'].map((c) =>
+        expr.indexOf(c),
+      );
+      expect(칸순서.every((i) => i >= 0)).toBe(true);
+      expect(칸순서).toEqual([...칸순서].sort((a, b) => a - b));
+
+      // 제로 날짜는 NULL 이 아니라 COALESCE 가 그대로 채택한다 — NULLIF 로 걷어내야 ⑤ 로 넘어간다.
+      expect(expr).toContain("NULLIF(`orderDelivery`.`send_request_at`, '0000-00-00 00:00:00')");
+    });
+  });
 });
 
 describe('DeliveryFailureSotReader', () => {
