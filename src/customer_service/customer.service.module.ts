@@ -20,6 +20,7 @@ import { CouponViewLogEntity } from '../entity/coupon.view.log.entity';
 import { DeliveryCutoverModule } from '../delivery/delivery.cutover.module';
 import { CustomerCancelIntentRecoverySchedule } from './customer.cancel-intent.recovery.schedule';
 import { PartnerSettleModule } from '../partner_settle/partner.settle.module';
+import { InventoryCouponModule } from '../inventory_coupon/inventory.coupon.module';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { PartnerSettleModule } from '../partner_settle/partner.settle.module';
     ActivityLogModule,
     DeliveryCutoverModule,
     PartnerSettleModule,
+    InventoryCouponModule,
   ],
   controllers: [CustomerServiceController],
   providers: [CustomerServiceService, CustomerCancelIntentRecoverySchedule],

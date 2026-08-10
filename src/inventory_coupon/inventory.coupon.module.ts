@@ -26,6 +26,7 @@ import { InventoryPinStockService } from './application/inventory.pin.stock.serv
 import { InventoryPinPolicyService } from './application/inventory.pin.policy.service';
 import { InventoryPinSendService } from './application/inventory.pin.send.service';
 import { InventoryPinCsService } from './application/inventory.pin.cs.service';
+import { InventoryPinCsViewService } from './application/inventory.pin.cs.view.service';
 import { InventoryPinExternalService } from './application/inventory.pin.external.service';
 import { DirectPinMailSender } from './application/direct.pin.mail.sender';
 import { InventoryPinAdminController } from './api/inventory.pin.admin.controller';
@@ -89,6 +90,7 @@ import { InventoryPinOutboxSchedule } from './inventory.pin.outbox.schedule';
     InventoryPinPolicyService,
     InventoryPinSendService,
     InventoryPinCsService,
+    InventoryPinCsViewService,
     InventoryPinExternalService,
     DirectPinMailSender,
     InventoryPinRequestService,
@@ -102,6 +104,7 @@ import { InventoryPinOutboxSchedule } from './inventory.pin.outbox.schedule';
     InventoryPinPolicyService,
     InventoryPinStockService,
     InventoryPinSendService,
+    InventoryPinCsViewService,
   ],
 })
 export class InventoryCouponModule {}

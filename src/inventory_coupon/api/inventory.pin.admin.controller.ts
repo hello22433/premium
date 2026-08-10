@@ -11,6 +11,14 @@ import { InventoryPinImportBatchEntity } from '../../entity/inventory.pin.import
 import { PIN_INVENTORY_ERROR } from '../domain/inventory.pin.error.codes';
 import { BadRequestException } from '@nestjs/common';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
+import { User } from '../../auth/api/user.decorator';
+import { ILoginUserInfo } from '../../auth/interface/login.user';
+
+/**
+ * 입고 실행자(importedByUserId)는 감사 기록이므로 클라이언트 주장값을 쓰지 않는다.
+ * 요청 본문에서는 제외하고 컨트롤러가 로그인 사용자로 채운다.
+ */
+type ImportMetadataInput = Omit<ImportMetadata, 'importedByUserId'>;
 
 @ApiTags('inventory-coupons')
 @ApiBearerAuth()
@@ -57,30 +65,44 @@ export class InventoryPinAdminController {
 
   @Post('imports')
   @ApiOperation({ summary: 'PIN 엑셀 입고' })
-  async importPins(@Body() body: {
-    productId: number;
-    rows: ImportRowInput[];
-    meta: ImportMetadata;
-  }) {
-    return this.importService.importPins(body.rows, body.meta, body.productId);
+  async importPins(
+    @Body() body: {
+      productId: number;
+      rows: ImportRowInput[];
+      meta: ImportMetadataInput;
+    },
+    @User() user: ILoginUserInfo,
+  ) {
+    return this.importService.importPins(
+      body.rows,
+      { ...body.meta, importedByUserId: user.id },
+      body.productId,
+    );
   }
 
   @Post('pins')
   @ApiOperation({ summary: 'PIN 수동 등록 (단건)' })
-  async manualRegister(@Body() body: {
-    productId: number;
-    primaryCode: string;
-    secondaryCode?: string | null;
-    expiresOn?: string | null;
-    meta: ImportMetadata;
-  }) {
+  async manualRegister(
+    @Body() body: {
+      productId: number;
+      primaryCode: string;
+      secondaryCode?: string | null;
+      expiresOn?: string | null;
+      meta: ImportMetadataInput;
+    },
+    @User() user: ILoginUserInfo,
+  ) {
     const row: ImportRowInput = {
       productCode: String(body.productId),
       primaryCode: body.primaryCode,
       secondaryCode: body.secondaryCode,
       expiresOn: body.expiresOn,
     };
-    return this.importService.importPins([row], body.meta, body.productId);
+    return this.importService.importPins(
+      [row],
+      { ...body.meta, importedByUserId: user.id },
+      body.productId,
+    );
   }
 
   @Get('pins')

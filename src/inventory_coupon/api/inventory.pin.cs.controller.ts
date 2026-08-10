@@ -1,4 +1,4 @@
-import { Body, Controller, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Header, Post, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { InventoryPinCsService } from '../application/inventory.pin.cs.service';
 import { AuthUserSuperAndOperationAdminGuard } from '../../auth/api/auth.user.super-operation-admin.guard';
@@ -15,6 +15,8 @@ export class InventoryPinCsController {
   ) {}
 
   @Post('reveal')
+  // PIN 원문 응답은 중간 프록시·브라우저 디스크 캐시에 남으면 안 된다 (rev5 §7.3).
+  @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: 'PIN 원문 확인 (사유 기반, no-store)' })
   async revealPin(
     @Body() body: { orderDeliveryId: number; reason: string },
