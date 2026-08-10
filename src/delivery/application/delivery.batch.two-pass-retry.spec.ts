@@ -4,7 +4,7 @@ import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { IOrderType } from '../../order/interface/order.type';
 import { IProductType } from '../../product/interface/product.type';
-import { SsgTryError } from '../../partner_company_extern/infra/ssg.issue';
+import { SsgIssueUnknownError, SsgTryError } from '../../partner_company_extern/infra/ssg.issue';
 
 /**
  * PIN 발급 실패 2-pass 재시도 (`plans/2026-08-03-pin-issue-retry-wiring.md` §4.1).
@@ -178,6 +178,34 @@ describe('DeliveryBatchService — PIN 발급 실패 2-pass 재시도', () => {
 
       expect(markExhausted).toHaveBeenCalledWith(9001, '알 수 없는 오류입니다.');
       expect(markTerminal).not.toHaveBeenCalled();
+    });
+
+    it('pass 1 + SsgIssueUnknownError(INSERT 9999) → DeferredDeliveryError. FAIL 확정·환불 없음', async () => {
+      (sut as any).partnerCompanyExternService = {
+        issue: jest.fn().mockRejectedValue(new SsgIssueUnknownError('SSG 등록 결과 미확정 (code: 9999)')),
+      };
+
+      await expect((sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN, true)).rejects.toBeInstanceOf(
+        DeferredDeliveryError,
+      );
+
+      expect(markSendFail).not.toHaveBeenCalled();
+      expect(refundForFail).not.toHaveBeenCalled();
+      expect(markRetryPending).toHaveBeenCalledWith(9001, 'SSG 등록 결과 미확정 (code: 9999)');
+      expect(markExhausted).not.toHaveBeenCalled();
+    });
+
+    it('pass 2 + SsgIssueUnknownError → FAIL 확정 + EXHAUSTED', async () => {
+      (sut as any).partnerCompanyExternService = {
+        issue: jest.fn().mockRejectedValue(new SsgIssueUnknownError('SSG 등록 결과 미확정 (code: 9999)')),
+      };
+
+      await (sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN, false);
+
+      expect(markSendFail).toHaveBeenCalledWith(expect.objectContaining({ id: 9001 }), IOrderDeliveryStatus.FAIL);
+      expect(markExhausted).toHaveBeenCalledWith(9001, 'SSG 등록 결과 미확정 (code: 9999)');
+      expect(markTerminal).not.toHaveBeenCalled();
+      expect(markRetryPending).not.toHaveBeenCalled();
     });
   });
 

@@ -101,7 +101,7 @@ import { SsgRefundOutcome } from '../interface/ssg.refund.resolve';
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
-import { SsgTryError } from '../../partner_company_extern/infra/ssg.issue';
+import { SsgIssueUnknownError, SsgTryError } from '../../partner_company_extern/infra/ssg.issue';
 import { DeferredDeliveryError } from '../interface/deferred.delivery.error';
 import { PinIssueCommandService } from './pin-issue-command.service';
 import { InventoryPinAllocationService } from '../../inventory_coupon/application/inventory.pin.allocation.service';
@@ -1648,15 +1648,16 @@ export class DeliveryBatchService {
       } catch (error) {
         this.logger.error(`[BATCH] PIN 발급 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
 
-        // 조회 판정 불가(SsgTryError)는 **실패가 아니라 미확정**이다. pass 1 이면 여기서 확정하지
-        // 않고 뒤로 미룬다 — status/환불/이력을 건드리지 않아야 pass 2 가 깨끗한 상태에서 재판정한다.
+        // 미확정 실패(SsgTryError=조회 판정 불가, SsgIssueUnknownError=INSERT 결과 미확정)는
+        // pass 1 이면 확정하지 않고 뒤로 미룬다 — status/환불/이력을 건드리지 않아야
+        // pass 2 가 깨끗한 상태에서 재판정한다.
         // (계약 §2 조항 2: 본 처리 종료 직후 1회 재시도. 고정 대기 없음)
-        const retryableLookupFailure = error instanceof SsgTryError;
+        const retryable = error instanceof SsgTryError || error instanceof SsgIssueUnknownError;
 
-        if (allowDefer && retryableLookupFailure) {
+        if (allowDefer && retryable) {
           await this.pinIssueCommandService.markRetryPending(orderDelivery.id, error.message);
           this.logger.warn(
-            `[BATCH][DEFER] SSG 조회 판정 불가 — pass 2 로 미룸. orderDelivery.id: ${orderDelivery.id}: ${error.message}`,
+            `[BATCH][DEFER] SSG 미확정 — pass 2 로 미룸. orderDelivery.id: ${orderDelivery.id}: ${error.message}`,
           );
           throw new DeferredDeliveryError(orderDelivery.id, error);
         }
@@ -1665,7 +1666,7 @@ export class DeliveryBatchService {
         // 무의미한 실패(`STARTED → TERMINAL`)는 다른 상태다. 잔액 부족·파라미터 오류까지
         // EXHAUSTED 로 적으면 "재시도했는데 안 됐다" 로 읽혀 원인 분석이 왜곡된다.
         const reason = error instanceof Error ? error.message : String(error);
-        if (retryableLookupFailure) {
+        if (retryable) {
           await this.pinIssueCommandService.markExhausted(orderDelivery.id, reason);
         } else {
           await this.pinIssueCommandService.markTerminal(orderDelivery.id, reason);

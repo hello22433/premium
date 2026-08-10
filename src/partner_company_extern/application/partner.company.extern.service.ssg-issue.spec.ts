@@ -376,7 +376,7 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
       const ssgEvent = buildSsgEvent();
       ssgIssue.check.mockRejectedValue(new SsgCheckNotFoundError('미등록'));
       ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
-      ssgIssue.issue.mockRejectedValue(new SsgIssueRejectedError('9999', '한도 초과'));
+      ssgIssue.issue.mockRejectedValue(new SsgIssueRejectedError('8021', '한도 초과'));
 
       await expect(sut.issue(orderDelivery, ssgEvent)).rejects.toBeInstanceOf(SsgIssueRejectedError);
       expect(ssgInsertStateService.markFailed).toHaveBeenCalledWith(orderDelivery.id);
@@ -479,6 +479,218 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
       await expect(sut.issue(orderDelivery, ssgEvent)).rejects.toBeInstanceOf(SsgProcessingError);
       expect(ssgIssue.issue).not.toHaveBeenCalled();
       expect(ssgInsertStateService.markFailed).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('9999 재분류 — pass 2 재진입 시 Mutex 내 orphan 확인 후 ATTEMPTED→FAILED 전이', () => {
+    it('barCode null + ssg_issue_log 후보 미등록 + state ATTEMPTED → Mutex 내 orphan 미등록 확정 → markFailed 후 새 PIN INSERT 성공', async () => {
+      const orderDelivery = buildOrderDelivery();
+      const ssgEvent = buildSsgEvent();
+
+      // ssg_issue_log 에 pass 1 시도 후보가 있다 (9999 로 실패)
+      const staleCandidate = {
+        id: 100,
+        orderDeliveryId: orderDelivery.id,
+        barCode: '8STALE01',
+        personalCode: '01399990001',
+        ssgTransactionId: 'tr-stale',
+        eventNo: 'EV1',
+        eventSeq: 1,
+        ssgEventId: 42,
+        couponNum: null,
+        expireAt: null,
+        encourageAt: null,
+      };
+      ssgIssueLogRepository.find.mockResolvedValue([staleCandidate] as any);
+      ssgIssueLogRepository.findOne.mockResolvedValue(null);
+
+      // classifySsgPin: stale 후보의 getTry=N(미제출) → NOT_SUBMITTED → 재사용 불가
+      // SKIPPED_ACTIVE orphan getTry=N → 미제출 확정
+      // 새 PIN dedup getTry=N → 사용가능
+      ssgIssue.getTry.mockResolvedValue(tryOut('N'));
+      // SKIPPED_ACTIVE orphan: checkSsgWithRetry → 미등록
+      ssgIssue.check.mockRejectedValue(new SsgCheckNotFoundError('미등록'));
+
+      // 첫 markAttempted → SKIPPED_ACTIVE (이전 9999 ATTEMPTED 상태)
+      // Mutex 내 orphan 확인 → 미등록 → markFailed → continue → 새 후보
+      // 둘째 markAttempted → TRANSITIONED (FAILED→ATTEMPTED)
+      ssgInsertStateService.markAttempted
+        .mockResolvedValueOnce(MarkAttemptedResult.SKIPPED_ACTIVE)
+        .mockResolvedValueOnce(MarkAttemptedResult.TRANSITIONED);
+      // Mutex 내 markFailed → FAILED 전이 성공
+      ssgInsertStateService.markFailed.mockResolvedValue(true);
+      // 새 후보로 INSERT 성공
+      ssgIssue.issue.mockResolvedValue({ response: { result: [{ code: ['1000'], reason: ['ok'] }] } });
+
+      await sut.issue(orderDelivery, ssgEvent);
+
+      // 핵심: Mutex 내 orphan 확인 → markFailed → 새 PIN 발급 (경쟁 조건 없음)
+      expect(ssgInsertStateService.markAttempted).toHaveBeenCalledTimes(2);
+      expect(ssgInsertStateService.markFailed).toHaveBeenCalledWith(orderDelivery.id);
+      expect(ssgIssue.issue).toHaveBeenCalledTimes(1);
+      expect(ssgInsertStateService.markConfirmed).toHaveBeenCalled();
+      expect(orderDelivery.barCode).toBe('80000001');
+    });
+
+    it('SKIPPED_ACTIVE + orphan 실제 등록 → Mutex 내 CONFIRMED, 새 INSERT 없이 PIN 재사용', async () => {
+      const orderDelivery = buildOrderDelivery();
+      const ssgEvent = buildSsgEvent();
+
+      // pass 1 시도 후보 — SSG 에 실제 등록되었으나 classifySsgPin 시점엔 미반영(stale)
+      const registeredCandidate = {
+        id: 100,
+        orderDeliveryId: orderDelivery.id,
+        barCode: '8ORPHAN1',
+        personalCode: '01399990001',
+        ssgTransactionId: 'tr-orphan',
+        eventNo: 'EV1',
+        eventSeq: 1,
+        ssgEventId: 42,
+        couponNum: 'CPN-ORPHAN',
+        expireAt: new Date('2026-09-15'),
+        encourageAt: null,
+      };
+      ssgIssueLogRepository.find.mockResolvedValue([registeredCandidate] as any);
+      ssgIssueLogRepository.findOne.mockResolvedValue(null);
+
+      // classifySsgPin: getTry=N(stale, SSG 아직 미반영) → NOT_SUBMITTED
+      // 이후 SKIPPED_ACTIVE handler 에서 getTry/check 다시 호출
+      let getTryCallCount = 0;
+      ssgIssue.getTry.mockImplementation(async () => {
+        getTryCallCount++;
+        return tryOut('N');
+      });
+      // SKIPPED_ACTIVE handler: checkSsgWithRetry → 등록됨(1001)
+      ssgIssue.check.mockResolvedValue(checkOut('0100'));
+
+      // markAttempted → SKIPPED_ACTIVE (이전 ATTEMPTED 상태)
+      ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.SKIPPED_ACTIVE);
+      ssgInsertStateService.markConfirmed.mockResolvedValue(true);
+
+      await sut.issue(orderDelivery, ssgEvent);
+
+      // 핵심: Mutex 내 orphan → CONFIRMED → 새 INSERT 없이 PIN 재사용
+      expect(ssgInsertStateService.markConfirmed).toHaveBeenCalledWith(orderDelivery.id, expect.objectContaining({
+        barCode: '8ORPHAN1',
+        personalCode: '01399990001',
+      }));
+      expect(ssgInsertStateService.markFailed).not.toHaveBeenCalled();
+      expect(ssgIssue.issue).not.toHaveBeenCalled();
+      expect(orderDelivery.barCode).toBe('8ORPHAN1');
+      expect(orderDelivery.couponNum).toBe('CPN-ORPHAN');
+    });
+
+    it('SKIPPED_ACTIVE + check resultCd=0103(등록실패) → 재사용 안 하고 markFailed 후 새 PIN INSERT', async () => {
+      const orderDelivery = buildOrderDelivery();
+      const ssgEvent = buildSsgEvent();
+
+      const failedCandidate = {
+        id: 100,
+        orderDeliveryId: orderDelivery.id,
+        barCode: '8FAIL01',
+        personalCode: '01399990001',
+        ssgTransactionId: 'tr-fail',
+        eventNo: 'EV1',
+        eventSeq: 1,
+        ssgEventId: 42,
+        couponNum: null,
+        expireAt: null,
+        encourageAt: null,
+      };
+      ssgIssueLogRepository.find.mockResolvedValue([failedCandidate] as any);
+      ssgIssueLogRepository.findOne.mockResolvedValue(null);
+
+      // classifySsgPin: getTry=Y(제출됨) + resultCd=0103(등록실패) → REGISTRATION_FAILED → 재사용 불가
+      // SKIPPED_ACTIVE orphan: check=0103(등록실패) → confirmedCandidate=null
+      //   → registrationFailedVnos 에 기록 → getTry 루프에서 제외 → markFailed
+      // 새 PIN dedup: getTry=N(미사용)
+      ssgIssue.getTry.mockImplementation(async ({ vno }: { vno: string }) =>
+        vno === '01399990001' ? tryOut('Y') : tryOut('N'),
+      );
+      ssgIssue.check.mockResolvedValue(checkOut('0103'));
+
+      // 첫 markAttempted → SKIPPED_ACTIVE
+      // orphan check: resultCd=0103 → 등록실패 → registrationFailedVnos 제외 → markFailed
+      // 둘째 markAttempted → TRANSITIONED
+      ssgInsertStateService.markAttempted
+        .mockResolvedValueOnce(MarkAttemptedResult.SKIPPED_ACTIVE)
+        .mockResolvedValueOnce(MarkAttemptedResult.TRANSITIONED);
+      ssgInsertStateService.markFailed.mockResolvedValue(true);
+      ssgIssue.issue.mockResolvedValue({ response: { result: [{ code: ['1000'], reason: ['ok'] }] } });
+
+      await sut.issue(orderDelivery, ssgEvent);
+
+      // 등록실패 PIN 재사용 안 함 → markFailed → 새 PIN 발급
+      expect(ssgInsertStateService.markFailed).toHaveBeenCalledWith(orderDelivery.id);
+      expect(ssgInsertStateService.markAttempted).toHaveBeenCalledTimes(2);
+      expect(ssgIssue.issue).toHaveBeenCalledTimes(1);
+      expect(orderDelivery.barCode).toBe('80000001');
+    });
+
+    it('SKIPPED_ACTIVE + markConfirmed 반환 false(race) → SsgIssueAttemptAlreadyActiveError', async () => {
+      const orderDelivery = buildOrderDelivery();
+      const ssgEvent = buildSsgEvent();
+
+      const candidate = {
+        id: 100,
+        orderDeliveryId: orderDelivery.id,
+        barCode: '8RACE01',
+        personalCode: '01399990001',
+        ssgTransactionId: 'tr-race',
+        eventNo: 'EV1',
+        eventSeq: 1,
+        ssgEventId: 42,
+        couponNum: null,
+        expireAt: null,
+        encourageAt: null,
+      };
+      ssgIssueLogRepository.find.mockResolvedValue([candidate] as any);
+      ssgIssueLogRepository.findOne.mockResolvedValue(null);
+
+      ssgIssue.getTry.mockResolvedValue(tryOut('N'));
+      // check → 등록됨 (0100)
+      ssgIssue.check.mockResolvedValue(checkOut('0100'));
+
+      ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.SKIPPED_ACTIVE);
+      // markConfirmed CAS 실패 = 다른 흐름이 상태 변경
+      ssgInsertStateService.markConfirmed.mockResolvedValue(false);
+
+      await expect(sut.issue(orderDelivery, ssgEvent)).rejects.toBeInstanceOf(SsgIssueAttemptAlreadyActiveError);
+      expect(ssgIssue.issue).not.toHaveBeenCalled();
+    });
+
+    it('barCode null + ssg_issue_log 후보 등록됨 → markFailed 없이 PIN 재사용', async () => {
+      const orderDelivery = buildOrderDelivery();
+      const ssgEvent = buildSsgEvent();
+
+      // ssg_issue_log 에 pass 1 시도 후보가 있고, SSG 에 실제 등록됨
+      const confirmedCandidate = {
+        id: 100,
+        orderDeliveryId: orderDelivery.id,
+        barCode: '8CONF01',
+        personalCode: '01399990001',
+        ssgTransactionId: 'tr-confirmed',
+        eventNo: 'EV1',
+        eventSeq: 1,
+        ssgEventId: 42,
+        couponNum: 'CPN-001',
+        expireAt: new Date('2026-09-10'),
+        encourageAt: null,
+      };
+      ssgIssueLogRepository.find.mockResolvedValue([confirmedCandidate] as any);
+      ssgIssueLogRepository.findOne.mockResolvedValue(null);
+
+      // classifySsgPin: getTry=Y(제출됨) + resultCd=0100(정상) → REGISTERED → 재사용
+      ssgIssue.getTry.mockResolvedValue(tryOut('Y'));
+      ssgIssue.check.mockResolvedValue(checkOut('0100'));
+
+      await sut.issue(orderDelivery, ssgEvent);
+
+      // 재사용 → markFailed 호출 없음, issue() 호출 없음
+      expect(ssgInsertStateService.markFailed).not.toHaveBeenCalled();
+      expect(ssgIssue.issue).not.toHaveBeenCalled();
+      expect(ssgInsertStateService.markAttempted).not.toHaveBeenCalled();
+      expect(orderDelivery.barCode).toBe('8CONF01');
     });
   });
 });
