@@ -196,6 +196,12 @@ export class SsgIssue implements ISsgIssue {
       // ATTEMPTED 유지 → orphan resolver가 SSG check로 확정해야 한다.
       throw new SsgIssueUnknownError(reason ?? 'SSG 등록 응답에서 code를 파싱하지 못했습니다 (응답 schema 비정상).');
     }
+    if (code === '9999') {
+      // 9999 = 중계 서버↔SSG Oracle 통신 실패. INSERT 결과 미확정.
+      // 실측: 9999 후 수동 재발송 성공률 100% — 확정 거절이 아니라 일시적 오류.
+      // ATTEMPTED 유지 → pass 2 재진입 시 classifySsgPin이 등록 여부를 확정한다.
+      throw new SsgIssueUnknownError(reason ?? `SSG 등록 결과 미확정 (code: ${code})`);
+    }
     if (code !== '1000') {
       // 정상 응답이지만 신세계 측 거절 확정.
       // 호출자는 이 에러를 catch해 SsgInsertState.FAILED로 마킹하고 SSG 행사 잔액 복구 분기를 탈 수 있다.
