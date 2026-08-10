@@ -22,7 +22,7 @@ export interface PartnerBalanceResult {
 
 /**
  * 외부 여신한도 조회 대상 provider(케이티알파·갤럭시아)의 하위항목별 잔액을 조회한다.
- * PR2 실연동 전까지 stub adapter 가 전부 `NOT_AVAILABLE` 을 반환한다(§4.3 · D-BAL).
+ * 케이티알파는 실연동하고, 갤럭시아는 제공 API가 없어 `NOT_AVAILABLE`을 반환한다.
  */
 export interface IPartnerBalanceInquiry {
   /** 이 adapter 가 처리하는 provider. */
