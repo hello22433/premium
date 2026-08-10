@@ -253,14 +253,19 @@ describe('WalletReadService', () => {
 
   describe('getSettlementCodeDetail', () => {
     it('settlementCode 공백 → BadRequestException (조회 미실행)', async () => {
-      await expect(sut.getSettlementCodeDetail('   ')).rejects.toBeInstanceOf(BadRequestException);
+      await expect(sut.getSettlementCodeDetail('   ', 7)).rejects.toBeInstanceOf(BadRequestException);
+      expect(walletRepo.findOne).not.toHaveBeenCalled();
+    });
+
+    it('companyId 오류 → BadRequestException', async () => {
+      await expect(sut.getSettlementCodeDetail('company-7', 0)).rejects.toBeInstanceOf(BadRequestException);
       expect(walletRepo.findOne).not.toHaveBeenCalled();
     });
 
     it('wallet 없고 배정 계정 0 → NotFoundException', async () => {
       walletRepo.findOne.mockResolvedValue(null);
       userRepo.createQueryBuilder.mockReturnValue(makeQb([]));
-      await expect(sut.getSettlementCodeDetail('company-7')).rejects.toBeInstanceOf(NotFoundException);
+      await expect(sut.getSettlementCodeDetail('company-7', 7)).rejects.toBeInstanceOf(NotFoundException);
     });
 
     it('wallet 없지만 배정 계정 존재 → walletStatus MISSING + walletAccountId null + 계정 반환 (포인트 미조회)', async () => {
@@ -269,7 +274,7 @@ describe('WalletReadService', () => {
         makeQb([{ userId: '1', personName: '홍길동', companyId: '7', companyName: 'A상사' }]),
       );
 
-      const res = await sut.getSettlementCodeDetail('company-7');
+      const res = await sut.getSettlementCodeDetail('company-7', 7);
 
       expect(res).toMatchObject({
         settlementCode: 'company-7',
@@ -277,6 +282,9 @@ describe('WalletReadService', () => {
         walletAccountId: null,
         depositBalance: 0,
         pointTotalRemaining: 0,
+        ownerCompanyId: null,
+        renameAllowed: false,
+        renameBlockReason: 'WALLET_MISSING',
       });
       expect(res.assignedAccounts).toEqual([{ userId: 1, personName: '홍길동', companyId: 7, companyName: 'A상사' }]);
       expect(pointRepo.createQueryBuilder).not.toHaveBeenCalled();
@@ -292,6 +300,7 @@ describe('WalletReadService', () => {
         settleCondition: 'POST_PAYMENT',
         settleMethod: 'CASH',
         cardSurchargeApplied: false,
+        ownerCompanyId: 7,
       } as any);
       // 회사 걸침: 3번·7번 회사 계정이 같은 코드를 공유 (companyId ASC 정렬)
       const detailQb = makeQb([
@@ -301,7 +310,7 @@ describe('WalletReadService', () => {
       userRepo.createQueryBuilder.mockReturnValue(detailQb);
       pointRepo.createQueryBuilder.mockReturnValue(makeQb({ total: '1500' }) as any);
 
-      const res = await sut.getSettlementCodeDetail('company-7');
+      const res = await sut.getSettlementCodeDetail('company-7', 7);
 
       expect(res).toMatchObject({
         settlementCode: 'company-7',
@@ -310,6 +319,9 @@ describe('WalletReadService', () => {
         depositBalance: 5000,
         pointTotalRemaining: 1500,
         cardSurchargeApplied: false,
+        ownerCompanyId: 7,
+        renameAllowed: false,
+        renameBlockReason: 'CROSS_COMPANY_REFERENCE',
       });
       expect(res.assignedAccounts).toEqual([
         { userId: 3, personName: '삼번', companyId: 3, companyName: 'B상사' },
@@ -320,6 +332,61 @@ describe('WalletReadService', () => {
       expect(orderBy.args).toEqual(['u.companyId', 'ASC']);
       const addOrderBy = detailQb._calls.find((c: any) => c.method === 'addOrderBy');
       expect(addOrderBy.args).toEqual(['u.id', 'ASC']);
+    });
+
+    it('배정 계정 0명인 홈 회사 코드 → rename 허용', async () => {
+      walletRepo.findOne.mockResolvedValue({
+        id: '11',
+        ownerCompanyId: 7,
+        depositBalance: 0,
+        creditLimit: 0,
+        creditUsedAmount: 0,
+        creditExcessAmount: 0,
+        settleCondition: 'POST_PAYMENT',
+        settleMethod: 'CASH',
+        cardSurchargeApplied: true,
+      } as any);
+      userRepo.createQueryBuilder.mockReturnValue(makeQb([]));
+      pointRepo.createQueryBuilder.mockReturnValue(makeQb({ total: '0' }) as any);
+
+      await expect(sut.getSettlementCodeDetail('nvida', 7)).resolves.toMatchObject({
+        ownerCompanyId: 7,
+        renameAllowed: true,
+        renameBlockReason: null,
+        assignedAccounts: [],
+      });
+    });
+
+    it.each([
+      {
+        requestCompanyId: 8,
+        rows: [],
+        reason: 'NOT_OWNER_COMPANY',
+      },
+      {
+        requestCompanyId: 7,
+        rows: [{ userId: '1', personName: '미연결', companyId: null, companyName: null }],
+        reason: 'COMPANYLESS_REFERENCE',
+      },
+    ])('$reason → rename 차단 enum 반환', async ({ requestCompanyId, rows, reason }) => {
+      walletRepo.findOne.mockResolvedValue({
+        id: '11',
+        ownerCompanyId: 7,
+        depositBalance: 0,
+        creditLimit: 0,
+        creditUsedAmount: 0,
+        creditExcessAmount: 0,
+        settleCondition: 'POST_PAYMENT',
+        settleMethod: 'CASH',
+        cardSurchargeApplied: true,
+      } as any);
+      userRepo.createQueryBuilder.mockReturnValue(makeQb(rows));
+      pointRepo.createQueryBuilder.mockReturnValue(makeQb({ total: '0' }) as any);
+
+      await expect(sut.getSettlementCodeDetail('nvida', requestCompanyId)).resolves.toMatchObject({
+        renameAllowed: false,
+        renameBlockReason: reason,
+      });
     });
   });
 
