@@ -4071,6 +4071,14 @@ export class OrderService {
 
     const orderId: number = order.id;
 
+    // 수신처 암호화는 매핑 id 와 무관하므로 잠금 전에 끝낸다. 락 구간에서 수천 건을 돌리면
+    // 그 시간만큼 테스트 발송의 한도 선점이 대기한다.
+    const encryptedTargetsByLine = orderProductList.map((product) =>
+      product.orderDeliveryList.map((orderDelivery) =>
+        this.cryptoCipher.encryptDeliveryTarget(PhoneUtil.normalizeDeliveryTarget(orderDelivery.deliveryTarget)),
+      ),
+    );
+
     // mapping id 소유권/중복 검증 — 헤더 저장 이전에 실행하여 뮤테이션 전 400 보장
     // 행 잠금: 테스트 발송의 한도 선점(test_delivery_count + 1)과 겹치면 승계 과정에서 증가분이 유실된다
     const deleteOrderProductMappingList = await this.orderProductMappingRepository
@@ -4135,7 +4143,7 @@ export class OrderService {
     // 3. 신규 order delivery, product 생성
     const orderDeliveryCreateList: OrderDeliveryEntity[] = [];
 
-    for (const product of orderProductList) {
+    for (const [lineIndex, product] of orderProductList.entries()) {
       const orderProduct = new OrderProductMappingEntity();
 
       orderProduct.orderId = orderId;
@@ -4205,14 +4213,14 @@ export class OrderService {
       // 상품별 발신 수단 사용
       const deliverySendMethod = orderProduct.sendMethod!;
 
-      for (const orderDelivery of product.orderDeliveryList) {
+      const encryptedTargets = encryptedTargetsByLine[lineIndex];
+
+      product.orderDeliveryList.forEach((orderDelivery, deliveryIndex) => {
         const oneOrderDelivery = new OrderDeliveryEntity();
         oneOrderDelivery.orderProductMappingId = orderProduct.id;
         oneOrderDelivery.status = IOrderDeliveryStatus.TEMP;
         oneOrderDelivery.deliveryMethod = deliverySendMethod;
-        const encryptedTarget = this.cryptoCipher.encryptDeliveryTarget(
-          PhoneUtil.normalizeDeliveryTarget(orderDelivery.deliveryTarget),
-        );
+        const encryptedTarget = encryptedTargets[deliveryIndex];
         oneOrderDelivery.deliveryTarget = encryptedTarget;
         oneOrderDelivery.originalDeliveryTarget = encryptedTarget;
         oneOrderDelivery.replaceCharacter1 = orderDelivery.replaceCharacter1 ?? null;
@@ -4220,7 +4228,7 @@ export class OrderService {
         oneOrderDelivery.replaceCharacter3 = orderDelivery.replaceCharacter3 ?? null;
         oneOrderDelivery.sendRequestAt = productSendAt;
         orderDeliveryCreateList.push(oneOrderDelivery);
-      }
+      });
     }
 
     await this.orderDeliveryRepository.insert(orderDeliveryCreateList);

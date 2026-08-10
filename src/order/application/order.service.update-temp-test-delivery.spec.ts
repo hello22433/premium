@@ -67,7 +67,14 @@ describe('OrderService updateTemp 테스트 발송 이력·한도 승계', () =>
     service.assertNoForbiddenWord = jest.fn();
     service.buildManualEntries = jest.fn(() => []);
     service.resolveOrderExpireAt = jest.fn(() => null);
-    service.cryptoCipher = { encryptDeliveryTarget: jest.fn((target: string) => target) };
+    // 암호화 시점을 기록한다. 매핑 잠금 전에 끝나야 매핑 X락 구간이 짧아진다.
+    service.encryptedBeforeLock = true;
+    service.cryptoCipher = {
+      encryptDeliveryTarget: jest.fn((target: string) => {
+        if (service.lockedMappingQuery) service.encryptedBeforeLock = false;
+        return target;
+      }),
+    };
 
     service.lockedOrderQuery = false;
     // 락을 잡은 순서. 데드락 방지를 위해 order -> orderProductMapping 이어야 한다.
@@ -243,6 +250,16 @@ describe('OrderService updateTemp 테스트 발송 이력·한도 승계', () =>
     await service.updateTemp(user, body([line(5, 1)]));
 
     expect(service.lockedMappingQuery).toBe(true);
+  });
+
+  // 수신처 암호화는 수천 건이 될 수 있어 매핑 X락 구간에서 돌리면 그만큼 테스트 발송이 대기한다.
+  it('수신처 암호화를 매핑 잠금 전에 끝낸다 (락 구간 단축)', async () => {
+    const service = buildService([existingMapping(5, 1, 1)]);
+
+    await service.updateTemp(user, body([line(5, 1)]));
+
+    expect(service.cryptoCipher.encryptDeliveryTarget).toHaveBeenCalled();
+    expect(service.encryptedBeforeLock).toBe(true);
   });
 
   // 락 순서는 order -> order_product_mapping -> test_order_delivery 한 방향이어야 한다.
