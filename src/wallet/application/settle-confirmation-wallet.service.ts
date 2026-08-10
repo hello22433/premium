@@ -32,7 +32,8 @@ export interface SettleConfirmResult {
 export interface SettleUndoResult {
   creditRestored: number;
   excessRestored: number;
-  settleCycleId: string;
+  /** 복원 대상 cycle. release 원장이 없어 복원할 것이 없으면 null. */
+  settleCycleId: string | null;
   walletTransactionIds: string[];
 }
 
@@ -66,7 +67,11 @@ export class SettleConfirmationWalletService {
   /**
    * 정산해제. 마지막 settle_release cycle 을 lookup 해 동일 amount 만큼 복원한다.
    *  - 마지막 cycle 에 매칭되는 settle_undo 가 이미 존재 → idempotent return (cycle id 그대로).
-   *  - settle_release 가 한 건도 없으면 throw (정산확정 안 한 주문 undo 시도).
+   *  - settle_release 가 없고 allocation 미복원 여신도 0 → 정산확정 시 release 금액이 0 이라
+   *    tx 를 한 건도 안 쓴 주문(예치금 전액 결제, 확정 전 전건 환불/폐기 복원) → no-op return.
+   *    확정이 wallet 잔액을 건드린 적이 없으므로 되돌릴 것도 없고, 이걸로 정산해제를 막지 않는다.
+   *  - settle_release 가 없는데 미복원 여신이 남아있으면 원장 유실 → throw. (아래 runUndo 참조)
+   *    legacy(syncCredit) 확정건은 type=SETTLE_RELEASE row 를 남기므로 이 분기에 들어오지 않는다.
    */
   async undoSettlement(orderId: number, externalManager?: EntityManager): Promise<SettleUndoResult> {
     if (externalManager) {
@@ -154,9 +159,21 @@ export class SettleConfirmationWalletService {
       .orderBy('t.id', 'DESC')
       .getMany();
     if (releaseTxs.length === 0) {
-      throw new BadRequestException(
-        `SettleConfirmationWalletService: no settle_release found for orderId=${orderId} (정산확정 안 한 주문)`,
-      );
+      // release 원장 부재를 두 경우로 가른다.
+      //  (a) 미복원 여신 0 → 확정 시 release 금액이 0 이라 tx 를 안 쓴 정상 주문 → no-op.
+      //  (b) 미복원 여신 > 0 → 확정이 잠근 여신을 풀 근거가 없다 = 원장 유실. 여기서 no-op 하면
+      //      호출부가 settledAmountSnapshot 까지 null 로 지워(settle.service.ts) 재시도 근거가 사라지고,
+      //      wallet.creditUsedAmount 는 차감된 채 잔존해 고객 여신 한도가 영구히 잠긴다.
+      const pendingCredit =
+        Math.max(0, alloc.creditUsedAmount - alloc.creditUsedRestoredAmount) +
+        Math.max(0, alloc.creditExcessAmount - alloc.creditExcessRestoredAmount);
+      if (pendingCredit > 0) {
+        throw new BadRequestException(
+          `SettleConfirmationWalletService: settle_release 없음 + 미복원 여신 ${pendingCredit} (orderId=${orderId}) — 원장 점검 필요`,
+        );
+      }
+      this.logger.warn(`settle_undo no-op: orderId=${orderId} settle_release 없음 (복원할 여신 없음)`);
+      return { creditRestored: 0, excessRestored: 0, settleCycleId: null, walletTransactionIds: [] };
     }
     const latestCycle = parseCycleFromIdempotencyKey(releaseTxs[0].idempotencyKey);
     const cycleReleaseTxs = releaseTxs.filter((t) => parseCycleFromIdempotencyKey(t.idempotencyKey) === latestCycle);
