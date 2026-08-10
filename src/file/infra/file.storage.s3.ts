@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { IFileStorage, IFileUploadFileReturn } from '../interface/file.storage';
 import {
@@ -9,6 +9,7 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { Readable } from 'stream';
+import { pipeline } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import { join } from 'path';
 import fs from 'node:fs';
@@ -19,6 +20,7 @@ import { resolveDownloadExtension } from '../../util/file.util';
 
 @Injectable()
 export class FileStorageS3 implements IFileStorage {
+  private readonly logger = new Logger(FileStorageS3.name);
   private s3Client: S3Client;
 
   constructor(private configService: ConfigService) {
@@ -216,14 +218,38 @@ export class FileStorageS3 implements IFileStorage {
 
       const localFilePath = join(path, fileTitle + `.${extension}`);
       const writeStream = fs.createWriteStream(localFilePath);
-      Body.pipe(writeStream);
 
-      return new Promise((resolve, reject) => {
-        writeStream.on('finish', () => resolve(localFilePath));
-        writeStream.on('error', reject);
-      });
+      // pipeline 은 성공/소스오류/대상오류 '모든' 종료 경로에서 콜백을 1회 호출하고 두 스트림을 정리한다.
+      // (컨트롤러의 스트리밍과 같은 관례 — user.drive.controller / order.receipt.controller)
+      // 과거엔 Body.pipe(writeStream) 뒤 writeStream 의 finish/error 만 들었다. 그러면 S3 Body 가
+      // 전송 도중 끊길 때(네트워크 리셋 등) ① Promise 가 영영 settle 되지 않아 요청이 매달리고
+      // ② 소스 오류가 uncaughtException 으로 튀어 프로세스가 죽을 수 있었다. 실측으로 둘 다 재현됨.
+      try {
+        await new Promise<void>((resolve, reject) => {
+          pipeline(Body, writeStream, (err) => (err ? reject(err) : resolve()));
+        });
+      } catch (error) {
+        // pipeline 은 스트림만 정리하고 이미 쓰인 부분 파일은 남긴다. 실패하면 호출자가 경로를 못 받아
+        // 정리할 수 없으므로(컨트롤러의 정리는 성공 경로에만 걸린다) 이 자리에서 지운다.
+        await this.removeLocalFileQuietly(localFilePath);
+        throw error;
+      }
+
+      return localFilePath;
     }
     throw new Error('Body is not a readable stream');
+  }
+
+  /** 실패 경로의 부분 파일 정리. 이미 없으면(ENOENT) 조용히 넘어가고, 그 외 실패만 누수로 경고한다. */
+  private removeLocalFileQuietly(localFilePath: string): Promise<void> {
+    return new Promise((resolve) => {
+      fs.unlink(localFilePath, (unlinkErr) => {
+        if (unlinkErr && (unlinkErr as NodeJS.ErrnoException).code !== 'ENOENT') {
+          this.logger.warn(`S3 다운로드 실패분 임시파일 삭제 실패(누수 가능): ${localFilePath} — ${unlinkErr.message}`);
+        }
+        resolve();
+      });
+    });
   }
 
   async copyImageFromUrl(imageUrl: string, safeIp: string): Promise<IFileUploadFileReturn> {
