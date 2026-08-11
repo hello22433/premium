@@ -351,8 +351,8 @@ export class OrderGetOrderCompleteReportResDto extends OrderCompleteReportViewDt
 export class OrderDeliveryConfirmed {
   @ApiProperty({
     description:
-      '메세지 ex) 전체 성공 : success, 일부 실패가 존재하는 경우 : fail, 한도 초과(1차) : credit_excess, ' +
-      '신용초과 사전 승인 필요(WALLET 모드 2차) : credit_excess_pending_approval',
+      '메세지 ex) 전체 성공 : success, 일부 실패가 존재하는 경우 : fail, ' +
+      '신용초과 → 승인 요청 필요 : credit_excess (POST /credit-excess-approvals 로 승인 요청)',
   })
   message: string;
 
@@ -367,19 +367,6 @@ export class OrderDeliveryConfirmed {
 
   @ApiPropertyOptional({ description: '필요 금액 (= requestedAmount)' })
   finalAmount?: number;
-
-  /**
-   * WALLET 모드 credit_excess_pending_approval 응답 시 함께 반환.
-   * 클라이언트는 본 값들을 POST /credit-excess-approvals 요청 body 에 그대로 전달.
-   */
-  @ApiPropertyOptional({ description: 'wallet_account ID (BIGINT 직렬화 string)' })
-  walletAccountId?: string;
-
-  @ApiPropertyOptional({ description: '신용초과 사전 승인 요청 금액 (= excessAmount)' })
-  requestedCreditExcessAmount?: number;
-
-  @ApiPropertyOptional({ description: '신용초과 사전 승인 총 청구 금액 (= finalAmount)' })
-  requestedAmount?: number;
 
   // ===== Wallet PR3: success 응답 분배 상세 (WALLET 모드). LEGACY 는 0/null 통일 =====
   @ApiPropertyOptional({ description: '적용된 포인트 사용액' })

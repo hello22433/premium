@@ -8,6 +8,7 @@ import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocat
 import { OrderPaymentAllocationLineEntity } from '../../entity/order.payment.allocation.line.entity';
 import { OrderPointUsageEntity } from '../../entity/order.point.usage.entity';
 import { CreditExcessApprovalEntity } from '../../entity/credit.excess.approval.entity';
+import { CreditExcessApprovalExecutionEntity } from '../../entity/credit.excess.approval.execution.entity';
 import { OrderPaymentRefundEventEntity } from '../../entity/order.payment.refund.event.entity';
 import { OrderDeliveryAttemptEntity } from '../../entity/order.delivery.attempt.entity';
 
@@ -139,15 +140,22 @@ describe('PR1a wallet entities — TypeORM 매핑 검증', () => {
   });
 
   describe('credit_excess_approval', () => {
-    it('unique(id, consumed_at) — 1회 사용 보장', () => {
-      const uniques = uniquesOf(CreditExcessApprovalEntity);
+    it('활성 요청 unique key — 같은 주문의 PENDING/PROCESSING 중복 차단', () => {
+      const activeOrderKey = getCol(CreditExcessApprovalEntity, 'activeOrderKey');
+      expect(activeOrderKey?.options.generatedType).toBe('STORED');
+      expect(String(activeOrderKey?.options.asExpression)).toContain("'PENDING','PROCESSING'");
+    });
+
+    it('실행 제어 컬럼 (attempt_token / lease_expires_at / snapshot)', () => {
+      expect(getCol(CreditExcessApprovalEntity, 'attemptToken')?.options.nullable).toBe(true);
+      expect(getCol(CreditExcessApprovalEntity, 'leaseExpiresAt')?.options.nullable).toBe(true);
+      expect(getCol(CreditExcessApprovalEntity, 'snapshot')?.options.nullable).toBe(true);
+    });
+
+    it('실행 표식은 approval 당 1건 (unique)', () => {
+      const uniques = uniquesOf(CreditExcessApprovalExecutionEntity);
       expect(
-        uniques.some(
-          (u) =>
-            Array.isArray(u.columns) &&
-            (u.columns as string[]).includes('id') &&
-            (u.columns as string[]).includes('consumedAt'),
-        ),
+        uniques.some((u) => Array.isArray(u.columns) && (u.columns as string[]).includes('approvalId')),
       ).toBe(true);
     });
 

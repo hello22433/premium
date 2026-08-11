@@ -33,6 +33,10 @@ import { PointGrantEntity } from '../entity/point.grant.entity';
 import { ForbiddenWordModule } from '../forbidden_word/forbidden.word.module';
 import { ForbiddenWordBlockLogEntity } from '../entity/forbidden.word.block.log.entity';
 import { OrderFromModule } from '../order_from/order.from.module';
+import { CreditExcessApprovalEntity } from '../entity/credit.excess.approval.entity';
+import { CreditExcessApprovalController } from './api/credit-excess-approval.controller';
+import { CreditExcessApprovalDispatchService } from './application/credit-excess-approval-dispatch.service';
+import { CreditExcessApprovalRecoverySchedule } from './credit-excess-approval.recovery.schedule';
 
 @Module({
   imports: [
@@ -58,6 +62,7 @@ import { OrderFromModule } from '../order_from/order.from.module';
       WalletAccountEntity,
       PointGrantEntity,
       ForbiddenWordBlockLogEntity,
+      CreditExcessApprovalEntity,
     ]),
     PartnerCompanyExternModule,
     forwardRef(() => UserManagementModule),
@@ -68,8 +73,14 @@ import { OrderFromModule } from '../order_from/order.from.module';
     ForbiddenWordModule,
     OrderFromModule,
   ],
-  controllers: [OrderController],
-  providers: [OrderService, EarlyDestroyService, OrderCancelNotificationService],
-  exports: [OrderService],
+  controllers: [OrderController, CreditExcessApprovalController],
+  providers: [
+    OrderService,
+    EarlyDestroyService,
+    OrderCancelNotificationService,
+    CreditExcessApprovalDispatchService,
+    CreditExcessApprovalRecoverySchedule,
+  ],
+  exports: [OrderService, CreditExcessApprovalDispatchService],
 })
 export class OrderModule {}

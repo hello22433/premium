@@ -86,6 +86,7 @@ import { OrderPaymentAllocationEntity } from '../entity/order.payment.allocation
 import { OrderPaymentAllocationLineEntity } from '../entity/order.payment.allocation.line.entity';
 import { OrderPointUsageEntity } from '../entity/order.point.usage.entity';
 import { CreditExcessApprovalEntity } from '../entity/credit.excess.approval.entity';
+import { CreditExcessApprovalExecutionEntity } from '../entity/credit.excess.approval.execution.entity';
 import { OrderPaymentRefundEventEntity } from '../entity/order.payment.refund.event.entity';
 import { OrderDeliveryAttemptEntity } from '../entity/order.delivery.attempt.entity';
 import { ForbiddenWordEntity } from '../entity/forbidden.word.entity';
@@ -216,6 +217,7 @@ import { ExternalApiPinInventoryRequestEntity } from '../entity/external.api.pin
           OrderPaymentAllocationLineEntity,
           OrderPointUsageEntity,
           CreditExcessApprovalEntity,
+          CreditExcessApprovalExecutionEntity,
           OrderPaymentRefundEventEntity,
           OrderDeliveryAttemptEntity,
           ForbiddenWordEntity,

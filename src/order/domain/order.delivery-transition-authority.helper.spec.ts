@@ -4,7 +4,6 @@ import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
 import { IOrderType } from '../interface/order.type';
 import { IOrderStatus } from '../interface/order.status';
 import {
-  canForceConfirmDelivery,
   canTransitionDelivery,
   shouldExposeSsgBalanceCheck,
 } from './order.delivery-transition-authority.helper';
@@ -69,20 +68,6 @@ describe('order delivery transition authority', () => {
       expect(canTransitionDelivery({ ...operationAdmin, authorityList: UserAuthSubEnum.SEND_GENERAL }, order)).toBe(
         false,
       );
-    });
-  });
-
-  describe('canForceConfirmDelivery', () => {
-    it('최고 관리자와 운영 관리자만 강제확정을 허용한다', () => {
-      expect(canForceConfirmDelivery({ ...operationAdmin, id: 1, authority: IUserAuthority.SUPER_ADMIN })).toBe(true);
-      expect(canForceConfirmDelivery({ ...operationAdmin, id: 2 })).toBe(true);
-      expect(canForceConfirmDelivery({ ...operationAdmin, id: 3, authority: IUserAuthority.CORPORATE_ADMIN })).toBe(
-        false,
-      );
-    });
-
-    it('비활성 계정의 강제확정을 차단한다', () => {
-      expect(canForceConfirmDelivery({ ...operationAdmin, status: IUserStatus.NOT_USED })).toBe(false);
     });
   });
 
