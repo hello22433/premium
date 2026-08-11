@@ -40,7 +40,7 @@ const TEST_DB_NAME_PATTERN = /test/i;
  * 8번째 조건을 한쪽에만 넣으면 이 대조가 깨진다.
  *
  * ※ order-level 게이트(SSG 등)는 findCancelableDeliveryIds 에 없고 조립부(getDetail)에서
- *   판정하므로 이 parity 의 대상이 아니다. 여기서는 발송건 축(7조건)만 대조한다.
+ *   판정하므로 이 parity 의 대상이 아니다. 여기서는 발송건 축(9조건)만 대조한다.
  *   EXTERNAL 은 SQL(o.type != EXTERNAL)·술어 양쪽에 있으므로 포함한다.
  *
  * 실행: npm run test:db (DATABASE_DATABASE 이름에 test 포함 필요)
@@ -226,8 +226,8 @@ describe('OrderService cancelable — 술어 ↔ SQL parity (실 DB)', () => {
     return { orderId: (order as any).id as number, ids };
   };
 
-  it('발송건 7조건 각각을 위반한 건에서 술어.cancelable === (id ∈ findCancelableDeliveryIds)', async () => {
-    // index 0 = 전 조건 충족(취소가능), 1~7 = 조건을 하나씩 위반
+  it('발송건 9조건 각각을 위반한 건에서 술어.cancelable === (id ∈ findCancelableDeliveryIds)', async () => {
+    // index 0 = 전 조건 충족(취소가능), 1~9 = 조건을 하나씩 위반
     const overrides: Array<Partial<OrderDeliveryEntity>> = [
       {}, // 0: 취소 가능
       { status: 'COMPLETE' as any }, // 1: status != WAIT
@@ -237,6 +237,10 @@ describe('OrderService cancelable — 술어 ↔ SQL parity (실 DB)', () => {
       { barCode: 'ABC123' } as any, // 5: 발급됨(barcode)
       { reportState: 'PENDING' as any }, // 6: 리포트 시작
       { sendRequestAt: withinCutoffSendAt } as any, // 7: 컷오프 이내
+      // 8~9: 쿠폰상태 축. status 와 별개 축이라 status=WAIT 그대로 두고 coupon_status 만 바꾼다 —
+      //      CS 폐기(execDiscard)가 실제로 만드는 조합이다.
+      { couponStatus: 'CANCEL' as any }, // 8: CS 폐기됨
+      { mutationClaimedAt: new Date(Date.now() - 60 * 1000) } as any, // 9: CS 가 지금 변형 중(1분 전 lease)
     ];
     const { orderId, ids } = await seedOrder(IOrderType.GENERAL, overrides);
 
@@ -278,6 +282,12 @@ describe('OrderService cancelable — 술어 ↔ SQL parity (실 DB)', () => {
     ['coupon_issued_at', { couponIssuedAt: new Date() }],
     ['bar_code', { barCode: 'ISSUED-PIN' }],
     ['report_state', { reportState: 'PENDING' }],
+    // 쿠폰상태 축 — CS 폐기가 조회~갱신 창에서 커밋된 경우. status 는 WAIT 그대로라
+    // status 만 보는 CAS 로는 걸러지지 않는다(이미 폐기·환불된 핀을 또 환불하는 경로).
+    ['coupon_status(CS 폐기)', { couponStatus: 'CANCEL' }],
+    // CS 가 아직 커밋 전이라 coupon_status 는 NOT_USED 인데 lease 만 잡힌 구간.
+    // 커밋 전이라 어떤 격리수준으로도 안 보이므로 조건으로 막는 수밖에 없다.
+    ['mutation_claimed_at(CS 작업중)', { mutationClaimedAt: new Date() }],
   ])('조회 후 %s 가 생기면 CAS 가 취소를 거부한다 (발급 신호 재검증)', async (_label, mutation) => {
     const { orderId, ids } = await seedOrder(IOrderType.GENERAL, [{}]);
 

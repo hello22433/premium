@@ -5,6 +5,12 @@ import { calculateOrderSettlementAmount } from '../../util/settle-fee.util';
 jest.mock('typeorm-transactional', () => ({
   Transactional: () => (_target: any, _key: string, descriptor: PropertyDescriptor) => descriptor,
   Propagation: { REQUIRES_NEW: 'REQUIRES_NEW' },
+  IsolationLevel: {
+    READ_UNCOMMITTED: 'READ UNCOMMITTED',
+    READ_COMMITTED: 'READ COMMITTED',
+    REPEATABLE_READ: 'REPEATABLE READ',
+    SERIALIZABLE: 'SERIALIZABLE',
+  },
   initializeTransactionalContext: jest.fn(),
   addTransactionalDataSource: jest.fn(),
 }));

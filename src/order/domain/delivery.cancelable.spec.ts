@@ -1,6 +1,7 @@
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { IOrderDeliveryReportState } from '../../delivery/interface/order.delivery.report.state';
 import { IOrderType } from '../interface/order.type';
+import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import {
   DELIVERY_CANCEL_CUTOFF_MS,
@@ -35,6 +36,8 @@ describe('evaluateDeliveryCancelable', () => {
     barCode: null,
     reportState: null,
     sendRequestAt: okSendRequestAt,
+    couponStatus: OrderDeliveryCouponStatus.NOT_USED,
+    mutationClaimedAt: null,
   };
 
   it('모든 조건을 만족하면 취소 가능(blockReason=null)', () => {
@@ -121,6 +124,41 @@ describe('evaluateDeliveryCancelable', () => {
       evaluateDeliveryCancelable({ ...base, sendRequestAt: undefined as unknown as Date }, IOrderType.GENERAL, now)
         .blockReason,
     ).toBe(DeliveryCancelBlockReason.CUTOFF_PASSED);
+  });
+
+  /**
+   * status 와 coupon_status 는 별개 축이다. CS 폐기(execDiscard)는 coupon_status 만 CANCEL 로 쓰고
+   * status 는 건드리지 않으므로 `status=WAIT + coupon_status=CANCEL` 행이 실제로 존재한다.
+   * status 만 보면 이미 폐기·환불된 핀을 취소 대상으로 잡아 한 번 더 환불한다.
+   */
+  it.each([
+    ['폐기', OrderDeliveryCouponStatus.CANCEL],
+    ['환불폐기', OrderDeliveryCouponStatus.REFUND_CANCEL],
+  ])('WAIT 이어도 쿠폰상태가 %s 면 취소 불가', (_label, couponStatus) => {
+    expect(evaluateDeliveryCancelable({ ...base, couponStatus }, IOrderType.GENERAL, now).blockReason).toBe(
+      DeliveryCancelBlockReason.COUPON_MUTATING,
+    );
+  });
+
+  it('CS 가 지금 변형 중(lease 살아 있음)이면 취소 불가', () => {
+    // 4분 전에 잡힌 lease — stale(5분) 이전이라 아직 유효하다
+    const fresh = new Date(now.getTime() - 4 * 60 * 1000);
+
+    expect(evaluateDeliveryCancelable({ ...base, mutationClaimedAt: fresh }, IOrderType.GENERAL, now).blockReason).toBe(
+      DeliveryCancelBlockReason.COUPON_MUTATING,
+    );
+  });
+
+  /**
+   * lease 를 IS NULL 로만 보면, 크래시로 해제 못 한 값이 스스로 지워지지 않아 그 발송건이
+   * **영구히** 취소 불가가 된다. CS 획득 조건과 같은 stale 규칙을 써야 self-heal 이 맞는다.
+   */
+  it('lease 가 stale(5분 초과)이면 무시하고 취소 가능', () => {
+    const stale = new Date(now.getTime() - 6 * 60 * 1000);
+
+    expect(evaluateDeliveryCancelable({ ...base, mutationClaimedAt: stale }, IOrderType.GENERAL, now).cancelable).toBe(
+      true,
+    );
   });
 
   it('판정 우선순위: 이미 발송 > 컷오프 (둘 다 위반 시 ALREADY_SENT)', () => {

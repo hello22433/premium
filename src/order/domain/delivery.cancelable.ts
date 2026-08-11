@@ -1,6 +1,11 @@
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { IOrderDeliveryReportState } from '../../delivery/interface/order.delivery.report.state';
 import { IOrderType } from '../interface/order.type';
+import {
+  MUTATION_CLAIM_STALE_MS,
+  UNSENDABLE_COUPON_STATUSES,
+} from '../../delivery/interface/order.delivery.mutation.claim';
+import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 
 /**
  * 발송 취소 마감 — 실발송 예정 시각으로부터 이만큼 남아 있어야 취소할 수 있다.
@@ -36,6 +41,12 @@ export enum DeliveryCancelBlockReason {
   /** 발송 예정 시각까지 컷오프(기본 10분) 미만 남음 */
   CUTOFF_PASSED = 'CUTOFF_PASSED',
   /**
+   * 쿠폰상태 축에서 이미 끝났거나(CS 폐기·환불폐기) CS 가 지금 그 건을 변형 중이다.
+   * status 와 coupon_status 는 별개 축이라 `status=WAIT + coupon_status=CANCEL` 행이 존재한다 —
+   * status 만 보면 이미 폐기·환불된 핀을 취소 대상으로 잡아 한 번 더 환불한다.
+   */
+  COUPON_MUTATING = 'COUPON_MUTATING',
+  /**
    * 주문 레벨에서 부분취소를 지원하지 않는 주문 — 발송건 조건과 무관하게 엔드포인트가 거부한다.
    * 현재: SSG 주문(행사잔액 발송건별 복구 미지원, partialDeliveryCancel 이 SSG 를 400 으로 선차단).
    * ★ 이 사유는 발송건 술어(evaluateDeliveryCancelable)가 아니라 주문 조립부(getDetail)에서
@@ -57,6 +68,8 @@ export interface DeliveryCancelableView {
   barCode: string | null;
   reportState: IOrderDeliveryReportState | null;
   sendRequestAt: Date | null;
+  couponStatus: OrderDeliveryCouponStatus;
+  mutationClaimedAt: Date | null;
 }
 
 /**
@@ -82,6 +95,7 @@ export type DeliveryCancelableResult =
  *   5) couponIssuedAt IS NULL AND barCode IS NULL
  *   6) order.type != EXTERNAL
  *   7) sendRequestAt >= now + cutoff
+ *   8) couponStatus 가 폐기·환불폐기가 아니고, CS 변형 lease 가 살아 있지 않음
  *
  * 판정 순서는 "더 확정적인 사유" 를 먼저 노출한다(이미 발송 > 컷오프 등).
  */
@@ -110,6 +124,16 @@ export function evaluateDeliveryCancelable(
   }
   if (orderType === IOrderType.EXTERNAL) {
     return block(DeliveryCancelBlockReason.EXTERNAL_ORDER);
+  }
+  // 쿠폰상태 축. 이미 끝난 것(폐기·환불폐기)과, CS 가 지금 잡고 있는 것을 함께 막는다.
+  // lease 는 IS NULL 로만 보면 안 된다 — 크래시로 해제 못 한 값이 스스로 지워지지 않아 그 건이
+  // 영구히 취소 불가가 된다. CS 획득 조건과 같은 stale(5분) 규칙으로 self-heal 을 맞춘다.
+  if (
+    UNSENDABLE_COUPON_STATUSES.includes(delivery.couponStatus) ||
+    (delivery.mutationClaimedAt != null &&
+      delivery.mutationClaimedAt.getTime() >= now.getTime() - MUTATION_CLAIM_STALE_MS)
+  ) {
+    return block(DeliveryCancelBlockReason.COUPON_MUTATING);
   }
   // sendRequestAt 이 없으면(즉시발송 등 예약 아님) 컷오프 판정 불가 → 취소 대상 아님으로 본다.
   // ★ `== null` 로 null 과 undefined 를 함께 막는다. 로더 배선 오류로 이 필드가 undefined 로

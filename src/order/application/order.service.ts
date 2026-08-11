@@ -83,7 +83,7 @@ import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { IOrderStatus } from '../interface/order.status';
 import { IOrderSendMethod } from '../interface/order.send.method';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
-import { Propagation, Transactional, runOnTransactionCommit } from 'typeorm-transactional';
+import { IsolationLevel, Propagation, Transactional, runOnTransactionCommit } from 'typeorm-transactional';
 import { OrderCancelNotificationService } from './order.cancel.notification.service';
 import { isDirectCustomerCancelTarget } from '../domain/order.cancel.notification.policy';
 import {
@@ -117,6 +117,10 @@ import {
 import { listToMap, listToMapValue } from '../../util/map.util';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { NOT_CUTOVER_ORDER_DELIVERY } from '../../delivery/interface/legacy.delivery.entry.point';
+import {
+  MUTATION_CLAIM_STALE_MS,
+  UNSENDABLE_COUPON_STATUSES,
+} from '../../delivery/interface/order.delivery.mutation.claim';
 import { CreateTransactionId } from '../domain/create.transaction.id';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
@@ -5781,6 +5785,12 @@ export class OrderService {
       // 간접적으로 같은 행을 걸러내지만, 그건 "발급되면 bar_code 도 찬다" 는 다른 모듈의
       // 암묵 불변식에 기댄 것이다. 배치가 직접 보는 컬럼을 여기서도 본다(조건 6 과 같은 이유).
       .andWhere('od.reportState IS NULL')
+      // CAS 와 같은 조건집합을 유지한다 — 여기만 빠지면 화면엔 취소가능으로 뜨고 누르면 실패한다.
+      // (두 곳의 drift 는 cancelable parity 실DB 테스트가 감지한다)
+      .andWhere('od.couponStatus NOT IN (:...unsendable)', { unsendable: UNSENDABLE_COUPON_STATUSES })
+      .andWhere('(od.mutationClaimedAt IS NULL OR od.mutationClaimedAt < :mutationStale)', {
+        mutationStale: new Date(now.getTime() - MUTATION_CLAIM_STALE_MS),
+      })
       .andWhere('o.type != :externalType', { externalType: IOrderType.EXTERNAL })
       .orderBy('od.id', 'ASC')
       .getRawMany<{ id: number }>();
@@ -5894,6 +5904,21 @@ export class OrderService {
       .andWhere('couponIssuedAt IS NULL')
       .andWhere('barCode IS NULL')
       .andWhere('reportState IS NULL')
+      // ★ 쿠폰상태 축을 함께 본다 (리뷰 P1). status 와 coupon_status 는 **별개 축**이다 —
+      //   CS 폐기(execDiscard)는 coupon_status 만 CANCEL/REFUND_CANCEL 로 쓰고 status 는 건드리지
+      //   않으므로 `status=WAIT + coupon_status=CANCEL` 행이 실제로 존재한다
+      //   (order.delivery.mutation.claim.ts 의 UNSENDABLE_COUPON_STATUSES 설명 참조).
+      //   status 만 보는 이 CAS 는 그 "이미 폐기·환불된 핀" 을 취소 대상으로 잡아 한 번 더 환불했다.
+      .andWhere('couponStatus NOT IN (:...unsendable)', { unsendable: UNSENDABLE_COUPON_STATUSES })
+      // ★ CS 가 **지금 작업 중**인 건도 배제한다. 위 조건은 이미 커밋된 결과만 걸러낸다 —
+      //   폐기가 협력사 통신 중이라 아직 커밋 전이면 coupon_status 는 그대로 NOT_USED 라
+      //   어떤 격리수준으로도 보이지 않는다. 그 구간의 표시가 mutation_claimed_at lease 다.
+      //   ※ IS NULL 로만 막으면 안 된다. 크래시로 해제 못 한 lease 는 스스로 지워지지 않아
+      //     그 발송건이 **영구히** 취소 불가가 된다. CS 의 획득 조건과 같은 stale 규칙을 써서
+      //     5분이 지난 lease 는 무시한다(self-heal 동일 기준).
+      .andWhere('(mutationClaimedAt IS NULL OR mutationClaimedAt < :mutationStale)', {
+        mutationStale: new Date(Date.now() - MUTATION_CLAIM_STALE_MS),
+      })
       // ★ 컷오프를 갱신 시점 기준으로 다시 본다 (관리자 리뷰 P1). cutoffAt 은 이 UPDATE 직전에
       //   새로 읽은 시각이라, 조회~갱신 사이에 send_request_at 이 다른 흐름(유효기간 변경·재발행)
       //   으로 앞당겨져 발송이 임박해진 행을 배제한다.
@@ -6368,7 +6393,33 @@ export class OrderService {
     };
   }
 
-  @Transactional()
+  /**
+   * ★ READ COMMITTED 로 고정한다 (리뷰 P1). 기본값(MySQL REPEATABLE READ)이면 자금이 어긋난다.
+   *
+   * REPEATABLE READ 는 트랜잭션의 **첫 비잠금 SELECT** 시점 스냅샷을 끝까지 보여준다. 잠금 읽기
+   * (FOR UPDATE)와 UPDATE 는 최신을 보므로, 한 트랜잭션 안에서 두 종류가 섞이면 앞뒤가 어긋난다.
+   * 이 경로는 정확히 그 형태다 — 락으로 직렬화해 놓고, 정작 판단은 비잠금 SELECT 로 한다.
+   *
+   * 실제로 어긋나는 곳:
+   *  1) 주문 행을 두 번 읽는다. 잠금 조회(존재확인+직렬화)와 그래프 조회(실제 사용)가 분리돼 있는데,
+   *     뒤엣것이 스냅샷을 본다. 락을 기다리는 동안 부분취소가 settleAmount 를 낮추고 커밋해도
+   *     낮아지기 전 값을 읽어 그 금액으로 환불한다.
+   *  2) 취소 후 정산 재계산이 다른 발송건 상태를 비잠금으로 읽는다. 같은 주문의 다른 발송건을
+   *     먼저 취소한 트랜잭션이 커밋됐어도 그 건을 아직 살아 있는 것으로 세어 금액을 부풀린다.
+   *  3) RefundPoolService 는 "락 잡고 → 다시 읽어 중복 확인" 방식이라 호출자에게 READ COMMITTED 를
+   *     명시적으로 요구한다(refund-pool.service.ts). 외부 manager 를 넘기는 이 경로가 그 요구를
+   *     지키지 않고 있었다 — 스냅샷을 보면 재확인이 옛 값을 봐서 중복 확인이 무력화된다.
+   *
+   * 대안으로 "잠금 읽기를 먼저 두어 스냅샷 시점을 뒤로 미루기" 도 가능하지만, 그건 **어디에도 적혀
+   * 있지 않은 순서 규칙**("락보다 앞에 비잠금 SELECT 를 두지 마라")에 계속 기대는 방식이다.
+   * 실제로 소유권 검증 한 줄이 앞에 들어가면서 그 규칙이 깨졌던 전례가 있다. 격리수준으로 내리면
+   * 스냅샷 자체가 없어져 순서에 의존하지 않는다.
+   *
+   * 안전성 근거: 이 트랜잭션이 직접 수행하는 읽기 13곳을 전수 확인했고, "같은 값을 두 번 읽고
+   * 동일함을 전제" 하는 코드는 없다. 두 번 읽는 두 곳(취소가능 조회↔CAS, 잠금조회↔그래프조회)은
+   * 모두 값이 달라질 수 있다는 전제로 쓰여 있어(affected 대조 / 위 1번) 낮추면 오히려 정확해진다.
+   */
+  @Transactional({ isolationLevel: IsolationLevel.READ_COMMITTED })
   async deliveryCancel(user: ILoginUserInfo, getBody: OrderDeliveryCancelReqDto) {
     const { id, cancelReason, deliveryIds } = getBody;
 
