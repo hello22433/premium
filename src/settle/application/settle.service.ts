@@ -1264,10 +1264,15 @@ export class SettleService {
     const nowString = format(now, 'yyyyMMdd');
 
     // 동일 필터를 id수집 QB와 graph QB 양쪽에 동일 적용
-    const applyPartnerFilters = <T extends SelectQueryBuilder<any>>(qb: T): T => {
-      qb.where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] }).andWhere(
-        'orderDelivery.actualSendAt IS NOT NULL',
-      );
+    const applyPartnerFilters = <T extends SelectQueryBuilder<any>>(qb: T, append = false): T => {
+      const statusCondition = 'order.status IN (:...status)';
+      const statusParams = { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] };
+      if (append) {
+        qb.andWhere(statusCondition, statusParams);
+      } else {
+        qb.where(statusCondition, statusParams);
+      }
+      qb.andWhere('orderDelivery.actualSendAt IS NOT NULL');
 
       if (settleMethod) {
         qb.andWhere('partnerCompany.settleMethod LIKE :settleMethod', {
@@ -1359,7 +1364,7 @@ export class SettleService {
     for (let i = 0; i < ids.length; i += CHUNK) {
       const chunkIds = ids.slice(i, i + CHUNK);
 
-      const chunkList = await this.orderDeliveryRepository
+      let chunkQueryBuilder = this.orderDeliveryRepository
         .createQueryBuilder('orderDelivery')
         .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
         .innerJoinAndSelect('orderProductMapping.order', 'order')
@@ -1373,9 +1378,10 @@ export class SettleService {
         .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
         .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
         .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
-        .whereInIds(chunkIds)
-        .orderBy('orderDelivery.id', 'DESC')
-        .getMany();
+        .whereInIds(chunkIds);
+
+      chunkQueryBuilder = applyPartnerFilters(chunkQueryBuilder, true);
+      const chunkList = await chunkQueryBuilder.orderBy('orderDelivery.id', 'DESC').getMany();
 
       // chunkIds 순서대로 정렬 (whereInIds는 순서를 보장하지 않음)
       const chunkMap = new Map(chunkList.map((d) => [d.id, d]));
