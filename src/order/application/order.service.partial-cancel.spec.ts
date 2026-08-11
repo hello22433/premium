@@ -188,6 +188,8 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
     // ★ andWhere 인자를 캡처한다. getCount 만 스텁하면 조건을 반전시켜도(= vs !=) 전부 통과해
     //   "잔여 판정" 테스트가 아무것도 지키지 못한다 — 실제로 뮤테이션으로 확인된 공백이었다.
     const remainingConditions: Array<[string, any]> = [];
+    // 락 획득 순서 기록 — 발송확정(주문 → 회사·사용자 → 지갑)과 같은 순서인지 본다.
+    const lockOrder: string[] = [];
     // ★ 잔여 집계는 **두 종류**다. 조건에 따라 다른 수를 돌려줘야 둘을 구분하는 테스트가 가능하다.
     //   · status != CANCEL  → 주문 상태 결정용(이미 끝난 건도 센다)
     //   · status =  WAIT    → 고객 메일용(앞으로 나갈 것만 센다)
@@ -215,6 +217,12 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
     // 이 스펙의 관심사는 취소·환불 흐름이고, view_scope 쿼리까지 모킹하면 builder 가 비대해진다.
     sut.assertOrderInViewScope = jest.fn().mockResolvedValue(undefined);
     sut.walletManagedPredicate = { isWalletManaged: jest.fn(async () => over.isWalletManaged ?? true) };
+    // 과금 범위 잠금 — 발송확정과 락 순서를 맞추려고 환불보다 먼저 부른다.
+    // 호출 순서를 검증할 수 있게 lockOrder 에 기록한다.
+    sut.lockBillingScope = jest.fn(async () => {
+      lockOrder.push('billingScope');
+      return { user: {}, companyUsers: [] };
+    });
     // 실제 RefundPoolService 는 allocation 누적을 올리고, **이번 호출의 재원별 복구액**을
     // restoredByResource 로 돌려준다(락 안에서 계산). 호출부는 그 값만 써야 하며 allocation 차액을
     // 역산하면 안 된다 — 락 밖 구간에 끼어든 남의 환불이 섞이기 때문(관리자 리뷰 P1).
@@ -222,6 +230,7 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
     sut.refundPoolService = {
       // 원장은 라인당 1개 → 정상 흐름은 요청 건수만큼 반환(커버리지 가드 통과).
       refund: jest.fn(async (input: any) => {
+        lockOrder.push('wallet');
         const ledgerIds = (input.targetDeliveryIds as number[]).map((id) => `l-${id}`);
         if (over.alreadyRefunded) {
           return {
@@ -269,6 +278,7 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       survivingMappings,
       userUpdates,
       companyUpdates,
+      lockOrder,
     };
   };
 
@@ -603,6 +613,27 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
 
   // 지갑 잔액은 RefundPoolService 가 맞추지만 레거시 컬럼은 건드리지 않는다. 전체취소·외부API취소는
   // 이 역복원을 하는데 부분취소만 빠져 있으면 고객사 화면과 정산 화면의 잔액이 어긋난다.
+  /**
+   * 락 순서는 이 저장소 전체가 공유하는 규약이다(BillingScopeLockService 주석: "이 순서는
+   * deliveryRequest / deliveryConfirmed 및 settlement_code 변경이 동일하게 사용해야 서로 다른
+   * 사용자의 동시 발송에서도 순환 대기가 생기지 않는다").
+   *
+   * 부분취소만 그 대열에서 빠져 있었다. 레거시 미러를 증감 UPDATE 하면서 결과적으로 같은 행
+   * (회사·사용자)을 잠갔는데, 그 시점이 **지갑 뒤** 였다. 발송확정은 회사·사용자를 지갑보다
+   * 먼저 잡으므로 같은 회사의 서로 다른 주문 두 건이 동시에 돌면 교착된다.
+   *   T1(부분취소): 지갑 잡고 회사 대기 / T2(발송확정): 회사 잡고 지갑 대기
+   * 주문 번호가 달라 주문 락으로는 걸러지지 않는다.
+   */
+  describe('락 순서', () => {
+    it('과금 범위(회사·사용자)를 지갑보다 먼저 잠근다 — 발송확정과 같은 순서', async () => {
+      const { sut, lockOrder } = buildSut();
+
+      await call(sut, CANCELABLE);
+
+      expect(lockOrder).toEqual(['billingScope', 'wallet']);
+    });
+  });
+
   describe('레거시 미러 역복원', () => {
     // ★ balance / all_settle_amount 는 회사·유저 단위 공유 자원이라 이 주문의 락으로 보호되지 않는다.
     //   읽은 값에 델타를 더해 되쓰면(read-modify-write) 같은 고객사의 다른 주문이 동시에 취소될 때

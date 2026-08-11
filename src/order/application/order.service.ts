@@ -6143,6 +6143,23 @@ export class OrderService {
     //   같은 키가 되어 재시도 멱등이 유지된다.
     const requestDigest = createHash('sha1').update(requested.join(',')).digest('hex').slice(0, 16);
 
+    // ★ 과금 범위(회사 + 소속 사용자)를 **환불보다 먼저** 잠근다 (리뷰 P2 — 데드락).
+    //
+    //   아래에서 레거시 미러(회사 예치금 / 사용자 여신)를 증감 UPDATE 하는데, UPDATE 도 그 행에
+    //   락을 건다. 즉 이 경로의 실제 순서는 종전에 `주문 → 지갑 → 회사·사용자` 였다.
+    //   그런데 발송확정(deliveryConfirmed)은 `주문 → 회사·사용자(lockBillingScope) → 지갑` 이다.
+    //   지갑과 회사의 순서가 서로 반대라, 같은 회사의 **서로 다른 주문** 두 건이 동시에 돌면
+    //     T1(부분취소): 지갑 잡고 회사 대기
+    //     T2(발송확정): 회사 잡고 지갑 대기
+    //   로 교착된다. 주문 번호가 달라 주문 락으로는 걸러지지 않는다.
+    //
+    //   여기서 미리 잡아 순서를 발송확정과 같게 맞춘다. 잠그는 대상·총량은 종전과 같고
+    //   (어차피 아래 UPDATE 가 같은 행을 잠근다) 보유 구간만 환불 앞으로 당겨진다.
+    //   ※ 환불 구간에는 외부 통신이 없다(전부 DB 작업) — 보유 시간이 크게 늘지 않는다.
+    //   ※ 반환값을 쓰지 않고 아래에서 billingUser 를 다시 읽는 것은 의도다. 여기서는 순서를 맞추는
+    //     것이 목적이고, 재조회는 환불이 반영된 최신 값을 읽기 위한 것이다(READ COMMITTED).
+    await this.lockBillingScope(getBillingUserId(lockedOrder));
+
     const refundResult = await this.refundPoolService.refund(
       {
         orderId,
