@@ -82,17 +82,26 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
     }) as any;
 
   // map.orderDelivery — execHistory 진입 시 검증/분기에 쓰임
-  const buildMapOrderDelivery = (orderType: IOrderType) =>
+  // priceOverride: D3-70 회귀용. snapshot(주문시점 박제가) / live(현재 카탈로그가)를 갈라 주입한다.
+  //   미지정 시 종전과 동일(snapshot 없음 + live=PRICE) → 기존 케이스 비트동일.
+  const buildMapOrderDelivery = (
+    orderType: IOrderType,
+    priceOverride?: { snapshotProductPrice?: number | null; productPrice?: number },
+  ) =>
     ({
       id: 7001,
       deliveryMethod: 'SMS',
       orderProductMapping: {
         order: { id: ORDER_ID, type: orderType },
-        product: { price: PRICE, expireDay: EXPIRE_DAY },
+        snapshotProductPrice: priceOverride?.snapshotProductPrice,
+        product: { price: priceOverride?.productPrice ?? PRICE, expireDay: EXPIRE_DAY },
       },
     }) as any;
 
-  const buildMap = (orderType: IOrderType) => ({
+  const buildMap = (
+    orderType: IOrderType,
+    priceOverride?: { snapshotProductPrice?: number | null; productPrice?: number },
+  ) => ({
     orderDeliveryId: 7001,
     userId: 9,
     user: { id: 9, email: 'op@enmad.com' },
@@ -101,7 +110,7 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
     beforeChange: '',
     afterChange: VALID_PHONE,
     sendMethod: 'SMS',
-    orderDelivery: buildMapOrderDelivery(orderType),
+    orderDelivery: buildMapOrderDelivery(orderType, priceOverride),
   });
 
   // findOne 이 반환하는 fullDelivery
@@ -994,6 +1003,67 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
 
       // throw 하더라도 이력은 남아야 한다 — 고객이 받은 PIN 을 CS 가 조회할 유일한 수단
       expect(orderHistoryRepository.save).toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * D3-70: 재발행 SSG 재차감 단가 회귀.
+   * 재발행은 "같은 쿠폰 재전송" 이므로 원주문 가격을 보존한다 — 주문시점 박제값(snapshotProductPrice) 기준.
+   * 과거엔 live product.price(가변)를 써서, 주문 후 상품가가 바뀌면 같은 쿠폰의 재발행이
+   * 원주문과 다른 금액으로 행사잔액을 차감했다.
+   */
+  describe('D3-70 재발행 단가는 주문시점 박제값(snapshot) 기준', () => {
+    const SNAPSHOT_PRICE = 2000; // 주문시점 액면가(= 원 차감액 기준). 할인·카드할증 반영 전이라 '실납부액'과는 다름
+    const LIVE_PRICE = 5000; // 주문 뒤 관리자가 올린 현재 카탈로그가
+
+    it('상품가 변경(snapshot 2000 != live 5000)이어도 행사 차감액은 2000 (live 를 따라가지 않음)', async () => {
+      setupSsgAcquired();
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.SSG, { id: 7 }));
+
+      await service.execHistory(
+        buildMap(IOrderType.SSG, { snapshotProductPrice: SNAPSHOT_PRICE, productPrice: LIVE_PRICE }),
+      );
+
+      expect(deliveryBatchService.selectAndDeductSsgEventForReissue).toHaveBeenCalledWith(
+        ORDER_ID,
+        SNAPSHOT_PRICE,
+        EXPIRE_DAY,
+      );
+    });
+
+    it('역복원(reverse)도 같은 박제값을 쓴다 — 차감/복원 균형 유지', async () => {
+      setupSsgAcquired();
+      // 폐기 단계에서 실패시켜 reverseReissueDeductDirect 경로로 보낸다
+      jest.spyOn(service as any, 'execDiscard').mockRejectedValue(new Error('discard boom'));
+
+      await expect(
+        service.execHistory(
+          buildMap(IOrderType.SSG, { snapshotProductPrice: SNAPSHOT_PRICE, productPrice: LIVE_PRICE }),
+        ),
+      ).rejects.toThrow(/discard boom/);
+
+      // 차감액(2000)과 동일한 금액으로 되돌려야 행사잔액이 원상복구된다
+      expect(deliveryBatchService.reverseReissueDeductDirect).toHaveBeenCalledWith(
+        'ULID1',
+        7,
+        ORDER_ID,
+        SNAPSHOT_PRICE,
+      );
+    });
+
+    it('레거시 행(snapshotProductPrice=null)은 live product.price 로 폴백한다', async () => {
+      setupSsgAcquired();
+      setupExecDiscard();
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.SSG, { id: 7 }));
+
+      await service.execHistory(buildMap(IOrderType.SSG, { snapshotProductPrice: null, productPrice: LIVE_PRICE }));
+
+      expect(deliveryBatchService.selectAndDeductSsgEventForReissue).toHaveBeenCalledWith(
+        ORDER_ID,
+        LIVE_PRICE,
+        EXPIRE_DAY,
+      );
     });
   });
 });

@@ -91,6 +91,7 @@ import { UserTaskHistoryEntity } from 'src/entity/user.task.history.entity';
 import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.delivery.refund.status.enum';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { IOrderType } from '../../order/interface/order.type';
+import { readLineProductView } from '../../order/util/order.snapshot.builder';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { SsgRefundOutcome } from '../../delivery/interface/ssg.refund.resolve';
 import { assertExpireDayRangeValid, resolveExpireDays } from '../../common/utils/expire.util';
@@ -2567,7 +2568,21 @@ export class CustomerServiceService {
         }
 
         const isSsg = orderDelivery.orderProductMapping.order.type === IOrderType.SSG;
-        const reissuePrice = orderDelivery.orderProductMapping.product.price;
+        // D3-70: 재발행은 원주문 가격을 보존한다 — 주문시점 박제값(snapshotProductPrice) 우선.
+        //  ※ 정책 근거: **실무팀 확인 완료** — "재발행 시에는 원래(주문시점) 값을 쓴다".
+        //    개발 임의 판단이 아니라 업무 규칙이므로, 현재가 기준으로 되돌리지 말 것.
+        //  - 과거엔 live product.price(가변)로 SSG 행사잔액을 재차감해, 주문 후 상품가가 바뀌면
+        //    같은 쿠폰의 재발행이 원주문과 다른 금액을 차감했다(원 차감액 = 주문시점 단가).
+        //  - 재발행은 delivery(라인) 단위라 order.sendAmount(주문 합계, 다회선이면 라인단가와 다름)가
+        //    아니라 라인 박제값을 쓴다. 차감(selectAndDeduct...)과 역복원(reverse...)이 이 한 값을
+        //    공유하므로, 소스를 바꿔도 차감/복원 균형은 그대로 유지된다.
+        const reissuePrice = readLineProductView(orderDelivery.orderProductMapping).price;
+        // ⚠️ expireDay 는 의도적으로 live 를 유지한다(price 와 기준이 다른 것은 혼재가 아니라 분리다).
+        //  - 돈(price) = 원주문 보존 / 유효기간 = "새 쿠폰이므로 새로 계산" — 아래 비-SSG 분기가
+        //    resolveExpireDays(... opm.product.expireDay ...) 로 같은 정책을 명시한다.
+        //  - 게다가 이 값은 SSG 행사 선택의 **정확일치 필터**(ssg.couponExpiration = :couponExpiration)다.
+        //    발행될 쿠폰의 유효기간과 행사 버킷이 같아야 하므로 snapshot 으로 바꾸면 옛 기간 버킷에서
+        //    차감하고 새 기간 쿠폰을 발행(회계 불일치)하거나, 그 기간 행사에 잔액이 없어 정상 재발행이 막힌다.
         const reissueExpireDay = orderDelivery.orderProductMapping.product.expireDay;
         const reissueOrderId = orderDelivery.orderProductMapping.order.id;
 
