@@ -55,6 +55,8 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       isWalletManaged?: boolean;
       cancelableIds?: number[];
       remainingAfterCancel?: number;
+      /** 그중 아직 발송 전(WAIT)인 건수 — 메일의 "앞으로 발송될 건수" 검증용 */
+      waitingAfterCancel?: number;
       alreadyRefunded?: boolean;
       settleAmount?: number;
       refundBreakdown?: { deposit: number; credit: number; excess: number };
@@ -93,6 +95,8 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
 
     const cancelableIds = over.cancelableIds ?? CANCELABLE;
     const remaining = over.remainingAfterCancel ?? 2; // 기본: 발송완료 2건이 남아 있다
+    // 그중 아직 안 나간 것. 기본 0 — "발송완료 2건만 남았다" 는 뜻이라 메일의 '발송 예정' 은 0 이어야 한다.
+    const remainingWaiting = over.waitingAfterCancel ?? 0;
 
     const sut: any = Object.create(OrderService.prototype);
 
@@ -184,16 +188,24 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
     // ★ andWhere 인자를 캡처한다. getCount 만 스텁하면 조건을 반전시켜도(= vs !=) 전부 통과해
     //   "잔여 판정" 테스트가 아무것도 지키지 못한다 — 실제로 뮤테이션으로 확인된 공백이었다.
     const remainingConditions: Array<[string, any]> = [];
+    // ★ 잔여 집계는 **두 종류**다. 조건에 따라 다른 수를 돌려줘야 둘을 구분하는 테스트가 가능하다.
+    //   · status != CANCEL  → 주문 상태 결정용(이미 끝난 건도 센다)
+    //   · status =  WAIT    → 고객 메일용(앞으로 나갈 것만 센다)
+    //   한 숫자로 뭉뚱그리면 메일에 잘못된 수가 가도 스펙이 통과한다 — 실제로 그랬다.
     sut.orderDeliveryRepository = {
       createQueryBuilder: jest.fn(() => {
+        let waitingOnly = false;
         const b: any = {
           innerJoin: () => b,
           where: () => b,
           andWhere: (condition: string, params: any) => {
             remainingConditions.push([condition, params]);
+            if (condition.includes('od.status = :wait')) {
+              waitingOnly = true;
+            }
             return b;
           },
-          getCount: async () => remaining,
+          getCount: async () => (waitingOnly ? remainingWaiting : remaining),
         };
         return b;
       }),
@@ -720,9 +732,35 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       expect(sut.orderCancelNotificationService.notifyDirectOrderPartialCancel).toHaveBeenCalledWith(
         order,
         billingUser,
-        expect.objectContaining({ canceledCount: 3, remainingCount: 2, cancelReason: '고객 요청' }),
+        expect.objectContaining({ canceledCount: 3, cancelReason: '고객 요청' }),
       );
       expect(sut.orderCancelNotificationService.notifyDirectOrderCancel).not.toHaveBeenCalled();
+    });
+
+    /**
+     * 메일은 "남은 건은 예정대로 발송됩니다" 라고 안내한다. 그러니 그 숫자는 **아직 안 나간 건수**여야 한다.
+     *
+     * 종전에는 주문 상태 판정용 잔여수(status != CANCEL)를 그대로 넘겼다. 그 수는 COMPLETE·FAIL 처럼
+     * 이미 끝난 건까지 세므로, 이 티켓의 대표 시나리오("일부 발송완료 + 일부 대기")에서 고객에게
+     * 거짓 안내가 나간다 — 이미 받은 쿠폰과 실패 건까지 "앞으로 발송" 으로 잡힌다.
+     */
+    it('메일의 발송 예정 건수는 이미 끝난 건을 빼고 대기 건만 센다', async () => {
+      // 취소 후: 취소 안 된 건 3개(발송완료 1 + 실패 1 + 대기 1). 그중 앞으로 나갈 것은 1개뿐.
+      const { sut } = buildSut({ remainingAfterCancel: 3, waitingAfterCancel: 1 });
+
+      await call(sut, CANCELABLE);
+
+      const detail = sut.orderCancelNotificationService.notifyDirectOrderPartialCancel.mock.calls[0][2];
+      expect(detail.waitingCount).toBe(1); // 3 이면 고객에게 거짓 안내가 나간다
+    });
+
+    it('잔여가 전부 발송완료라 앞으로 나갈 게 없으면 0 을 넘긴다', async () => {
+      const { sut } = buildSut({ remainingAfterCancel: 2, waitingAfterCancel: 0 });
+
+      await call(sut, CANCELABLE);
+
+      const detail = sut.orderCancelNotificationService.notifyDirectOrderPartialCancel.mock.calls[0][2];
+      expect(detail.waitingCount).toBe(0);
     });
 
     it('통지 대상이 아니면 발송하지 않는다', async () => {

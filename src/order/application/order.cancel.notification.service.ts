@@ -33,7 +33,7 @@ export class OrderCancelNotificationService {
   async notifyDirectOrderPartialCancel(
     order: OrderEntity,
     orderUser: UserEntity,
-    detail: { canceledCount: number; remainingCount: number; cancelReason: string; canceledAt: Date },
+    detail: { canceledCount: number; waitingCount: number; cancelReason: string; canceledAt: Date },
   ): Promise<void> {
     await this.send(order, orderUser, '부분취소', () =>
       orderPartialCancelTemplate({
@@ -41,7 +41,7 @@ export class OrderCancelNotificationService {
         code: order.code,
         eventName: order.eventName,
         canceledCount: detail.canceledCount,
-        remainingCount: detail.remainingCount,
+        waitingCount: detail.waitingCount,
         cancelReason: detail.cancelReason,
         canceledAt: format(detail.canceledAt, 'yyyy-MM-dd HH:mm:ss'),
       }),

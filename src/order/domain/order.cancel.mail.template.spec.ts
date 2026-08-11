@@ -48,7 +48,7 @@ describe('orderPartialCancelTemplate (197-16)', () => {
     code: 'ORD-20260722-0011',
     eventName: '7월 프로모션',
     canceledCount: 3,
-    remainingCount: 12,
+    waitingCount: 12,
     cancelReason: '수량 조정',
     canceledAt: '2026-07-22 10:05:00',
   };
@@ -65,7 +65,7 @@ describe('orderPartialCancelTemplate (197-16)', () => {
   it('취소된 건수와 남은 건수를 함께 알린다', () => {
     const { content } = orderPartialCancelTemplate(base);
     expect(content).toContain('취소된 발송 건수: 3건');
-    expect(content).toContain('남은 발송 건수: 12건');
+    expect(content).toContain('앞으로 발송될 건수: 12건');
     expect(content).toContain('수량 조정');
     expect(content).toContain('2026-07-22 10:05:00');
   });

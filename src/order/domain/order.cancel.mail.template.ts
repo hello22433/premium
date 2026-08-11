@@ -25,7 +25,7 @@ export const orderPartialCancelTemplate = (p: {
   code: string;
   eventName: string;
   canceledCount: number;
-  remainingCount: number;
+  waitingCount: number;
   cancelReason: string | null;
   canceledAt: string;
 }): { title: string; content: string } =>
@@ -38,7 +38,7 @@ export const orderPartialCancelTemplate = (p: {
       <li>주문번호: ${escapeHtml(p.code)}</li>
       <li>이벤트명: ${escapeHtml(p.eventName)}</li>
       <li>취소된 발송 건수: ${p.canceledCount}건</li>
-      <li>남은 발송 건수: ${p.remainingCount}건</li>
+      <li>앞으로 발송될 건수: ${p.waitingCount}건</li>
       <li>취소사유: ${escapeHtml(p.cancelReason ?? '-')}</li>
       <li>취소일시: ${escapeHtml(p.canceledAt)}</li>
     </ul>

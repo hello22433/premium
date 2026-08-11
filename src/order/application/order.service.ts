@@ -6180,6 +6180,19 @@ export class OrderService {
       .andWhere('od.status != :canceled', { canceled: IOrderDeliveryStatus.CANCEL })
       .getCount();
 
+    // ★ 고객 메일에 쓸 "앞으로 나갈 건수" 는 위 remaining 과 **다른 숫자**다. 재활용하면 안 된다.
+    //   remaining 은 "취소 안 된 것 전부" 라 COMPLETE·FAIL 처럼 이미 끝난 건도 센다. 주문을
+    //   취소 상태로 내릴지 판단하는 데는 그게 맞다(하나라도 남았으면 주문을 살려 둬야 한다).
+    //   그러나 메일은 "남은 건은 예정대로 발송됩니다" 라고 안내하므로 **아직 안 나간 것만** 세야 한다.
+    //   이 티켓의 대표 시나리오가 "일부 발송완료 + 일부 대기" 라, 재활용하면 이미 받은 쿠폰·실패 건까지
+    //   "앞으로 발송" 으로 안내하는 거짓 메일이 고객에게 나간다(발송완료 1 + 실패 1 + 대기 1 → "3건 발송 예정").
+    const remainingWaiting = await this.orderDeliveryRepository
+      .createQueryBuilder('od')
+      .innerJoin('od.orderProductMapping', 'opm')
+      .where('opm.orderId = :orderId', { orderId })
+      .andWhere('od.status = :wait', { wait: IOrderDeliveryStatus.WAIT })
+      .getCount();
+
     // ★ 주문의 정산금액을 "취소 반영 후 값" 으로 맞춘다.
     //   정산정보 입력/수정(createOrderSettle·updateOrderSettle)은 발송확정 이후 주문에 대해
     //   `difference = order.settleAmount - 재계산금액` 만큼 잔액을 조정한다. 재계산 쪽
@@ -6304,7 +6317,8 @@ export class OrderService {
         } else {
           void this.orderCancelNotificationService.notifyDirectOrderPartialCancel(lockedOrder, billingUser, {
             canceledCount: requested.length,
-            remainingCount: remaining,
+            // 메일은 "예정대로 발송" 안내라 대기 건수만 넘긴다(remaining 은 이미 끝난 건도 센다).
+            waitingCount: remainingWaiting,
             cancelReason,
             canceledAt: now,
           });
