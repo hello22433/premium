@@ -75,6 +75,12 @@ export class OrderViewDeliveryDto extends OrderDeliveryViewCommonDto {
   replaceCharacter3: string | null;
 
   @ApiProperty({
+    description: '수신자별 운영자 메모 (고객 미노출)',
+    nullable: true,
+  })
+  memo: string | null;
+
+  @ApiProperty({
     description: '발송 상태',
   })
   status: IOrderDeliveryStatus;

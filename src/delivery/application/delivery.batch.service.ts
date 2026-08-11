@@ -3607,7 +3607,7 @@ export class DeliveryBatchService {
         // PII 5종 중 하나라도 미파기면 대상 — 조기파기(executeRequest)와 동일 집합(H-1).
         // 과거에 일부만 파기된 행(예: deliveryTarget 만 '-')도 backfill.
         // (NULL 컬럼은 `!= '-'` 가 NULL 이라 이 절로 추가 매칭되지 않음 → 무중단)
-        '(orderDelivery.deliveryTarget != :destroyValue OR orderDelivery.originalDeliveryTarget != :destroyValue OR orderDelivery.emailReceiverPhone != :destroyValue OR orderDelivery.bankAccount != :destroyValue OR orderDelivery.bankAccountOwner != :destroyValue)',
+        '(orderDelivery.deliveryTarget != :destroyValue OR orderDelivery.originalDeliveryTarget != :destroyValue OR orderDelivery.emailReceiverPhone != :destroyValue OR orderDelivery.bankAccount != :destroyValue OR orderDelivery.bankAccountOwner != :destroyValue OR orderDelivery.memo != :destroyValue)',
         { destroyValue },
       )
       // ── 유효기간 가드 ────────────────────────────────────────────────────────────
@@ -3771,8 +3771,37 @@ export class DeliveryBatchService {
           emailReceiverPhone: destroyValue,
           bankAccount: destroyValue,
           bankAccountOwner: destroyValue,
+          memo: () => `CASE WHEN memo IS NULL THEN NULL ELSE '${destroyValue}' END`,
         },
       );
+
+      const destroyedOrderIds = [
+        ...new Set(
+          orderDeliveryList
+            .filter((delivery) => destroyIdList.includes(delivery.id))
+            .map((delivery) => delivery.orderProductMapping?.order?.id)
+            .filter((orderId): orderId is number => orderId !== undefined),
+        ),
+      ];
+      if (destroyedOrderIds.length > 0) {
+        await this.dataSource
+          .createQueryBuilder()
+          .update('order_manual_entry')
+          .set({ memo: () => `CASE WHEN memo IS NULL THEN NULL ELSE '${destroyValue}' END` })
+          .where('order_id IN (:...orderIds)', { orderIds: destroyedOrderIds })
+          .andWhere(
+            `NOT EXISTS (
+              SELECT 1
+              FROM order_product_mapping opm
+              INNER JOIN order_delivery od ON od.order_product_mapping_id = opm.id
+              WHERE opm.order_id = order_manual_entry.order_id
+                AND od.memo IS NOT NULL
+                AND od.memo != :destroyValue
+            )`,
+            { destroyValue },
+          )
+          .execute();
+      }
 
       // ── 파기 시각 각인 ────────────────────────────────────────────────────────
       // 재수집된 행은 두 종류이고, 각인 여부가 반대다.

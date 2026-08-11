@@ -26,6 +26,9 @@ export class CustomerServiceDetailViewDto {
   })
   deliveryTarget: string;
 
+  @ApiProperty({ description: '수신자별 운영자 메모 (고객 미노출)', nullable: true })
+  memo: string | null;
+
   @ApiProperty({
     description: '핀번호',
   })

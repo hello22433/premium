@@ -68,6 +68,9 @@ describe('EarlyDestroyService.executeRequest — C-1 order_history type 필터',
       count: jest.fn().mockResolvedValue(0), // 환불 진행중 없음
       createQueryBuilder: jest.fn(() => deliveryQb),
     };
+    sut.orderManualEntryRepository = {
+      createQueryBuilder: jest.fn(() => makeQb()),
+    };
     sut.orderHistoryRepository = {
       createQueryBuilder: jest.fn(() => historyQb),
     };
@@ -104,7 +107,7 @@ describe('EarlyDestroyService.executeRequest — C-1 order_history type 필터',
     }
   });
 
-  it('order_delivery PII 5종 마스킹 + 요청 COMPLETED 전이는 그대로 유지(회귀 방지)', async () => {
+  it('order_delivery PII와 수신자 메모 마스킹 + 요청 COMPLETED 전이를 유지한다', async () => {
     const historyQb = makeQb();
     const deliveryQb = makeQb();
     const sut = makeSut(historyQb, deliveryQb);
@@ -117,6 +120,7 @@ describe('EarlyDestroyService.executeRequest — C-1 order_history type 필터',
       emailReceiverPhone: '-',
       bankAccount: '-',
       bankAccountOwner: '-',
+      memo: expect.any(Function),
     });
     expect(sut.earlyDestroyRequestRepository.update).toHaveBeenCalledWith(
       1,
@@ -125,6 +129,46 @@ describe('EarlyDestroyService.executeRequest — C-1 order_history type 필터',
         executedBy: 9,
       }),
     );
+  });
+
+  it('발송건 ID 전체 선택 후 남은 메모가 없으면 원본 명단 메모도 파기한다', async () => {
+    const historyQb = makeQb();
+    const deliveryQb = makeQb();
+    const sut = makeSut(historyQb, deliveryQb, [
+      { id: 101, destroyedAt: null, deliveryTarget: '01011112222' },
+      { id: 102, destroyedAt: null, deliveryTarget: '01033334444' },
+    ]);
+    sut.earlyDestroyRequestRepository.findOne.mockResolvedValue({
+      id: 1,
+      orderId: 77,
+      status: EarlyDestroyRequestStatus.PENDING,
+      items: [
+        { orderProductMappingId: 55, orderDeliveryId: 101 },
+        { orderProductMappingId: 55, orderDeliveryId: 102 },
+      ],
+    });
+
+    await sut.executeRequest(1, user);
+
+    expect(sut.orderDeliveryRepository.count).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          orderProductMapping: { orderId: 77 },
+          memo: expect.anything(),
+        }),
+        withDeleted: true,
+      }),
+    );
+    expect(sut.orderManualEntryRepository.createQueryBuilder).toHaveBeenCalledTimes(1);
+  });
+
+  it('다른 발송건에 미파기 메모가 남으면 원본 명단 메모를 유지한다', async () => {
+    const sut = makeSut(makeQb(), makeQb());
+    sut.orderDeliveryRepository.count.mockResolvedValueOnce(0).mockResolvedValueOnce(1);
+
+    await sut.executeRequest(1, user);
+
+    expect(sut.orderManualEntryRepository.createQueryBuilder).not.toHaveBeenCalled();
   });
 
   describe('파기 시각(destroyedAt) 각인', () => {

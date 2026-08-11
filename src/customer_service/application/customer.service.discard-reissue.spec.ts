@@ -74,6 +74,7 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
       replaceCharacter1: null,
       replaceCharacter2: null,
       replaceCharacter3: null,
+      memo: 'VIP 1등',
       settleFee: 0,
       settlePriceAdjustment: 0,
       emailReceiverPhone: null,
@@ -300,6 +301,28 @@ describe('CustomerServiceService — 폐기 후 신규 발송 (discard-reissue)'
       // 첫 save 에 넘긴 newDelivery 의 ssgEventId 검증
       const firstSavedEntity = orderDeliveryRepository.save.mock.calls[0][0];
       expect(firstSavedEntity.ssgEventId).toBe(7);
+    });
+
+    it('2-a) 동일 연락처는 복호화·정규화 비교 후 메모를 승계한다', async () => {
+      setupSsgAcquired();
+      setupExecDiscard();
+      cryptoCipher.safeDecryptDeliveryTarget.mockReturnValue('010-9876-5432');
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.SSG, { id: 7 }));
+
+      await service.execHistory(buildMap(IOrderType.SSG));
+
+      expect(orderDeliveryRepository.save.mock.calls[0][0].memo).toBe('VIP 1등');
+    });
+
+    it('2-b) 변경된 연락처는 메모를 초기화한다', async () => {
+      setupSsgAcquired();
+      setupExecDiscard();
+      cryptoCipher.safeDecryptDeliveryTarget.mockReturnValue('010-1111-2222');
+      orderDeliveryRepository.findOne.mockResolvedValue(buildFullDelivery(IOrderType.SSG, { id: 7 }));
+
+      await service.execHistory(buildMap(IOrderType.SSG));
+
+      expect(orderDeliveryRepository.save.mock.calls[0][0].memo).toBeNull();
     });
 
     it('2-1) SSG issue 성공이 기존/후보 PIN 재사용이면 선차감 역복원 후 KEPT 처리하지 않는다', async () => {

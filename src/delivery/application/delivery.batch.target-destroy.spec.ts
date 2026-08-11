@@ -98,7 +98,7 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
     return sut;
   };
 
-  it('order_delivery 마스킹 대상(SET)이 조기파기와 동일 5종이다', async () => {
+  it('order_delivery 마스킹 대상에 수신자 메모를 포함한다', async () => {
     const sut = makeSut(makeSelectQb([{ id: 1 }, { id: 2 }]));
 
     await sut.deliveryDeliveryTargetDestroy();
@@ -111,6 +111,7 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
       emailReceiverPhone: '-',
       bankAccount: '-',
       bankAccountOwner: '-',
+      memo: expect.any(Function),
     });
   });
 
@@ -128,6 +129,7 @@ describe('DeliveryBatchService.deliveryDeliveryTargetDestroy', () => {
       'emailReceiverPhone',
       'bankAccount',
       'bankAccountOwner',
+      'memo',
     ]) {
       expect(piiIdempotency[0]).toContain(col);
     }
