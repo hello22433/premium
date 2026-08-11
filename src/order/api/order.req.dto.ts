@@ -495,7 +495,15 @@ export class OrderDeliveryCancelReqDto {
   //   상한을 1000 으로 잡은 근거: 한 주문의 발송건 수 현실적 상한에 여유를 둔 값이다.
   //   ※ 예전 값(10000)은 멱등키가 id 를 나열하던 시절 varchar(120) 상한(발송건 9건)과 정면으로
   //     어긋나 있었다. 지금은 키가 해시라 길이가 고정이므로 이 상한은 키가 아니라 쿼리/응답 크기 문제다.
-  @IsOptional()
+  // ★ @IsOptional 이 아니라 @ValidateIf 다. 이 자리에서 둘은 같지 않다.
+  //   @IsOptional 은 undefined **와 null 둘 다** 를 "없음" 으로 보고 아래 검증을 전부 건너뛴다
+  //   (class-validator/IsOptional.js: `value !== null && value !== undefined`).
+  //   그러면 deliveryIds: null 이 검증을 통과하고, 서비스의 갈림길(`deliveryIds && length > 0`)에서
+  //   falsy 로 떨어져 **주문 전체 취소 + 전액 환불** 로 들어간다. 빈 배열은 400 인데 null 은
+  //   전액 환불이라 방향이 정반대다. 프론트가 "선택 없음" 을 null 로 직렬화하면 그대로 터진다.
+  //   이 필드의 계약은 "**생략하면** 전체취소" 이므로, 건너뛰는 조건도 undefined 하나여야 한다.
+  //   null 은 아래 @IsArray 가 잡아 400 이 된다.
+  @ValidateIf((o) => o.deliveryIds !== undefined)
   @IsArray()
   @ArrayNotEmpty()
   @ArrayUnique()
