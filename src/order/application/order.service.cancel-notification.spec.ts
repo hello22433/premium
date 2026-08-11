@@ -55,7 +55,16 @@ describe('OrderService.deliveryCancel — 취소메일 after-commit 배선', () 
     const orderDeliveryRepository: any = {
       update: jest.fn(async () => undefined),
       createQueryBuilder: () => {
-        const b: any = { innerJoin: () => b, where: () => b, andWhere: () => b, getCount: async () => 0 };
+        // select/getRawMany 는 findMappingIdsWithActiveDeliveries(취소된 상품행을 컷오프에서 제외) 용.
+        // 이 스펙들은 취소된 행이 없는 상황이라 상품행 전부를 살아 있는 것으로 돌려준다.
+        const b: any = {
+          innerJoin: () => b,
+          select: () => b,
+          where: () => b,
+          andWhere: () => b,
+          getCount: async () => 0,
+          getRawMany: async () => (order.orderProductMappings ?? []).map((m: any) => ({ mappingId: m.id })),
+        };
         return b;
       },
     };

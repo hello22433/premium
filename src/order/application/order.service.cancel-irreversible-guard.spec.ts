@@ -27,9 +27,15 @@ describe('OrderService.deliveryCancel — 되돌릴 수 없는 발송건 가드'
   const buildSut = ({
     status,
     irreversibleCount,
+    /** 아직 취소되지 않은 발송건이 남아 있는 상품행 id. 미지정이면 둘 다 살아 있다. */
+    activeMappingIds = [501, 502],
+    /** 예약 상품행(502)의 예약시각. 기본은 하루 뒤(게이트 통과). */
+    reserveSendRequestAt = new Date(Date.now() + 24 * 3600_000),
   }: {
     status: IOrderStatus;
     irreversibleCount: number;
+    activeMappingIds?: number[];
+    reserveSendRequestAt?: Date;
   }) => {
     const order = {
       id: 1001,
@@ -52,7 +58,7 @@ describe('OrderService.deliveryCancel — 되돌릴 수 없는 발송건 가드'
           amount: 2,
           product: { price: 10000 },
           sendType: 'RESERVE',
-          sendRequestAt: new Date(Date.now() + 24 * 3600_000),
+          sendRequestAt: reserveSendRequestAt,
         },
       ],
     } as any;
@@ -91,12 +97,15 @@ describe('OrderService.deliveryCancel — 되돌릴 수 없는 발송건 가드'
       createQueryBuilder: jest.fn(() => {
         const b: any = {
           innerJoin: () => b,
+          select: () => b,
           where: () => b,
           andWhere: (cond: string) => {
             guardConditions.push(cond);
             return b;
           },
           getCount,
+          // findMappingIdsWithActiveDeliveries 용 — "아직 취소 안 된 발송건이 있는 상품행" 목록
+          getRawMany: async () => activeMappingIds.map((mappingId) => ({ mappingId })),
         };
         return b;
       }),
@@ -173,5 +182,56 @@ describe('OrderService.deliveryCancel — 되돌릴 수 없는 발송건 가드'
 
     expect(getCount).not.toHaveBeenCalled();
     expect(order.status).toBe(IOrderStatus.DELIVERY_CANCEL);
+  });
+
+  /**
+   * 10분 컷오프는 예약 상품행들의 sendRequestAt 중 **가장 이른 시각**으로 판정한다.
+   * 부분취소가 "예약시각은 지났는데 발송은 안 된(=취소된) 상품행" 을 처음 만들면서, 그 지난 시각이
+   * 최솟값을 영구히 과거로 끌어내리는 조합이 생겼다. 그러면 아직 여유가 충분한 나머지 예약건까지
+   * 전체취소가 **영원히** 400 이 된다 — 시간이 갈수록 더 과거가 되므로 회복 경로가 없다.
+   */
+  describe('컷오프 판정에서 이미 취소된 상품행 제외 (리뷰 P2)', () => {
+    // 502(예약)만 살아 있고 501 은 취소된 상황을 만들기 위해, 지난 시각을 가진 쪽을 501 로 둘 수 없어
+    // (501 은 즉시발송) 예약행 502 자체의 시각을 과거로 두고 "502 는 취소됨" 으로 표현한다.
+    it('취소된 예약행의 지난 시각 때문에 막히지 않는다', async () => {
+      const { sut, order } = buildSut({
+        status: IOrderStatus.DELIVERY_CONFIRMED,
+        irreversibleCount: 0,
+        // 예약행 502 의 예약시각이 이미 2시간 지났다 — 부분취소로 발송건이 전부 CANCEL 된 상태
+        reserveSendRequestAt: new Date(Date.now() - 2 * 3600_000),
+        // 살아 있는 발송건은 즉시행 501 에만 있다(502 는 전부 취소됨)
+        activeMappingIds: [501],
+      });
+
+      await sut.deliveryCancel({ id: 1 }, body);
+
+      expect(order.status).toBe(IOrderStatus.DELIVERY_CANCEL);
+    });
+
+    it('살아 있는 예약행이 임박하면 종전대로 거부한다 (가드가 사라지지 않았다)', async () => {
+      const { sut } = buildSut({
+        status: IOrderStatus.DELIVERY_CONFIRMED,
+        irreversibleCount: 0,
+        // 5분 뒤 — 10분 컷오프 안쪽
+        reserveSendRequestAt: new Date(Date.now() + 5 * 60_000),
+        activeMappingIds: [501, 502],
+      });
+
+      await expect(sut.deliveryCancel({ id: 1 }, body)).rejects.toThrow('10분 전까지만');
+    });
+
+    it('살아 있는 예약건이 하나도 없으면 컷오프를 적용하지 않는다', async () => {
+      const { sut, order } = buildSut({
+        status: IOrderStatus.DELIVERY_CONFIRMED,
+        irreversibleCount: 0,
+        reserveSendRequestAt: new Date(Date.now() - 2 * 3600_000),
+        // 어느 상품행에도 살아 있는 발송건이 없다 → 보호할 예약건이 없다
+        activeMappingIds: [],
+      });
+
+      await sut.deliveryCancel({ id: 1 }, body);
+
+      expect(order.status).toBe(IOrderStatus.DELIVERY_CANCEL);
+    });
   });
 });

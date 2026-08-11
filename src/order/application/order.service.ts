@@ -5969,6 +5969,37 @@ export class OrderService {
   }
 
   /**
+   * 아직 취소되지 않은 발송건이 남아 있는 상품행(order_product_mapping) id 집합.
+   *
+   * 전체취소의 10분 컷오프는 예약 상품행들의 sendRequestAt 중 **가장 이른 시각**을 기준으로 판정한다.
+   * 그런데 부분취소가 생기면서 "예약시각은 지났는데 발송은 안 된(=취소된) 상품행" 이 처음 생겼다.
+   * 그 행을 그대로 최솟값 계산에 넣으면 지난 시각이 영구히 남아, 아직 여유가 충분한 나머지 예약건까지
+   * 전체취소가 **영원히 400** 이 된다(시간이 갈수록 더 과거가 되므로 회복 경로가 없다).
+   *
+   *   예) A 12시 · B 15시 → 11시에 A 만 부분취소 → 13시에 B 전체취소 시도
+   *       최솟값이 여전히 12시라 diff 가 음수 → "10분 전까지만 가능합니다" 로 거부
+   *
+   * 그래서 컷오프는 "아직 살아 있는 상품행" 만 봐야 한다. 취소된 행은 이미 환불까지 끝나 보호할
+   * 대상이 아니다.
+   *
+   * ※ 발송건을 그래프로 끌어와 메모리에서 거르지 않는 이유: 여기서 필요한 것은 행별 "남아 있나"
+   *   여부 하나뿐이라, 발송건이 수백~수천인 주문에서 전량 로딩은 낭비다. countIrreversibleDeliveries
+   *   와 같은 전용 집계 쿼리 패턴을 따른다.
+   */
+  private async findMappingIdsWithActiveDeliveries(orderId: number): Promise<Set<number>> {
+    const rows = await this.orderDeliveryRepository
+      .createQueryBuilder('od')
+      .innerJoin('od.orderProductMapping', 'opm')
+      .select('DISTINCT opm.id', 'mappingId')
+      .where('opm.orderId = :orderId', { orderId })
+      .andWhere('od.status != :canceled', { canceled: IOrderDeliveryStatus.CANCEL })
+      .andWhere('od.deletedAt IS NULL')
+      .getRawMany<{ mappingId: number }>();
+
+    return new Set(rows.map((row) => Number(row.mappingId)));
+  }
+
+  /**
    * 예약 발송건 부분취소 (197-16).
    *
    * deliveryIds 를 준 요청만 이 경로로 온다. 주지 않으면 종전대로 주문 전체가 취소된다 —
@@ -6409,12 +6440,25 @@ export class OrderService {
     const now = new Date();
     // 취소 기준 시각: 예약 mapping들의 sendRequestAt 중 가장 이른 시각 사용
     // 상품 행별 예약시각이 서로 다를 수 있으므로, 가장 임박한(이른) 발송 건을 기준으로 보호한다.
+    //
+    // ★ 이미 전부 취소된 상품행은 제외한다. 그 행의 예약시각은 보호할 대상이 없는데도 최솟값을
+    //   과거로 끌어내려, 여유가 충분한 나머지 예약건까지 영구히 취소 불가로 만든다(리뷰 P2).
+    //   부분취소가 "예약시각은 지났는데 발송은 안 된 행" 을 처음 만들면서 생긴 조합이다.
+    const activeMappingIds = await this.findMappingIdsWithActiveDeliveries(order.id);
     const reserveSendTimes = (order.orderProductMappings ?? [])
       .filter((mapping) => mapping.sendType === 'RESERVE' && mapping.sendRequestAt)
+      .filter((mapping) => activeMappingIds.has(mapping.id))
       .map((mapping) => mapping.sendRequestAt!.getTime());
-    const sendRequestAtTime = reserveSendTimes.length > 0 ? Math.min(...reserveSendTimes) : 0;
+
+    // ★ 보호할 예약건이 하나도 없으면 컷오프는 **적용 대상이 아니다**(null).
+    //   종전에는 이 자리에 0(1970년)을 넣어 "지난 지 한참" 으로 계산했다. 예약행이 하나도 없는
+    //   주문에서는 어차피 위 countIrreversibleDeliveries 가 먼저 막아 드러나지 않았지만,
+    //   취소된 행을 걸러내기 시작하면 "예약행이 전부 취소됨" 상태가 새로 만들어져 같은 자리에서
+    //   또 영구 차단이 난다 — 고치려던 결함을 자리만 옮기는 꼴이다.
+    //   시각이 없다는 것과 시각이 과거라는 것은 다른 사실이므로 값도 다르게 둔다.
+    const sendRequestAtTime = reserveSendTimes.length > 0 ? Math.min(...reserveSendTimes) : null;
     const nowTime = now.getTime();
-    const diffMs = sendRequestAtTime - nowTime;
+    const diffMs = sendRequestAtTime === null ? null : sendRequestAtTime - nowTime;
     const tenMinutesMs = 10 * 60 * 1000;
 
     if (order.status === IOrderStatus.DELIVERY_REQUEST || order.status === IOrderStatus.REVIEW_COMPLETE) {
@@ -6441,7 +6485,9 @@ export class OrderService {
         );
       }
 
-      if (diffMs < tenMinutesMs) {
+      // diffMs === null 이면 아직 살아 있는 예약건이 없다는 뜻이라 이 게이트의 판정 대상이 아니다.
+      // (이미 나간 건은 바로 위 countIrreversibleDeliveries 가 막는다 — 여기서 또 막을 이유가 없다.)
+      if (diffMs !== null && diffMs < tenMinutesMs) {
         throw new BadRequestException('주문 취소는 발송 요청 시간 10분 전까지만 가능합니다.');
       }
     } else {
