@@ -233,17 +233,49 @@ describe('OrderService deliveryCancel wallet PR2-005 branch', () => {
     expect(service.legacyWalletCreditSyncService.syncCredit).not.toHaveBeenCalled();
   });
 
-  it('wallet-managed but refundAmount=0 (취소 시점에 환불 없음, e.g. REVIEW_COMPLETE) → wallet path 진입 안 함', async () => {
+  it('발송확정 전(REVIEW_COMPLETE) 은 allocation 이 없어 wallet path 를 타지 않는다', async () => {
+    // 이 상태에서는 차감 자체가 없어 allocation 이 만들어지지 않는다 → isWalletManaged=false.
+    // 종전에는 `refundAmount > 0 &&` 단락으로 판정 쿼리조차 안 던졌지만, 그건 구현 세부사항이고
+    // 계약은 "allocation 이 없으면 wallet path 를 안 탄다" 이다. 그쪽을 고정한다.
     const { service, order } = createService({
-      isWalletManaged: true,
+      isWalletManaged: false,
       allocation: { depositUsedAmount: 0, depositRestoredAmount: 0 },
     });
-    order.status = IOrderStatus.REVIEW_COMPLETE; // refundAmount=0
+    order.status = IOrderStatus.REVIEW_COMPLETE;
     order.settleAmount = 0;
 
     await service.deliveryCancel({ id: 1 } as any, { id: order.id, cancelReason: 'pre-confirm' } as any);
 
     expect(service.orderConfirmationReleaseService.releaseConfirmation).not.toHaveBeenCalled();
-    expect(service.walletManagedPredicate.isWalletManaged).not.toHaveBeenCalled();
+  });
+
+  /**
+   * ★ 리뷰 P2 — 0원 주문의 allocation 이 열린 채 남던 결함.
+   *
+   * 종전 라우팅은 `refundAmount > 0 && isWalletManaged(...)` 였다. && 는 왼쪽이 거짓이면 오른쪽을
+   * 실행하지 않으므로, settleAmount=0 인 주문은 **지갑을 쓰는 주문인지 물어보지도 않고** 지갑 경로를
+   * 건너뛴다. 그러면 releaseConfirmation 이 호출되지 않아 allocation.released_at 이 NULL 로 남는다.
+   * 주문·발송건은 CANCEL 인데 지갑만 "아직 진행 중" 인 상태가 되고, 이후 경로들이 이 주문을 계속
+   * 미결로 본다.
+   *
+   * 0원이 나오는 실제 경로: 무료·100% 할인 잔여분, 부분취소 후 남은 것이 0원인 경우.
+   * releaseConfirmation 은 restore 금액이 0 이면 지갑을 건드리지 않고 released_at 만 찍으므로
+   * (order-confirmation-release.service.ts `if (restoreDeposit > 0)`) 0원에 호출해도 안전하다.
+   */
+  it('발송확정 후 0원 주문도 wallet path 를 타서 allocation 을 닫는다', async () => {
+    const { service, order } = createService({
+      isWalletManaged: true,
+      // 이미 전액 복구돼 돌려줄 것이 없는 allocation — 그래도 닫아야 한다
+      allocation: { depositUsedAmount: 10000, depositRestoredAmount: 10000 },
+    });
+    order.status = IOrderStatus.DELIVERY_CONFIRMED;
+    order.settleAmount = 0;
+
+    await service.deliveryCancel({ id: 1 } as any, { id: order.id, cancelReason: '잔여분 취소' } as any);
+
+    expect(service.orderConfirmationReleaseService.releaseConfirmation).toHaveBeenCalledWith(
+      expect.objectContaining({ orderId: order.id, reason: 'order_cancel' }),
+      expect.anything(),
+    );
   });
 });

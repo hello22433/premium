@@ -6529,8 +6529,16 @@ export class OrderService {
     // Wallet Cutover Bundle (PR2-005) — wallet-managed 주문은 OrderConfirmationReleaseService 로 일괄 보상.
     // 라우팅: allocation 존재 + released_at IS NULL → wallet path (flag mode 무관, allocation routing > flag).
     const externalManager = this.orderRepository.manager;
-    const isWalletManaged =
-      refundAmount > 0 && (await this.walletManagedPredicate.isWalletManaged(order.id, externalManager));
+    // ★ 여기에 refundAmount > 0 을 걸면 안 된다(리뷰 P2). "지갑을 쓰는 주문인가" 와 "돌려줄 돈이
+    //   있는가" 는 다른 질문인데, && 로 묶으면 0원 주문이 지갑 경로 자체를 건너뛴다.
+    //   그러면 releaseConfirmation 이 호출되지 않아 allocation.released_at 이 NULL 로 남는다 —
+    //   주문·발송건은 CANCEL 인데 지갑은 "아직 진행 중" 인 상태가 되고, isWalletManaged 판정이
+    //   계속 true 라 이후 경로들이 이 주문을 미결로 본다. INITIAL attempt 도 닫히지 않는다.
+    //   0원이 나오는 실제 경로: 무료·100% 할인 잔여분, 부분취소 후 남은 것이 0원인 경우.
+    //   금액 판단은 releaseConfirmation 이 이미 한다 — restore 금액이 0 이면 지갑을 건드리지 않고
+    //   released_at 만 찍는다(order-confirmation-release.service.ts: `if (restoreDeposit > 0)`).
+    //   즉 0원에 호출해도 돈은 움직이지 않고 도장만 찍힌다.
+    const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(order.id, externalManager);
 
     if (isWalletManaged) {
       const allocation = await externalManager.findOne(OrderPaymentAllocationEntity, {
