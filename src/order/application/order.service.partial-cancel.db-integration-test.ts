@@ -321,6 +321,9 @@ describe('OrderService 부분취소 — CAS / 롤백 (실 DB)', () => {
     svc.userCompanyRepository = dataSource.getRepository(PartnerCompanyEntity);
     svc.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     svc.walletManagedPredicate = { isWalletManaged: async () => true };
+    // 과금 범위 잠금 — 발송확정과 락 순서를 맞추려고 환불 전에 호출한다(교착 차단).
+    // 이 테스트의 관심사는 롤백이라 실제 잠금은 필요 없다.
+    svc.billingScopeLockService = { lock: async () => ({ user: {}, companyUsers: [] }) };
     svc.orderCancelNotificationService = {
       notifyDirectOrderCancel: jest.fn(),
       notifyDirectOrderPartialCancel: jest.fn(),
