@@ -52,9 +52,31 @@ else if (refundAmount>0) balance/allSettleAmount 복구    // 레거시 환불(�
 0. **컬럼/엔티티 되살리기** (이 티켓에서 빠졌음 — 197-16 리뷰 LOW 반영).
    `ssg_event_amount_history.order_delivery_id` 컬럼 + `(order_id, order_delivery_id)` 인덱스
    마이그레이션과 엔티티 필드는 **197-16 PR 에서 제거**했다. 쓰는 코드가 없는데 앱 배포 선행
-   마이그레이션만 1개 늘어나기 때문이다. 원본은 커밋 `cb5da68` 의
-   `sql/migrations/20260722_add_ssg_event_amount_history_delivery.sql` 과
-   `src/entity/ssg.event.amount.history.entity.ts` 에 그대로 있으니 되살려 쓰면 된다.
+   마이그레이션만 1개 늘어나기 때문이다.
+
+   원본 DDL 은 아래에 그대로 옮겨 둔다. **커밋 해시로 안내하지 않는 이유**: 그 커밋(`cb5da68`)은
+   리베이스를 거치며 어느 브랜치에서도 닿지 않는 상태가 됐다. 지금은 작성자 로컬 reflog 로만
+   살아 있고, 다른 사람의 저장소에는 아예 없으며 기본 90일 뒤 정리 대상이다. 문서에 내용을
+   직접 두어야 남는다.
+
+   ```sql
+   -- (1) 컬럼 추가
+   ALTER TABLE `ssg_event_amount_history`
+     ADD COLUMN `order_delivery_id` INT NULL
+       COMMENT 'FK) order_delivery.id — 차감 귀속 발송건 (부분복구용). NULL=기록 도입 이전 데이터 또는 발송건 무관 변동(충전/재발송 선차감 등)'
+       AFTER `order_id`;
+
+   -- (2) 인덱스 추가 — 반드시 (1) 과 별도 문장으로. 섞으면 INSTANT 가 안 걸려 테이블이 리빌드된다.
+   CREATE INDEX `idx_ssg_amount_history_order_delivery`
+       ON `ssg_event_amount_history` (`order_id`, `order_delivery_id`);
+   ```
+
+   적용 전후 확인은 `information_schema.COLUMNS` / `information_schema.STATISTICS` 를
+   `TABLE_NAME='ssg_event_amount_history'` 로 조회하면 된다.
+
+   엔티티 쪽은 `src/entity/ssg.event.amount.history.entity.ts` 의 `orderId` 아래에
+   `order_delivery_id` 컬럼을 선언하면 된다(현재는 그 자리에 "여기 없다" 주석만 있다).
+
    ★ 엔티티가 컬럼을 선언한 채 마이그레이션이 안 돌면 그 테이블 조회가 전부 Unknown column 으로
      깨진다. **둘을 반드시 같이** 넣고, 마이그레이션을 앱 배포보다 먼저 적용할 것.
 
