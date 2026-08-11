@@ -65,7 +65,7 @@ import {
 } from '../interface/order.delivery.report.state';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
 import { SettleUserOrderDetailEnum } from '../../settle/interface/settle.user.order.detail';
-import { calculateSettlementPrice } from '../../util/settle-fee.util';
+import { calculateSettlementPrice, computeSettleNetAmountByOrder } from '../../util/settle-fee.util';
 import { IOrderRealProductStatus } from '../../order_real_product/interface/order.real.product.status';
 import { IFileStorage } from '../../file/interface/file.storage';
 import { IProductType } from '../../product/interface/product.type';
@@ -870,10 +870,29 @@ export class DeliveryBatchService {
     const unsettledCount = prePaymentOrders.length - settleCompleteIds.length;
 
     if (settleCompleteIds.length > 0) {
-      await this.orderRepository.update(
-        { id: In(settleCompleteIds) },
-        { settleStatus: SettleUserOrderDetailEnum.SETTLE_COMPLETE },
-      );
+      // 정산 스냅샷 = 정산확정 경로(settle.service tryAtomicSettleConfirm)와 동일한 netAmount.
+      // settleStatus 만 바꾸고 isSettleComplete/settledAmountSnapshot 을 비워두면 이후 CS 폐기 복원액이
+      // 발송건별 카드할증(비선형)으로 계산돼 정상 경로와 갈린다.
+      const deliveries = await this.orderDeliveryRepository.find({
+        where: {
+          orderProductMapping: { order: { id: In(settleCompleteIds) } },
+          deletedAt: IsNull(),
+        },
+        relations: ['orderProductMapping', 'orderProductMapping.product', 'orderProductMapping.order'],
+        withDeleted: true,
+      });
+      const netByOrder = computeSettleNetAmountByOrder(deliveries);
+
+      for (const id of settleCompleteIds) {
+        await this.orderRepository.update(
+          { id, isSettleComplete: false },
+          {
+            settleStatus: SettleUserOrderDetailEnum.SETTLE_COMPLETE,
+            isSettleComplete: true,
+            settledAmountSnapshot: netByOrder.get(id) ?? 0,
+          },
+        );
+      }
       this.logger.log(`[BATCH] Auto-settled ${settleCompleteIds.length} pre-payment orders (balance-paid)`);
     }
 
@@ -1586,18 +1605,24 @@ export class DeliveryBatchService {
           throw new Error('PIN allocation returned no item/outbox');
         }
         // allocation 성공 후 즉시 outbox 소비 시도 (비동기 실패 시 outbox processor가 재시도)
-        this.inventoryPinSendService.processOutbox(orderDelivery.id).catch(sendErr => {
-          this.logger.warn(`[BATCH] DIRECT_PIN outbox 즉시소비 실패 (processor가 재시도) - delivery=${orderDelivery.id}: ${sendErr}`);
+        this.inventoryPinSendService.processOutbox(orderDelivery.id).catch((sendErr) => {
+          this.logger.warn(
+            `[BATCH] DIRECT_PIN outbox 즉시소비 실패 (processor가 재시도) - delivery=${orderDelivery.id}: ${sendErr}`,
+          );
         });
       } catch (error) {
-        this.logger.error(`[BATCH] DIRECT_PIN allocation 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+        this.logger.error(
+          `[BATCH] DIRECT_PIN allocation 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`,
+        );
         // 재고 없음/allocation 중단은 resendiable FAIL — 자동 환불 미생성 (rev5 §7.4)
         this.markSendFail(orderDelivery, IOrderDeliveryStatus.FAIL);
         if (claimToken) {
           await this.updateDeliveryOwned(
-            orderDelivery.id, claimToken,
+            orderDelivery.id,
+            claimToken,
             { status: orderDelivery.status, failedAt: orderDelivery.failedAt },
-            'DIRECT_PIN allocation 실패', order.id,
+            'DIRECT_PIN allocation 실패',
+            order.id,
           );
         }
         const deliveryHistory = new DeliverySendHistoryEntity();

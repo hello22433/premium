@@ -44,6 +44,10 @@ import { SsgRefundOutcome } from '../interface/ssg.refund.resolve';
 import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
 import { InventoryPinAllocationService } from '../../inventory_coupon/application/inventory.pin.allocation.service';
 import { InventoryPinSendService } from '../../inventory_coupon/application/inventory.pin.send.service';
+import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
+import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
+import { OrderDeliveryCouponStatus } from '../interface/order.delivery.coupon.status';
+import { SettleUserOrderDetailEnum } from '../../settle/interface/settle.user.order.detail';
 
 describe('DeliveryBatchService', () => {
   let service: DeliveryBatchService;
@@ -229,6 +233,119 @@ describe('DeliveryBatchService', () => {
       expect(result).toBeNull();
       expect(ssgEventService.selectEventForOrder).not.toHaveBeenCalled();
       expect(ssgEventService.deductForReissueWithPending).not.toHaveBeenCalled();
+    });
+  });
+  describe('autoSettlePrePaymentOrders', () => {
+    const PRE = IUserSettleCondition.PRE_PAYMENT;
+
+    const makeDelivery = (
+      orderId: number,
+      over: { cardSurchargeApplied?: boolean; price?: number; status?: IOrderDeliveryStatus } = {},
+    ): any => ({
+      id: `${orderId}-${Math.random()}`,
+      status: over.status ?? IOrderDeliveryStatus.COMPLETE,
+      couponStatus: OrderDeliveryCouponStatus.NOT_USED,
+      settleFee: null,
+      settlePriceAdjustment: null,
+      orderProductMapping: {
+        snapshotProductPrice: over.price ?? 3335,
+        product: { price: over.price ?? 3335 },
+        fee: null,
+        priceAdjustment: null,
+        orderDeliveries: [],
+        amount: 1,
+        order: { id: orderId, cardSurchargeApplied: over.cardSurchargeApplied ?? false },
+      },
+    });
+
+    const wire = (orders: any[], deliveries: any[]) => {
+      const orderRepo = (service as any).orderRepository;
+      orderRepo.find = jest.fn().mockResolvedValue(orders);
+      orderRepo.update = jest.fn().mockResolvedValue({ affected: 1 });
+      const delRepo = (service as any).orderDeliveryRepository;
+      delRepo.find = jest.fn().mockResolvedValue(deliveries);
+      return { orderRepo, delRepo };
+    };
+
+    it('선정산+잔액차감 주문에 3컬럼을 함께 기록하고 snapshot 은 정산 netAmount(카드할증 1회)', async () => {
+      const orders = [{ id: 1, isSettleBalance: true, clientUser: null, user: { settleCondition: PRE } }];
+      const deliveries = [
+        makeDelivery(1, { cardSurchargeApplied: true }),
+        makeDelivery(1, { cardSurchargeApplied: true }),
+      ];
+      const { orderRepo } = wire(orders, deliveries);
+
+      await (service as any).autoSettlePrePaymentOrders([1]);
+
+      expect(orderRepo.update).toHaveBeenCalledTimes(1);
+      // 발송건별(3430×2=6860)이 아니라 주문합계 1회 적용(6870), 3컬럼 동시 기록, CAS 가드(isSettleComplete:false)
+      expect(orderRepo.update).toHaveBeenCalledWith(
+        { id: 1, isSettleComplete: false },
+        {
+          settleStatus: SettleUserOrderDetailEnum.SETTLE_COMPLETE,
+          isSettleComplete: true,
+          settledAmountSnapshot: 6870,
+        },
+      );
+    });
+
+    it('isSettleBalance=false(한도 초과) 주문은 정산확정하지 않는다', async () => {
+      const orders = [{ id: 2, isSettleBalance: false, clientUser: null, user: { settleCondition: PRE } }];
+      const { orderRepo, delRepo } = wire(orders, []);
+
+      await (service as any).autoSettlePrePaymentOrders([2]);
+
+      expect(orderRepo.update).not.toHaveBeenCalled();
+      expect(delRepo.find).not.toHaveBeenCalled();
+    });
+
+    it('과금 대상(clientUser) settleCondition 이 PRE_PAYMENT 아니면 제외', async () => {
+      const orders = [
+        {
+          id: 3,
+          isSettleBalance: true,
+          clientUser: { settleCondition: IUserSettleCondition.POST_PAYMENT },
+          user: { settleCondition: PRE },
+        },
+      ];
+      const { orderRepo } = wire(orders, []);
+
+      await (service as any).autoSettlePrePaymentOrders([3]);
+
+      expect(orderRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('여러 주문을 각 주문의 snapshot 으로 개별 update 한다', async () => {
+      const orders = [
+        { id: 10, isSettleBalance: true, clientUser: null, user: { settleCondition: PRE } },
+        { id: 11, isSettleBalance: true, clientUser: null, user: { settleCondition: PRE } },
+      ];
+      const deliveries = [makeDelivery(10), makeDelivery(11), makeDelivery(11)];
+      const { orderRepo } = wire(orders, deliveries);
+
+      await (service as any).autoSettlePrePaymentOrders([10, 11]);
+
+      expect(orderRepo.update).toHaveBeenCalledWith(
+        { id: 10, isSettleComplete: false },
+        expect.objectContaining({ settledAmountSnapshot: 3335 }),
+      );
+      expect(orderRepo.update).toHaveBeenCalledWith(
+        { id: 11, isSettleComplete: false },
+        expect.objectContaining({ settledAmountSnapshot: 6670 }),
+      );
+    });
+
+    it('유효 발송건이 없는 주문은 snapshot 0 으로 확정한다 (drift 잔존 방지)', async () => {
+      const orders = [{ id: 20, isSettleBalance: true, clientUser: null, user: { settleCondition: PRE } }];
+      const deliveries = [makeDelivery(20, { status: IOrderDeliveryStatus.FAIL })];
+      const { orderRepo } = wire(orders, deliveries);
+
+      await (service as any).autoSettlePrePaymentOrders([20]);
+
+      expect(orderRepo.update).toHaveBeenCalledWith(
+        { id: 20, isSettleComplete: false },
+        { settleStatus: SettleUserOrderDetailEnum.SETTLE_COMPLETE, isSettleComplete: true, settledAmountSnapshot: 0 },
+      );
     });
   });
 });
