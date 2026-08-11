@@ -36,7 +36,7 @@ describe('OrderService getDetail view-scope (IDOR)', () => {
     user: {
       settlePeriodCondition: null,
       settlePeriodCount: null,
-      settleCondition: null,
+      settleCondition: 'PRE_PAYMENT',
     },
   } as any;
 
@@ -81,6 +81,9 @@ describe('OrderService getDetail view-scope (IDOR)', () => {
     // recoverDeletedProducts/cryptoCipher 등 상세 매핑 단계는 본 테스트 범위 밖이라
     // no-op 으로 둔다 (소유자 분기에서 빈 productList 로 정상 반환).
     service.recoverDeletedProducts = jest.fn().mockResolvedValue(undefined);
+    service.walletAccountResolverService = {
+      resolveForOrder: jest.fn().mockResolvedValue({ settleCondition: 'POST_PAYMENT' }),
+    };
     return service;
   };
 
@@ -98,6 +101,18 @@ describe('OrderService getDetail view-scope (IDOR)', () => {
     const result = await service.getDetail(owner, { id: 77 });
     expect(result).toBeDefined();
     expect(result.id).toBe(77);
+    expect(result.isPreSettle).toBe(false);
+    expect(service.walletAccountResolverService.resolveForOrder).toHaveBeenCalledWith(ownedOrder);
+  });
+
+  it('이벤트 상세도 계정이 아닌 정산코드 wallet의 정산조건을 사용한다', async () => {
+    const service = buildService(ownedOrder);
+    const owner = { id: 10, email: 'o@o.com', authority: IUserAuthority.CORPORATE_ADMIN };
+
+    const result = await service.getEventDetail(owner, { id: 77 });
+
+    expect(result.isPreSettle).toBe(false);
+    expect(service.walletAccountResolverService.resolveForOrder).toHaveBeenCalledWith(ownedOrder);
   });
 });
 
@@ -161,6 +176,9 @@ describe('OrderService getDetail ssgBalanceCheck 노출 게이트', () => {
     });
     const checkSpy = jest.fn().mockResolvedValue({ hasWarning: true, lookupFailed: false, events: [] });
     service.ssgEventService = { getSsgBalanceCheckForOrder: checkSpy };
+    service.walletAccountResolverService = {
+      resolveForOrder: jest.fn().mockResolvedValue({ settleCondition: 'POST_PAYMENT' }),
+    };
     // scope 필터 내부 userRepository.findOne (companyId/departmentId 용)
     service.userRepository = {
       findOne: jest.fn().mockResolvedValue({ id: 10, companyId: 100, departmentId: 5 }),
