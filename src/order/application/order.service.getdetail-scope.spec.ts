@@ -293,6 +293,10 @@ describe('OrderService getDetail — cancelable 조립 (H-1)', () => {
       .fn()
       .mockResolvedValue({ id: 10, authority: IUserAuthority.CORPORATE_ADMIN, status: IUserStatus.USED, authorityList: null });
     service.ssgEventService = { getSsgBalanceCheckForOrder: jest.fn() };
+    // getDetail 응답의 지갑 정보(정산조건) 해석 — 이 스펙의 관심사는 cancelable 조립이라 최소 배선만 한다.
+    service.walletAccountResolverService = {
+      resolveForOrder: jest.fn().mockResolvedValue({ settleCondition: 'POST_PAYMENT' }),
+    };
     return service;
   };
 
