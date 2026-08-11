@@ -1,212 +1,325 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { getDataSourceToken, getRepositoryToken } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
-import { CreditExcessApprovalEntity, CreditExcessApprovalStatus } from '../../entity/credit.excess.approval.entity';
-import { UserEntity } from '../../entity/user.entity';
 import { CreditExcessApprovalService } from './credit-excess-approval.service';
-import { WalletAccountResolverService } from './wallet-account-resolver.service';
+import { CreditExcessApprovalClaimConflictError, CreditExcessApprovalDriftError } from './credit-excess-approval.errors';
+import { CreditExcessApprovalStatus } from '../../entity/credit.excess.approval.entity';
 
-describe('CreditExcessApprovalService — 4단계 워크플로', () => {
-  let sut: CreditExcessApprovalService;
-  let repo: any;
-  let orderRepo: any;
-  let userRepo: any;
-  let walletAccountResolver: any;
+/**
+ * [EP-P23] 승인 상태 저장소.
+ * CAS 선점 / fencing token 검증 / 실행 표식 기반 최종화·복구 규칙 검증.
+ */
+describe('CreditExcessApprovalService', () => {
+  const updateQb = (affected: number) => ({
+    update: jest.fn().mockReturnThis(),
+    set: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    execute: jest.fn().mockResolvedValue({ affected }),
+  });
 
-  beforeEach(async () => {
-    repo = {
-      save: jest.fn(async (obj: any) => ({ id: 'app1', ...obj })),
-      findOne: jest.fn(),
-      createQueryBuilder: jest.fn().mockReturnValue({
-        update: jest.fn().mockReturnThis(),
-        set: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        execute: jest.fn().mockResolvedValue({ affected: 1 }),
-      }),
+  const makeService = ({
+    approval,
+    affected = 1,
+    execution = null,
+  }: {
+    approval?: Record<string, unknown> | null;
+    affected?: number;
+    execution?: Record<string, unknown> | null;
+  }) => {
+    const updateBuilder = updateQb(affected);
+    const approvalRepository = {
+      createQueryBuilder: jest.fn().mockReturnValue(updateBuilder),
+      findOne: jest.fn().mockResolvedValue(approval ?? null),
+      findAndCount: jest.fn().mockResolvedValue([[], 0]),
+      find: jest.fn().mockResolvedValue([]),
+    } as any;
+    const executionRepository = {
+      findOne: jest.fn().mockResolvedValue(execution),
+      create: jest.fn((v: unknown) => v),
+      insert: jest.fn().mockResolvedValue(undefined),
+    } as any;
+    const userRepository = { find: jest.fn().mockResolvedValue([]) } as any;
+
+    const lockedQb = {
+      setLock: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockResolvedValue(approval ?? null),
     };
-    // Default: order owned by user 7 (matches requestedBy), wallet id matches '1'.
-    orderRepo = {
-      findOne: jest.fn().mockResolvedValue({ id: 1, userId: 7, clientUserId: null }),
-      createQueryBuilder: jest.fn().mockReturnValue({
+    const manager = {
+      getRepository: jest.fn((entity: any) =>
+        String(entity?.name ?? '').includes('Execution')
+          ? executionRepository
+          : { ...approvalRepository, createQueryBuilder: jest.fn().mockReturnValue({ ...lockedQb, ...updateBuilder }) },
+      ),
+    } as any;
+    const dataSource = { transaction: jest.fn(async (cb: any) => cb(manager)) } as any;
+
+    const service = new CreditExcessApprovalService(
+      approvalRepository,
+      executionRepository,
+      userRepository,
+      dataSource,
+    );
+    return { service, approvalRepository, executionRepository, updateBuilder, manager, lockedQb };
+  };
+
+  const pending = {
+    id: '900',
+    orderId: 77,
+    status: CreditExcessApprovalStatus.PENDING,
+    attemptToken: null,
+    requestedAmount: 10000,
+    requestedCreditExcessAmount: 3000,
+    consumedAt: null,
+    leaseExpiresAt: null,
+  };
+
+  describe('createPending', () => {
+    it('같은 주문의 활성 요청이 있으면 거절한다', async () => {
+      const { service, manager } = makeService({ approval: pending });
+      manager.getRepository = jest.fn().mockReturnValue({
+        findOne: jest.fn().mockResolvedValue(pending),
+        save: jest.fn(),
+        create: jest.fn(),
+      });
+
+      await expect(
+        service.createPending(
+          {
+            orderId: 77,
+            walletAccountId: 'w-1',
+            requestedAmount: 10000,
+            requestedCreditExcessAmount: 3000,
+            reasonText: '사유',
+            requestedBy: 2,
+            snapshotVersion: 1,
+            snapshot: {},
+          },
+          manager,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('DB unique 위반(동시 생성)도 사용자 메시지로 변환한다', async () => {
+      const { service, manager } = makeService({ approval: null });
+      const dupError = Object.assign(new Error('dup'), { code: 'ER_DUP_ENTRY' });
+      manager.getRepository = jest.fn().mockReturnValue({
+        findOne: jest.fn().mockResolvedValue(null),
+        create: jest.fn((v: unknown) => v),
+        save: jest.fn().mockRejectedValue(dupError),
+      });
+
+      await expect(
+        service.createPending(
+          {
+            orderId: 77,
+            walletAccountId: 'w-1',
+            requestedAmount: 10000,
+            requestedCreditExcessAmount: 3000,
+            reasonText: '사유',
+            requestedBy: 2,
+            snapshotVersion: 1,
+            snapshot: {},
+          },
+          manager,
+        ),
+      ).rejects.toThrow('이미 처리 중인 신용초과 승인 요청이 있습니다.');
+    });
+
+    it('사유가 비어 있으면 거절한다', async () => {
+      const { service, manager } = makeService({ approval: null });
+      await expect(
+        service.createPending(
+          {
+            orderId: 77,
+            walletAccountId: null,
+            requestedAmount: 10000,
+            requestedCreditExcessAmount: 3000,
+            reasonText: '   ',
+            requestedBy: 2,
+            snapshotVersion: 1,
+            snapshot: {},
+          },
+          manager,
+        ),
+      ).rejects.toThrow('요청 사유를 입력해 주세요.');
+    });
+  });
+
+  describe('claimForProcessing', () => {
+    it('PENDING 선점 성공 시 새 fencing token 을 발급한다', async () => {
+      const { service, approvalRepository } = makeService({ approval: pending, affected: 1 });
+      approvalRepository.findOne.mockResolvedValue({
+        ...pending,
+        status: CreditExcessApprovalStatus.PROCESSING,
+      });
+
+      const { attemptToken } = await service.claimForProcessing('900', 9);
+
+      expect(attemptToken).toMatch(/^[0-9a-f]{48}$/);
+    });
+
+    it('이미 선점된 요청은 conflict 로 던지고 최신 상태를 실어 준다 (멱등 응답용)', async () => {
+      const { service, approvalRepository } = makeService({ approval: pending, affected: 0 });
+      approvalRepository.findOne.mockResolvedValue({
+        ...pending,
+        status: CreditExcessApprovalStatus.PROCESSING,
+      });
+
+      await expect(service.claimForProcessing('900', 9)).rejects.toBeInstanceOf(
+        CreditExcessApprovalClaimConflictError,
+      );
+      await expect(service.claimForProcessing('900', 9)).rejects.toMatchObject({
+        current: { status: CreditExcessApprovalStatus.PROCESSING },
+      });
+    });
+  });
+
+  describe('lockProcessing', () => {
+    it('토큰이 다르면 실행을 거절한다', async () => {
+      const { service, manager, lockedQb } = makeService({ approval: null });
+      lockedQb.getOne.mockResolvedValue({
+        ...pending,
+        status: CreditExcessApprovalStatus.PROCESSING,
+        attemptToken: 'other',
+      });
+      manager.getRepository = jest.fn().mockReturnValue({ createQueryBuilder: jest.fn().mockReturnValue(lockedQb) });
+
+      await expect(service.lockProcessing(manager, '900', 'token-abc')).rejects.toBeInstanceOf(ForbiddenException);
+    });
+  });
+
+  describe('consume', () => {
+    const processing = {
+      ...pending,
+      status: CreditExcessApprovalStatus.PROCESSING,
+      attemptToken: 'token-abc',
+    };
+
+    const managerFor = (approval: unknown, affected = 1) => {
+      const builder = updateQb(affected);
+      return {
+        getRepository: jest.fn().mockReturnValue({
+          findOne: jest.fn().mockResolvedValue(approval),
+          createQueryBuilder: jest.fn().mockReturnValue(builder),
+        }),
+      } as any;
+    };
+
+    it('금액이 달라지면 재요청 대상(drift)으로 분류한다', async () => {
+      const { service } = makeService({ approval: processing });
+
+      await expect(service.consume('900', 77, 4000, 10000, managerFor(processing))).rejects.toBeInstanceOf(
+        CreditExcessApprovalDriftError,
+      );
+    });
+
+    it('PROCESSING 이 아니면 소비하지 않는다', async () => {
+      const { service } = makeService({ approval: pending });
+
+      await expect(service.consume('900', 77, 3000, 10000, managerFor(pending))).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+    });
+
+    it('조건부 UPDATE 가 0행이면 중복 사용으로 차단한다', async () => {
+      const { service } = makeService({ approval: processing });
+
+      await expect(service.consume('900', 77, 3000, 10000, managerFor(processing, 0))).rejects.toThrow(
+        'approval consume race (already used)',
+      );
+    });
+  });
+
+  describe('finalizeFailure', () => {
+    it('실행 표식이 이미 있으면 실패로 덮어쓰지 않는다', async () => {
+      const { service, executionRepository, manager } = makeService({
+        approval: pending,
+        execution: { id: '1', approvalId: '900', attemptToken: 'token-abc' },
+      });
+      const updateSpy = updateQb(1);
+      manager.getRepository = jest.fn((entity: any) =>
+        String(entity?.name ?? '').includes('Execution')
+          ? executionRepository
+          : { createQueryBuilder: jest.fn().mockReturnValue(updateSpy) },
+      );
+
+      await service.finalizeFailure({
+        approvalId: '900',
+        attemptToken: 'token-abc',
+        status: CreditExcessApprovalStatus.FAILED,
+        diagnosticCode: 'DISPATCH_FAILED',
+        userMessage: '실패',
+        changedFields: null,
+        internalReason: 'boom',
+      });
+
+      expect(updateSpy.execute).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('recordExecution', () => {
+    it('같은 승인의 실행 표식은 1건만 허용한다 (중복 발송 차단)', async () => {
+      const { service } = makeService({ approval: pending });
+      const dupError = Object.assign(new Error('dup'), { code: 'ER_DUP_ENTRY' });
+      const manager = {
+        getRepository: jest.fn().mockReturnValue({
+          create: jest.fn((v: unknown) => v),
+          insert: jest.fn().mockRejectedValue(dupError),
+        }),
+      } as any;
+
+      await expect(
+        service.recordExecution(manager, {
+          approvalId: '900',
+          orderId: 77,
+          attemptToken: 'token-abc',
+          lifecycleMode: 'WALLET',
+        }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+  });
+
+  describe('recoverExpired', () => {
+    const expiredProcessing = {
+      ...pending,
+      status: CreditExcessApprovalStatus.PROCESSING,
+      attemptToken: 'token-abc',
+      leaseExpiresAt: new Date(Date.now() - 60_000),
+    };
+
+    const recoveryService = (execution: Record<string, unknown> | null) => {
+      const updateBuilder = updateQb(1);
+      const executionRepository = {
+        findOne: jest.fn().mockResolvedValue(execution),
+        create: jest.fn(),
+        insert: jest.fn(),
+      } as any;
+      const lockedQb = {
         setLock: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
-        getOne: jest.fn().mockResolvedValue({ id: 1, userId: 7, clientUserId: null }),
-      }),
+        getOne: jest.fn().mockResolvedValue(expiredProcessing),
+      };
+      const approvalRepo = {
+        createQueryBuilder: jest.fn().mockReturnValueOnce(lockedQb).mockReturnValue(updateBuilder),
+      };
+      const manager = {
+        getRepository: jest.fn((entity: any) =>
+          String(entity?.name ?? '').includes('Execution') ? executionRepository : approvalRepo,
+        ),
+      } as any;
+      const dataSource = { transaction: jest.fn(async (cb: any) => cb(manager)) } as any;
+      return new CreditExcessApprovalService({} as any, executionRepository, {} as any, dataSource);
     };
-    walletAccountResolver = {
-      resolveForOrder: jest.fn().mockResolvedValue({ id: '1' }),
-    };
-    // transaction mock — invoke callback with manager that returns approval/order repos.
-    const txManager = {
-      getRepository: jest.fn((target: any) => {
-        if (target?.name === 'OrderEntity' || target?.options?.name === 'order') {
-          return orderRepo;
-        }
-        return repo;
-      }),
-    };
-    // list() 의 요청자/승인자 이름 조인용 — 본 스펙의 request/approve/consume 경로에서는 사용되지 않는다.
-    userRepo = { find: jest.fn().mockResolvedValue([]) };
-    const dataSourceMock = {
-      transaction: jest.fn(async (cb: any) => cb(txManager)),
-      getRepository: jest.fn(() => orderRepo),
-    };
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        CreditExcessApprovalService,
-        { provide: getRepositoryToken(CreditExcessApprovalEntity), useValue: repo },
-        { provide: getRepositoryToken(UserEntity), useValue: userRepo },
-        { provide: getDataSourceToken(), useValue: dataSourceMock },
-        { provide: WalletAccountResolverService, useValue: walletAccountResolver },
-      ],
-    }).compile();
-    sut = module.get(CreditExcessApprovalService);
-  });
 
-  it('Step B request — reasonText 누락 시 BadRequest', async () => {
-    await expect(
-      sut.request({
-        orderId: 1,
-        walletAccountId: '1',
-        requestedAmount: 10000,
-        requestedCreditExcessAmount: 5000,
-        reasonText: '',
-        requestedBy: 7,
-      }),
-    ).rejects.toBeInstanceOf(BadRequestException);
-  });
+    it('동일 토큰 실행 표식이 있으면 COMPLETED 로 수렴한다 (재발송 금지)', async () => {
+      const service = recoveryService({ id: '1', approvalId: '900', attemptToken: 'token-abc' });
 
-  it('Step B request — reasonText 200자 초과 시 BadRequest', async () => {
-    await expect(
-      sut.request({
-        orderId: 1,
-        walletAccountId: '1',
-        requestedAmount: 10000,
-        requestedCreditExcessAmount: 5000,
-        reasonText: 'a'.repeat(201),
-        requestedBy: 7,
-      }),
-    ).rejects.toBeInstanceOf(BadRequestException);
-  });
-
-  it('Step B request — PENDING 으로 저장', async () => {
-    const r = await sut.request({
-      orderId: 1,
-      walletAccountId: '1',
-      requestedAmount: 10000,
-      requestedCreditExcessAmount: 5000,
-      reasonText: '신규 발송건 한도 임시 초과',
-      requestedBy: 7,
+      await expect(service.recoverExpired('900')).resolves.toBe(CreditExcessApprovalStatus.COMPLETED);
     });
-    expect(r.status).toBe(CreditExcessApprovalStatus.PENDING);
-    expect(repo.save).toHaveBeenCalled();
-  });
 
-  it('Step C approve — PENDING → APPROVED (조건부 UPDATE + affectedRows=1)', async () => {
-    // 조건부 UPDATE 성공 (affected=1) + 갱신 후 findOne 으로 APPROVED 엔티티 반환
-    repo.findOne.mockResolvedValue({
-      id: 'a1',
-      status: CreditExcessApprovalStatus.APPROVED,
-      approvedBy: 99,
-    } as any);
-    const r = await sut.approve('a1', 99);
-    expect(r.status).toBe(CreditExcessApprovalStatus.APPROVED);
-    expect(repo.createQueryBuilder).toHaveBeenCalled();
-  });
+    it('실행 표식이 없으면 FAILED 로 전이한다', async () => {
+      const service = recoveryService(null);
 
-  it('이미 APPROVED 상태에서 approve 재호출 → BadRequest (UPDATE affected=0)', async () => {
-    // 조건부 UPDATE 가 status=PENDING 절 때문에 affected=0 반환
-    repo.createQueryBuilder = jest.fn().mockReturnValue({
-      update: jest.fn().mockReturnThis(),
-      set: jest.fn().mockReturnThis(),
-      where: jest.fn().mockReturnThis(),
-      execute: jest.fn().mockResolvedValue({ affected: 0 }),
+      await expect(service.recoverExpired('900')).resolves.toBe(CreditExcessApprovalStatus.FAILED);
     });
-    // 이미 APPROVED 인 entity 가 존재 → status 변경 안 됐다는 message 로 BadRequest
-    repo.findOne.mockResolvedValue({
-      id: 'a1',
-      status: CreditExcessApprovalStatus.APPROVED,
-    } as any);
-    await expect(sut.approve('a1', 99)).rejects.toBeInstanceOf(BadRequestException);
-  });
-
-  it('Step C reject — reject_reason 필수 + 조건부 UPDATE', async () => {
-    await expect(sut.reject('a1', 99, '')).rejects.toBeInstanceOf(BadRequestException);
-    // affected=1 성공 + findOne 으로 REJECTED 반환
-    repo.findOne.mockResolvedValue({
-      id: 'a1',
-      status: CreditExcessApprovalStatus.REJECTED,
-      rejectReason: '한도 부족',
-    } as any);
-    const r = await sut.reject('a1', 99, '한도 부족');
-    expect(r.status).toBe(CreditExcessApprovalStatus.REJECTED);
-    expect(r.rejectReason).toBe('한도 부족');
-  });
-
-  it('Step D consume — APPROVED + 미사용 + orderId/amount 일치 시 affectedRows=1', async () => {
-    repo.findOne.mockResolvedValue({
-      id: 'a1',
-      orderId: 1,
-      requestedCreditExcessAmount: 5000,
-      requestedAmount: 10000,
-      status: CreditExcessApprovalStatus.APPROVED,
-      consumedAt: null,
-    } as any);
-    await expect(sut.consume('a1', 1, 5000, 10000)).resolves.toBeUndefined();
-  });
-
-  it('Step D consume — orderId 불일치 → Forbidden', async () => {
-    repo.findOne.mockResolvedValue({
-      id: 'a1',
-      orderId: 1,
-      requestedCreditExcessAmount: 5000,
-      requestedAmount: 10000,
-      status: CreditExcessApprovalStatus.APPROVED,
-      consumedAt: null,
-    } as any);
-    await expect(sut.consume('a1', 999, 5000, 10000)).rejects.toBeInstanceOf(ForbiddenException);
-  });
-
-  it('Step D consume — amount 불일치 → Forbidden', async () => {
-    repo.findOne.mockResolvedValue({
-      id: 'a1',
-      orderId: 1,
-      requestedCreditExcessAmount: 5000,
-      requestedAmount: 10000,
-      status: CreditExcessApprovalStatus.APPROVED,
-      consumedAt: null,
-    } as any);
-    await expect(sut.consume('a1', 1, 9999, 10000)).rejects.toBeInstanceOf(ForbiddenException);
-  });
-
-  it('Step D consume — 이미 consumed → Forbidden (race) 시 affectedRows=0', async () => {
-    repo.findOne.mockResolvedValue({
-      id: 'a1',
-      orderId: 1,
-      requestedCreditExcessAmount: 5000,
-      requestedAmount: 10000,
-      status: CreditExcessApprovalStatus.APPROVED,
-      consumedAt: null,
-    } as any);
-    repo.createQueryBuilder = jest.fn().mockReturnValue({
-      update: jest.fn().mockReturnThis(),
-      set: jest.fn().mockReturnThis(),
-      where: jest.fn().mockReturnThis(),
-      execute: jest.fn().mockResolvedValue({ affected: 0 }),
-    });
-    await expect(sut.consume('a1', 1, 5000, 10000)).rejects.toBeInstanceOf(ForbiddenException);
-  });
-
-  it('Step D consume — requestedAmount(총액) 불일치 → Forbidden', async () => {
-    repo.findOne.mockResolvedValue({
-      id: 'a1',
-      orderId: 1,
-      requestedCreditExcessAmount: 5000,
-      requestedAmount: 10000,
-      status: CreditExcessApprovalStatus.APPROVED,
-      consumedAt: null,
-    } as any);
-    await expect(sut.consume('a1', 1, 5000, 99999)).rejects.toBeInstanceOf(ForbiddenException);
   });
 });

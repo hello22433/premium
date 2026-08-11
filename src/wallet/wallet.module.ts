@@ -7,6 +7,7 @@ import { WalletTransactionEntity } from '../entity/wallet.transaction.entity';
 import { PointGrantEntity } from '../entity/point.grant.entity';
 import { PointPolicyRuleEntity } from '../entity/point.policy.rule.entity';
 import { CreditExcessApprovalEntity } from '../entity/credit.excess.approval.entity';
+import { CreditExcessApprovalExecutionEntity } from '../entity/credit.excess.approval.execution.entity';
 import { OrderPaymentAllocationEntity } from '../entity/order.payment.allocation.entity';
 import { OrderPaymentAllocationLineEntity } from '../entity/order.payment.allocation.line.entity';
 import { OrderPointUsageEntity } from '../entity/order.point.usage.entity';
@@ -35,7 +36,6 @@ import { SettlementCodeScopeGuard } from './api/settlement-code-scope.guard';
 import { LegacyWalletCreditSyncService } from './application/legacy-wallet-credit-sync.service';
 import { BillingScopeLockService } from './application/billing-scope-lock.service';
 import { SettlementCodeAdminService } from './application/settlement-code-admin.service';
-import { CreditExcessApprovalController } from './api/credit-excess-approval.controller';
 import { SettlementCodeAdminController } from './api/settlement-code-admin.controller';
 import { ActivityLogModule } from '../activity_log/activity.log.module';
 
@@ -59,6 +59,7 @@ import { ActivityLogModule } from '../activity_log/activity.log.module';
       PointGrantEntity,
       PointPolicyRuleEntity,
       CreditExcessApprovalEntity,
+      CreditExcessApprovalExecutionEntity,
       OrderPaymentAllocationEntity,
       OrderPaymentAllocationLineEntity,
       OrderPointUsageEntity,
@@ -69,7 +70,7 @@ import { ActivityLogModule } from '../activity_log/activity.log.module';
       ActivityLogEntity,
     ]),
   ],
-  controllers: [CreditExcessApprovalController, SettlementCodeAdminController],
+  controllers: [SettlementCodeAdminController],
   providers: [
     WalletAccountResolverService,
     WalletReadService,

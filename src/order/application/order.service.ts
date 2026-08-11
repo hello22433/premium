@@ -158,7 +158,6 @@ import { PhoneUtil } from '../../common/utils/phone.util';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 import { IOrderSendingType } from '../interface/order.sending.type';
 import {
-  canForceConfirmDelivery,
   canTransitionDelivery,
   shouldExposeSsgBalanceCheck,
 } from '../domain/order.delivery-transition-authority.helper';
@@ -194,6 +193,10 @@ import { ForbiddenWordMatcher } from '../../forbidden_word/application/forbidden
 import { ForbiddenWordBlockLogEntity } from '../../entity/forbidden.word.block.log.entity';
 import { OrderProductCreateTempDto } from '../api/dto/order.product.create.temp.dto';
 import { OrderConfirmationWalletService } from '../../wallet/application/order-confirmation-wallet.service';
+import { CreditExcessApprovalService } from '../../wallet/application/credit-excess-approval.service';
+import { CreditExcessApprovalDriftError } from '../../wallet/application/credit-excess-approval.errors';
+import { buildCreditExcessSnapshot, CreditExcessSnapshot, diffCreditExcessSnapshot } from './credit-excess-snapshot';
+import { CreditExcessApprovalExecutionContext } from './credit-excess-approval.context';
 import { OrderConfirmationReleaseService } from '../../wallet/application/order-confirmation-release.service';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 import { ShadowMismatchClassifierService } from '../../wallet/application/shadow-mismatch-classifier.service';
@@ -375,6 +378,7 @@ export class OrderService {
     private readonly billingScopeLockService: BillingScopeLockService,
     @InjectRepository(WalletAccountEntity)
     private readonly walletAccountRepository: Repository<WalletAccountEntity>,
+    private readonly creditExcessApprovalService: CreditExcessApprovalService,
   ) {}
 
   /**
@@ -417,6 +421,214 @@ export class OrderService {
       cardSurchargeBase: allocation?.cardSurchargeBase ?? 0,
       cardSurchargeAmount: allocation?.cardSurchargeAmount ?? 0,
       payableSettlementAmount: allocation?.payableSettlementAmount ?? 0,
+    };
+  }
+
+  /**
+   * 사용자 할인 옵션 자동 매칭 (fee/priceAdjustment 미설정 매핑만).
+   * 발송확정은 매칭 결과를 저장하고, 신용초과 승인 요청은 저장 없이 금액 계산에만 사용한다 —
+   * 두 경로가 같은 최종 정산금액을 계산해야 스냅샷 비교가 성립한다.
+   */
+  private applyAutoDiscountMatching(
+    order: OrderEntity,
+    userDiscounts: UserDiscountEntity[],
+  ): {
+    mappingsToUpdate: OrderProductMappingEntity[];
+    mappingPriceAdjustments: Map<number, IPriceAdjustment | null>;
+  } {
+    const mappingsToUpdate: OrderProductMappingEntity[] = [];
+    const mappingPriceAdjustments = new Map<number, IPriceAdjustment | null>();
+
+    for (const mapping of order.orderProductMappings!) {
+      let fee = mapping.fee;
+      let priceAdjustment = mapping.priceAdjustment;
+
+      // fee 또는 priceAdjustment가 설정되지 않은 경우 할인 옵션에서 찾기
+      if (fee === null || priceAdjustment === null) {
+        const matchingDiscount = findMatchingDiscount(
+          {
+            price: mapping.product.price,
+            category: mapping.product.category,
+            classificationId: mapping.product.classificationId,
+            brand: mapping.product.brand,
+          },
+          userDiscounts,
+        );
+
+        if (matchingDiscount) {
+          fee = fee ?? matchingDiscount.pricePercent;
+          priceAdjustment = priceAdjustment ?? matchingDiscount.priceAdjustment;
+
+          mapping.fee = fee;
+          mapping.priceAdjustment = priceAdjustment;
+          mappingsToUpdate.push(mapping);
+        }
+      }
+
+      mappingPriceAdjustments.set(mapping.id, priceAdjustment);
+    }
+
+    return { mappingsToUpdate, mappingPriceAdjustments };
+  }
+
+  /**
+   * 승인 요청 시점 스냅샷과 발송확정 시점 재계산 스냅샷을 비교한다.
+   * 변경 항목이 있으면 발송하지 않고 재요청 필요로 분류되도록 drift 오류를 던진다.
+   */
+  private assertApprovalSnapshotMatches(
+    approvalContext: CreditExcessApprovalExecutionContext,
+    current: CreditExcessSnapshot,
+  ): void {
+    const changed = diffCreditExcessSnapshot(approvalContext.snapshot, current);
+    if (changed.length > 0) {
+      throw new CreditExcessApprovalDriftError(
+        changed,
+        `snapshot mismatch approvalId=${approvalContext.approvalId} fields=${changed.join('/')}`,
+      );
+    }
+  }
+
+  /**
+   * 신용초과 승인 요청 생성을 위한 **서버 계산**. 클라이언트의 금액/계정 값은 받지 않는다.
+   *
+   * 주문 잠금 + billing scope 잠금 안에서 발송확정과 동일한 규칙으로 최종 정산금액과 신용초과액을
+   * 계산하고 PII 최소화 스냅샷을 만든다. 신용초과가 없으면 승인 요청 대상이 아니다.
+   */
+  @Transactional()
+  async buildCreditExcessApprovalRequest(
+    user: ILoginUserInfo,
+    body: { id: number; pointUseAmount?: number; depositUseEnabled?: boolean; depositUseAmount?: number },
+  ): Promise<{
+    orderId: number;
+    billingUserId: number;
+    walletAccountId: string | null;
+    requestedAmount: number;
+    requestedCreditExcessAmount: number;
+    snapshot: CreditExcessSnapshot;
+  }> {
+    const lockedOrder = await this.orderRepository
+      .createQueryBuilder('order')
+      .setLock('pessimistic_write')
+      .where('order.id = :id', { id: body.id })
+      .andWhere('order.status = :status', { status: IOrderStatus.REVIEW_COMPLETE })
+      .getOne();
+
+    if (!lockedOrder) {
+      throw new BadRequestException('해당 주문건은 존재하지 않거나, 검토완료 상태가 아닙니다.');
+    }
+
+    const currentUser = await this.getCurrentDeliveryTransitionUser(user.id);
+    if (!canTransitionDelivery(currentUser, lockedOrder)) {
+      throw new ForbiddenException('해당 주문에 대한 권한이 없습니다.');
+    }
+
+    const order = await this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .innerJoinAndSelect('orderProductMappings.product', 'product')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.classification', 'classification')
+      .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .where('order.id = :id', { id: body.id })
+      .andWhere('order.status = :status', { status: IOrderStatus.REVIEW_COMPLETE })
+      .getOne();
+
+    if (!order) {
+      throw new BadRequestException('해당 주문건은 존재하지 않거나, 검토완료 상태가 아닙니다.');
+    }
+
+    OrderValidation(order);
+
+    const cutoverMode = this.walletCutoverConfig.pr2DeliveryLifecycleMode;
+    assertWalletOnlyParamsAbsent(cutoverMode, body);
+
+    if (!order.isNewBillingFlow) {
+      throw new BadRequestException('해당 주문은 신용초과 승인 대상이 아닙니다.');
+    }
+
+    const billingUserId = order.clientUserId ?? order.userId;
+    const { user: oneUser, companyUsers } = await this.lockBillingScope(billingUserId);
+
+    const userDiscounts = (await this.userDiscountRepository.find({ where: { userId: billingUserId } })).filter(
+      (discount) => discount.userId === billingUserId,
+    );
+    // 저장하지 않는다 — 발송확정과 동일한 금액을 계산하기 위한 in-memory 적용.
+    this.applyAutoDiscountMatching(order, userDiscounts);
+
+    const hasSettleInput = order.settleMethod != null;
+    const resolvedSettlePolicy = hasSettleInput ? null : await this.resolveSettlePolicy(order, oneUser.company);
+    const effectiveSettleMethod = order.settleMethod ?? resolvedSettlePolicy?.policy ?? 'CASH';
+    const effectiveSurcharge = hasSettleInput
+      ? order.cardSurchargeApplied
+      : effectiveSettleMethod === 'CARD' && (resolvedSettlePolicy?.resolvedWallet?.cardSurchargeApplied ?? true);
+    const finalAmount = calculateOrderSettlementAmount(order, effectiveSurcharge);
+
+    const isCompanyBalanceMode = oneUser.company?.balanceManagementType === 'COMPANY';
+    const effectiveBalance = isCompanyBalanceMode && oneUser.company ? oneUser.company.balance : oneUser.balance;
+    const remainServiceAmount =
+      oneUser.companyId && oneUser.company
+        ? oneUser.company.maximumLimit + effectiveBalance - companyUsers.reduce((sum, u) => sum + u.allSettleAmount, 0)
+        : effectiveBalance - oneUser.allSettleAmount;
+
+    let walletAccountId: string | null = null;
+    let excessAmount: number;
+    let payableSettlementAmount: number;
+    let allocationSnapshot: CreditExcessSnapshot['allocation'] = null;
+
+    if (cutoverMode === WalletCutoverMode.WALLET) {
+      const wallet = await this.walletAccountResolverService.resolveForOrder(order, this.orderRepository.manager);
+      const allocationInput = await this.walletAllocationInputBuilder.build(order, wallet, finalAmount, {
+        requestedPointAmount: body.pointUseAmount,
+        depositUseEnabled: body.depositUseEnabled,
+        depositUseAmount: body.depositUseAmount,
+        companyId: oneUser.companyId,
+        cardSurchargeApplied: effectiveSurcharge,
+      });
+      this.assertUsageWithinLimits(allocationInput, body);
+      const allocation = this.paymentAllocationService.allocate(allocationInput);
+
+      walletAccountId = String(wallet.id);
+      excessAmount = allocation.creditExcessAmount;
+      payableSettlementAmount = allocation.payableSettlementAmount;
+      allocationSnapshot = {
+        pointUsedAmount: allocation.pointUsedAmount,
+        depositUsedAmount: allocation.depositUsedAmount,
+        creditUsedAmount: allocation.creditUsedAmount,
+        creditExcessAmount: allocation.creditExcessAmount,
+        cardSurchargeAmount: allocation.cardSurchargeAmount,
+      };
+    } else {
+      excessAmount = Math.max(0, finalAmount - remainServiceAmount);
+      payableSettlementAmount = finalAmount;
+    }
+
+    if (excessAmount <= 0) {
+      throw new BadRequestException('신용초과가 발생하지 않는 주문입니다. 발송확정을 다시 진행해 주세요.');
+    }
+
+    const snapshot = buildCreditExcessSnapshot({
+      order,
+      lifecycleMode: cutoverMode,
+      billingUserId,
+      walletAccountId,
+      settleMethod: effectiveSettleMethod,
+      cardSurchargeApplied: effectiveSurcharge,
+      finalAmount,
+      remainServiceAmount,
+      excessAmount,
+      payableSettlementAmount,
+      usage: body,
+      allocation: allocationSnapshot,
+    });
+
+    return {
+      orderId: order.id,
+      billingUserId,
+      walletAccountId,
+      requestedAmount: payableSettlementAmount,
+      requestedCreditExcessAmount: excessAmount,
+      snapshot,
     };
   }
 
@@ -4514,12 +4726,28 @@ export class OrderService {
     return;
   }
 
+  /**
+   * 발송확정 공통 command.
+   *
+   * 사용자 호출(컨트롤러)과 신용초과 승인 실행(CreditExcessApprovalDispatchService)이 같은 경로를 쓴다.
+   * `approvalContext` 가 있으면 서버 승인 실행이며, 트랜잭션 시작 시 approval row 를 FOR UPDATE 로
+   * 잠그고 PROCESSING/fencing token 을 검증한 뒤 스냅샷 재검증·실행 표식 기록까지 같은 트랜잭션에서 수행한다.
+   */
   @Transactional()
   async deliveryConfirmed(
     user: ILoginUserInfo,
     getBody: OrderDeliveryConfirmedReqDto,
+    approvalContext?: CreditExcessApprovalExecutionContext,
   ): Promise<OrderDeliveryConfirmed> {
     const { id } = getBody;
+
+    if (approvalContext) {
+      await this.creditExcessApprovalService.lockProcessing(
+        this.orderRepository.manager,
+        approvalContext.approvalId,
+        approvalContext.attemptToken,
+      );
+    }
 
     const lockedOrder = await this.orderRepository
       .createQueryBuilder('order')
@@ -4536,10 +4764,6 @@ export class OrderService {
     const currentUser = await this.getCurrentDeliveryTransitionUser(user.id);
     if (!canTransitionDelivery(currentUser, lockedOrder)) {
       throw new ForbiddenException('해당 주문에 대한 권한이 없습니다.');
-    }
-
-    if (getBody.forceConfirm && !canForceConfirmDelivery(currentUser)) {
-      throw new ForbiddenException('강제 발송확정 권한이 없습니다.');
     }
 
     const order = await this.orderRepository
@@ -4608,35 +4832,11 @@ export class OrderService {
     // 각 매핑별 할인/할증 상태 저장 (중복번호 체크에 사용)
     const mappingPriceAdjustments = new Map<number, IPriceAdjustment | null>();
 
-    for (const mapping of order.orderProductMappings!) {
-      let fee = mapping.fee;
-      let priceAdjustment = mapping.priceAdjustment;
-
-      // fee 또는 priceAdjustment가 설정되지 않은 경우 할인 옵션에서 찾기
-      if (fee === null || priceAdjustment === null) {
-        const matchingDiscount = findMatchingDiscount(
-          {
-            price: mapping.product.price,
-            category: mapping.product.category,
-            classificationId: mapping.product.classificationId,
-            brand: mapping.product.brand,
-          },
-          userDiscounts,
-        );
-
-        if (matchingDiscount) {
-          fee = fee ?? matchingDiscount.pricePercent;
-          priceAdjustment = priceAdjustment ?? matchingDiscount.priceAdjustment;
-
-          // 매핑에 할인 정보 저장
-          mapping.fee = fee;
-          mapping.priceAdjustment = priceAdjustment;
-          mappingsToUpdate.push(mapping);
-        }
-      }
-
-      // 할인/할증 상태 저장
-      mappingPriceAdjustments.set(mapping.id, priceAdjustment);
+    const { mappingsToUpdate: autoMatched, mappingPriceAdjustments: matchedAdjustments } =
+      this.applyAutoDiscountMatching(order, userDiscounts);
+    mappingsToUpdate.push(...autoMatched);
+    for (const [mappingId, adjustment] of matchedAdjustments) {
+      mappingPriceAdjustments.set(mappingId, adjustment);
     }
 
     // 업데이트할 매핑이 있으면 저장
@@ -4796,38 +4996,50 @@ export class OrderService {
         this.assertUsageWithinLimits(allocationInput, getBody);
         const allocation = this.paymentAllocationService.allocate(allocationInput);
 
+        // 승인 실행이면 요청 시점 스냅샷과 현재 재계산 결과를 같은 잠금 범위에서 비교한다.
+        if (approvalContext) {
+          this.assertApprovalSnapshotMatches(
+            approvalContext,
+            buildCreditExcessSnapshot({
+              order,
+              lifecycleMode: cutoverMode,
+              billingUserId,
+              walletAccountId: String(wallet.id),
+              settleMethod: effectiveSettleMethod,
+              cardSurchargeApplied: effectiveSurcharge,
+              finalAmount,
+              remainServiceAmount,
+              excessAmount: allocation.creditExcessAmount,
+              payableSettlementAmount: allocation.payableSettlementAmount,
+              usage: getBody,
+              allocation: {
+                pointUsedAmount: allocation.pointUsedAmount,
+                depositUsedAmount: allocation.depositUsedAmount,
+                creditUsedAmount: allocation.creditUsedAmount,
+                creditExcessAmount: allocation.creditExcessAmount,
+                cardSurchargeAmount: allocation.cardSurchargeAmount,
+              },
+            }),
+          );
+        }
+
         // 신용초과 판정 = allocation.creditExcessAmount 기준 (finalAmount 아님)
         if (allocation.creditExcessAmount > 0) {
-          // 1차/2차 공통 신용초과 응답 빌더. 두 응답이 동일 필드를 내려야 함 —
-          // walletAccountId/requestedAmount/requestedCreditExcessAmount 는 신용초과 사전 승인
-          // (POST /credit-excess-approvals) 요청 body 로 그대로 전달되며, 누락 시 승인 API 400 회귀(요청4).
-          const buildCreditExcessResponse = (message: 'credit_excess' | 'credit_excess_pending_approval') =>
-            ({
-              message,
+          if (!approvalContext) {
+            // 사용자 호출: 신용초과 승인 요청 안내 응답 (SSG confirmEventBalance 미실행, DB 차감 없음).
+            // 사용자 재시도 발송확정은 없다 — 운영자 승인 시 서버가 직접 확정한다.
+            return {
+              message: 'credit_excess',
               creditExcess: true,
               excessAmount: allocation.creditExcessAmount,
               remainServiceAmount,
               finalAmount: allocation.payableSettlementAmount,
-              walletAccountId: String(wallet.id),
-              requestedAmount: allocation.payableSettlementAmount,
-              requestedCreditExcessAmount: allocation.creditExcessAmount,
               ...this.allocationDetail(allocation),
-            }) as OrderDeliveryConfirmed;
-
-          if (!getBody.forceConfirm) {
-            // 1차 호출: 신용초과 미리보기 응답 (SSG confirmEventBalance 미실행, DB 차감 없음)
-            return buildCreditExcessResponse('credit_excess');
-          }
-          // 2차 호출 (forceConfirm=true) + 사전 승인 ID 미주입 → 승인 대기 응답 (SSG side effect 차단).
-          if (!getBody.creditExcessApprovalId) {
-            this.logger.warn(
-              `신용초과 사전 승인 누락: orderId=${order.id}, 초과액=${allocation.creditExcessAmount.toLocaleString()}원`,
-            );
-            return buildCreditExcessResponse('credit_excess_pending_approval');
+            } as OrderDeliveryConfirmed;
           }
           order.isCreditExcess = true;
           this.logger.warn(
-            `신용초과 발송확정: orderId=${order.id}, 초과액=${allocation.creditExcessAmount.toLocaleString()}원, 결제=${allocation.payableSettlementAmount.toLocaleString()}원`,
+            `신용초과 발송확정(승인 실행): orderId=${order.id}, approvalId=${approvalContext.approvalId}, 초과액=${allocation.creditExcessAmount.toLocaleString()}원, 결제=${allocation.payableSettlementAmount.toLocaleString()}원`,
           );
         }
 
@@ -4836,9 +5048,8 @@ export class OrderService {
           await this.ssgEventService.confirmEventBalance(order.id);
         }
 
-        // 신용초과 사전 승인 ID 전달 (CreditExcessApprovalService 4단계 워크플로 Step D).
-        // 신용초과 미발생 시 null. 발생 시 운영자가 사전 발급한 approvalId 필수 — 미주입 시
-        // persistAllocation 가 credit_excess_approval_required 로 throw → TX rollback.
+        // 신용초과 승인 실행이면 approvalId 를 넘겨 persistAllocation 안에서 same-tx 로 consume 한다.
+        // 사용자 호출은 항상 null — 신용초과가 남아 있으면 위에서 이미 승인 요청 안내로 반환된다.
         const deliveryIdsForAttempt: number[] = [];
         for (const mapping of order.orderProductMappings!) {
           for (const delivery of mapping.orderDeliveries) {
@@ -4854,12 +5065,43 @@ export class OrderService {
             hasDiscountSnapshot: allocation.hasDiscount,
             settleMethodSnapshot: effectiveSettleMethod,
             deliveryIdsForAttempt,
-            creditExcessApprovalId: getBody.creditExcessApprovalId ?? null,
+            creditExcessApprovalId: approvalContext?.approvalId ?? null,
           },
           externalManager,
         );
         // persistAllocation 이 lock 후 재계산한 최종 allocation 사용 (pre-lock allocation 은 stale 가능).
         const finalAllocation = persistResult.finalAllocation;
+
+        // persistAllocation 이 lock 후 예치금 부족분을 credit/credit_excess 로 재분배할 수 있다.
+        // consume() 는 총 결제액·신용초과액만 비교하므로, "총액·excess 는 동일하지만 deposit↓/credit↑"
+        // 같은 재분배는 걸러내지 못한다 → 승인받은 배분과 다른 배분으로 확정될 수 있다.
+        // 최종 allocation 으로 스냅샷을 다시 구성해 전체(재원 배분 포함)를 재비교하고, drift 면 같은
+        // 트랜잭션을 통째로 롤백해 RE_REQUEST_REQUIRED 로 분류되게 한다.
+        if (approvalContext) {
+          this.assertApprovalSnapshotMatches(
+            approvalContext,
+            buildCreditExcessSnapshot({
+              order,
+              lifecycleMode: cutoverMode,
+              billingUserId,
+              walletAccountId: String(wallet.id),
+              settleMethod: effectiveSettleMethod,
+              cardSurchargeApplied: effectiveSurcharge,
+              finalAmount,
+              remainServiceAmount,
+              excessAmount: finalAllocation.creditExcessAmount,
+              payableSettlementAmount: finalAllocation.payableSettlementAmount,
+              usage: getBody,
+              allocation: {
+                pointUsedAmount: finalAllocation.pointUsedAmount,
+                depositUsedAmount: finalAllocation.depositUsedAmount,
+                creditUsedAmount: finalAllocation.creditUsedAmount,
+                creditExcessAmount: finalAllocation.creditExcessAmount,
+                cardSurchargeAmount: finalAllocation.cardSurchargeAmount,
+              },
+            }),
+          );
+        }
 
         // 4'. legacy mirror (same TX, user.balance 제외)
         order.settleAmount = finalAllocation.payableSettlementAmount;
@@ -4880,20 +5122,42 @@ export class OrderService {
         walletAllocation = finalAllocation;
       } else {
         // === LEGACY 또는 SHADOW: finalAmount 기준 신용초과 판정 유지 ===
-        if (finalAmount > remainServiceAmount) {
-          if (!getBody.forceConfirm) {
-            // 1차 호출: 초과 정보 응답 반환 (SSG confirmEventBalance 미실행)
+        const legacyExcessAmount = Math.max(0, finalAmount - remainServiceAmount);
+
+        if (approvalContext) {
+          this.assertApprovalSnapshotMatches(
+            approvalContext,
+            buildCreditExcessSnapshot({
+              order,
+              lifecycleMode: cutoverMode,
+              billingUserId,
+              walletAccountId: null,
+              settleMethod: effectiveSettleMethod,
+              cardSurchargeApplied: effectiveSurcharge,
+              finalAmount,
+              remainServiceAmount,
+              excessAmount: legacyExcessAmount,
+              payableSettlementAmount: finalAmount,
+              usage: getBody,
+              allocation: null,
+            }),
+          );
+        }
+
+        if (legacyExcessAmount > 0) {
+          if (!approvalContext) {
+            // 사용자 호출: 신용초과 승인 요청 안내 응답 (SSG confirmEventBalance 미실행)
             return {
               message: 'credit_excess',
               creditExcess: true,
-              excessAmount: finalAmount - remainServiceAmount,
+              excessAmount: legacyExcessAmount,
               remainServiceAmount,
               finalAmount,
             };
           }
           order.isCreditExcess = true;
           this.logger.warn(
-            `신용초과 발송확정: orderId=${order.id}, 초과액=${(finalAmount - remainServiceAmount).toLocaleString()}원, 필요=${finalAmount.toLocaleString()}원, 가능=${remainServiceAmount.toLocaleString()}원`,
+            `신용초과 발송확정(승인 실행): orderId=${order.id}, approvalId=${approvalContext.approvalId}, 초과액=${legacyExcessAmount.toLocaleString()}원, 필요=${finalAmount.toLocaleString()}원, 가능=${remainServiceAmount.toLocaleString()}원`,
           );
         }
 
@@ -5099,6 +5363,34 @@ export class OrderService {
 
     order.status = IOrderStatus.DELIVERY_CONFIRMED;
     await this.orderRepository.save(order);
+    if (approvalContext) {
+      // 실행 표식 — 발송확정과 **같은 트랜잭션**에서 1회만 기록. 최종화·lease 복구의 공통 진실 원천.
+      await this.creditExcessApprovalService.recordExecution(this.orderRepository.manager, {
+        approvalId: approvalContext.approvalId,
+        orderId: order.id,
+        attemptToken: approvalContext.attemptToken,
+        lifecycleMode: this.walletCutoverConfig.pr2DeliveryLifecycleMode,
+      });
+      await this.activityLogService.createLog({
+        userId: approvalContext.approverUserId,
+        userEmail: approvalContext.approverEmail,
+        method: 'POST',
+        requestUrl: `/credit-excess-approvals/${approvalContext.approvalId}/approve`,
+        actionType: 'CREDIT_EXCESS_APPROVAL_DISPATCH',
+        ipAddress: approvalContext.ipAddress,
+        statusCode: 200,
+        result: ActivityLogResult.SUCCESS,
+        responseTime: 0,
+        requestParams: {
+          approvalId: approvalContext.approvalId,
+          orderId: order.id,
+          approverUserId: approvalContext.approverUserId,
+          requesterUserId: approvalContext.requesterUserId,
+          attemptToken: approvalContext.attemptToken,
+          executedBy: 'SERVER_DISPATCH',
+        },
+      });
+    }
     if (!hasSettleInput) {
       await this.logSettleDiscountChange({
         user,
