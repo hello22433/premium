@@ -998,6 +998,7 @@ export class CustomerServiceService {
           ? orderDelivery.choiceSelectProduct.name
           : orderDelivery.orderProductMapping.product.name,
         deliveryTarget: decryptedDeliveryTarget ?? '',
+        memo: orderDelivery.memo,
         barCode: orderDelivery.barCode,
         brandName: displayBrand?.nameKorean ?? '',
         partnerCompanyName: displayPartnerCompany?.businessName ?? '',
@@ -1113,6 +1114,7 @@ export class CustomerServiceService {
       sendContent: sendContent,
       sendTitle: queryBuilder.orderProductMapping.sendTitle ?? null,
       deliveryTarget: decryptedDeliveryTarget ?? '',
+      memo: queryBuilder.memo,
       refundStatus: queryBuilder.refundStatus ?? null,
       refundRatio: queryBuilder.refundRatio ?? null,
       sendRequestAt: queryBuilder.sendRequestAt ? format(queryBuilder.sendRequestAt, DateFormatStr) : null,
@@ -2812,6 +2814,10 @@ export class CustomerServiceService {
         newDelivery.deliveryMethod = discardedDelivery.deliveryMethod;
 
         const normalizedTarget = PhoneUtil.normalizeDeliveryTarget(newTarget);
+        const previousTarget = this.cryptoCipher.safeDecryptDeliveryTarget(discardedDelivery.deliveryTarget);
+        const isSameRecipient =
+          previousTarget !== null &&
+          PhoneUtil.normalizeDeliveryTarget(previousTarget) === normalizedTarget;
         const encryptedTarget = this.cryptoCipher.encryptDeliveryTarget(normalizedTarget);
         newDelivery.deliveryTarget = encryptedTarget;
         newDelivery.originalDeliveryTarget = encryptedTarget;
@@ -2820,6 +2826,7 @@ export class CustomerServiceService {
         newDelivery.replaceCharacter1 = discardedDelivery.replaceCharacter1;
         newDelivery.replaceCharacter2 = discardedDelivery.replaceCharacter2;
         newDelivery.replaceCharacter3 = discardedDelivery.replaceCharacter3;
+        newDelivery.memo = isSameRecipient ? discardedDelivery.memo : null;
         newDelivery.replacedFromId = discardedDelivery.id;
         newDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
         newDelivery.mutationClaimedAt = mutationClaimAt;

@@ -8,6 +8,7 @@ import {
   IsOptional,
   IsString,
   Matches,
+  MaxLength,
   ValidateNested,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
@@ -15,6 +16,7 @@ import { IOrderSendMethod } from '../../interface/order.send.method';
 import { OrderEmailSendType } from '../../domain/order.email.send.type';
 import { OrderEmailFinalSendMethod } from '../../domain/order.email.final.send.method';
 import { dateAtRegexp } from '../../../common/domain/date.regexp';
+import { NormalizeMemo } from './order.manual.entry.dto';
 
 export class OrderProductCreateTempDto {
   @ApiPropertyOptional({
@@ -164,4 +166,11 @@ export class OrderDeliveryCreateDto {
   })
   @IsOptional()
   replaceCharacter3?: string;
+
+  @ApiPropertyOptional({ description: '수신자별 운영자 메모 (고객 미노출)', maxLength: 500, nullable: true })
+  @NormalizeMemo()
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  memo?: string | null;
 }
