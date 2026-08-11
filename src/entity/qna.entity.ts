@@ -54,6 +54,12 @@ export class QnaEntity extends BaseEntity {
   })
   subCategory: IQnaSubCategory | null;
 
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '[snapshot] 문의 작성 시점 담당자명' })
+  snapshotPersonName: string | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '[snapshot] 문의 작성 시점 회사명' })
+  snapshotBusinessName: string | null;
+
   @ManyToOne(() => UserEntity, { createForeignKeyConstraints: false })
   user: UserEntity;
 }
