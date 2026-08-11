@@ -47,6 +47,7 @@ import { IPartnerCompanyType } from '../../partner_company/interface/partner.com
 
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliverySendService } from '../../delivery/application/delivery.send.service';
+import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 import { RefundLedgerService } from '../../delivery/application/refund-ledger.service';
 import { DeliveryCutoverGuardService } from '../../delivery/application/delivery-cutover-guard.service';
 import {
@@ -55,6 +56,11 @@ import {
 } from '../../delivery/interface/legacy.delivery.entry.point';
 import { SsgRecoveryService } from '../../delivery/application/ssg-recovery.service';
 import { SsgRecoveryResult } from '../../delivery/interface/ssg.recovery.result';
+import {
+  SsgIssueAlreadyConfirmedError,
+  SsgIssueAttemptAlreadyActiveError,
+  SsgIssueUnknownError,
+} from '../../partner_company_extern/infra/ssg.issue';
 import {
   ExecuteRefundContext,
   RefundAttemptExecutorService,
@@ -124,6 +130,9 @@ type ExternalRefundBalanceChange = {
   afterBalance: number;
   balanceManagementType: string;
 };
+type PhaseCFailureOutcome =
+  | { kind: 'DEFINITE_FAILURE' }
+  | { kind: 'UNRESOLVED_SSG_DEFERRED'; reason: 'UNKNOWN_OR_MULTIPLE' | 'STALE_COMPLETION' };
 
 /**
  * trId 기반 조회가 로딩하는 관계. 재발송(`resendOrder`)이 `AlimTalkTemplate` 을 태우므로
@@ -168,6 +177,7 @@ export class ExternalApiService {
     private userDiscountRepository: Repository<UserDiscountEntity>,
     private dataSource: DataSource,
     private partnerCompanyExternService: PartnerCompanyExternService,
+    private deliveryBatchService: DeliveryBatchService,
     private deliverySendService: DeliverySendService,
     private ssgEventService: SsgEventService,
     private cryptoCipher: CryptoCipher,
@@ -1064,7 +1074,24 @@ export class ExternalApiService {
     const mapping = orderDelivery.orderProductMapping;
     const product = mapping.product;
 
-    await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
+    const ssgIssueAuthority =
+      mapping.order.type === IOrderType.SSG
+        ? await this.deliveryBatchService.createAndConsumeInitialSsgIssueAuthority(
+            orderDelivery,
+            `external-api:${orderDelivery.id}:${ulid()}`,
+          )
+        : undefined;
+    try {
+      await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent, undefined, ssgIssueAuthority);
+      if (ssgIssueAuthority) {
+        await this.deliveryBatchService.markSsgIssueSucceeded(ssgIssueAuthority, orderDelivery.id);
+      }
+    } catch (error) {
+      if (ssgIssueAuthority) {
+        await this.deliveryBatchService.markSsgIssueOpsReview(ssgIssueAuthority);
+      }
+      throw error;
+    }
 
     // SSG는 issue() 내부에서 expireAt을 설정하고, 그 외 협력사는 설정하지 않으므로
     // External API에서 직접 산출. partnerCompany.validityStartsNextDay 정책을 따른다.
@@ -1170,6 +1197,21 @@ export class ExternalApiService {
   }
 
   // ─── Phase C: 실패 처리 + 환불 ──────────────────────────
+  private phaseCFailureOutcome(order: OrderEntity, error: unknown): PhaseCFailureOutcome {
+    if (order.type !== IOrderType.SSG) {
+      return { kind: 'DEFINITE_FAILURE' };
+    }
+
+    if (error instanceof SsgIssueUnknownError) {
+      return { kind: 'UNRESOLVED_SSG_DEFERRED', reason: 'UNKNOWN_OR_MULTIPLE' };
+    }
+
+    if (error instanceof SsgIssueAttemptAlreadyActiveError || error instanceof SsgIssueAlreadyConfirmedError) {
+      return { kind: 'UNRESOLVED_SSG_DEFERRED', reason: 'STALE_COMPLETION' };
+    }
+
+    return { kind: 'DEFINITE_FAILURE' };
+  }
 
   private async phaseC_handleFailure(
     order: OrderEntity,
@@ -1177,6 +1219,13 @@ export class ExternalApiService {
     account: ExternalApiAccountEntity,
     error: any,
   ) {
+    const outcome = this.phaseCFailureOutcome(order, error);
+    if (outcome.kind === 'UNRESOLVED_SSG_DEFERRED') {
+      this.logger.warn(
+        `[EXTERNAL_FAIL] unresolved SSG ${outcome.reason} — preserving WAIT and OPS_REVIEW_REQUIRED without refund. orderDelivery.id: ${orderDelivery.id}`,
+      );
+      return;
+    }
     const isCutover = await this.cutoverGuard.isCutover(orderDelivery.id);
     if (!isCutover) {
       await this.phaseC_handleLegacyFailure(order, orderDelivery, account, error);

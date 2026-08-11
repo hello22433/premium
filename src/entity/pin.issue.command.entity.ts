@@ -1,5 +1,9 @@
 import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
-import { PartnerResponseClass, PinIssueCommandStatus } from '../delivery/interface/pin.issue.command.status';
+import {
+  PartnerResponseClass,
+  PinIssueCommandStatus,
+  SsgPinResolution,
+} from '../delivery/interface/pin.issue.command.status';
 import { TrackingCreatedByOp } from '../delivery/interface/delivery.workflow.status';
 
 /**
@@ -17,6 +21,7 @@ import { TrackingCreatedByOp } from '../delivery/interface/delivery.workflow.sta
 @Index('idx_pin_issue_command_status', ['status', 'stateEnteredAt'])
 @Index('idx_pin_issue_command_due', ['status', 'nextAttemptAt'])
 @Index('idx_pin_issue_command_approval', ['approvalId'])
+@Index('uk_pin_issue_command_active_delivery', ['activeOrderDeliveryId'], { unique: true })
 export class PinIssueCommandEntity {
   @PrimaryGeneratedColumn({ type: 'bigint' })
   id: string;
@@ -33,8 +38,20 @@ export class PinIssueCommandEntity {
   @Column({ type: 'varchar', length: 191, nullable: true, comment: '협력사 요청 키(trId 등). 멱등/조회 키' })
   requestKey: string | null;
 
-  @Column({ type: 'int', default: 0, comment: '협력사 발급 호출 횟수' })
+  @Column({ type: 'int', default: 0, comment: '관측용 협력사 발급 시도 횟수' })
   attemptCount: number;
+
+  @Column({ type: 'int', default: 0, comment: '외부 SSG INSERT 실행 권한 소비 횟수(최대 2)' })
+  externalIssueCount: number;
+
+  @Column({ type: 'varchar', length: 24, nullable: true, comment: 'SSG 등록 조회 판정' })
+  resolution: SsgPinResolution | null;
+
+  @Column({ type: 'int', default: 0, comment: 'SSG 등록 판정 조회 횟수' })
+  resolutionLookupCount: number;
+
+  @Column({ type: 'datetime', precision: 6, nullable: true, comment: 'SSG 등록 판정 시작 시각' })
+  resolutionStartedAt: Date | null;
 
   @Column({ type: 'varchar', length: 32, nullable: true, comment: 'PARTNER_RESPONSE_* 원본 응답코드' })
   partnerResponseCode: string | null;
@@ -44,6 +61,8 @@ export class PinIssueCommandEntity {
 
   @Column({ type: 'varchar', length: 64, nullable: true, comment: 'Level B 실행 lease 소유자' })
   ownerToken: string | null;
+  @Column({ type: 'varchar', length: 32, nullable: true, comment: '최초 batch delivery claim ISO token(lease owner와 분리)' })
+  deliveryClaimToken: string | null;
 
   @Column({ type: 'bigint', default: 0, comment: 'Level B 세대(3중 fencing)' })
   generation: string;
@@ -62,6 +81,20 @@ export class PinIssueCommandEntity {
 
   @Column({ type: 'datetime', precision: 6, nullable: true, comment: 'RETRY_PENDING 재시도 예정 시각' })
   nextAttemptAt: Date | null;
+  @Column({ type: 'datetime', precision: 6, nullable: true, comment: '실행 lease 만료 시각' })
+  leaseExpiresAt: Date | null;
+
+  @Column({
+    type: 'bigint',
+    asExpression:
+      "CASE WHEN `status` IN ('STARTED','RETRY_PENDING','RETRYING','OPS_REVIEW_REQUIRED') THEN `order_delivery_id` ELSE NULL END",
+    generatedType: 'STORED',
+    select: false,
+    insert: false,
+    update: false,
+    nullable: true,
+  })
+  activeOrderDeliveryId: string | null;
 
   @Column({
     type: 'datetime',

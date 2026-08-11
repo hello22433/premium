@@ -21,6 +21,7 @@ import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { PartnerCompanyEntity } from '../../entity/partner.company.entity';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
 import { PinIssueDedupEntity } from '../../entity/pin.issue.dedup.entity';
+import { PinIssueCommandEntity } from '../../entity/pin.issue.command.entity';
 import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
 import { SsgResendDeductPendingEntity } from '../../entity/ssg.resend.deduct.pending.entity';
 import { SsgCheckNotFoundError } from '../infra/ssg.issue';
@@ -33,9 +34,9 @@ import { PartnerCompanyExternService } from './partner.company.extern.service';
  *
  * 검증 범위:
  *  1) state ≠ ATTEMPTED → SKIPPED_NOT_ATTEMPTED
- *  2) eventSeq NULL 후보만 존재 → SKIPPED_NO_CANDIDATES
+ *  2) 후보 부재 → NETWORK_UNKNOWN (부재는 미발급 증명이 아님)
  *  3) 첫 candidate 등록 확인 → markConfirmed + CONFIRMED
- *  4) 모든 candidate 정상 NotFound → markFailed + FAILED
+ *  4) NOT_ISSUED 증명이 있을 때만 markFailed + FAILED
  *  5) check 네트워크 오류 → NETWORK_UNKNOWN (markFailed 안 부름)
  */
 describe('PartnerCompanyExternService - SSG orphan resolver', () => {
@@ -85,8 +86,8 @@ describe('PartnerCompanyExternService - SSG orphan resolver', () => {
       check: jest.fn(),
       issue: jest.fn(),
       generateSsgIssue: jest.fn(),
-      // 기본: 제출 이력 없음(N) → markFailed 가드 통과
-      getTry: jest.fn().mockResolvedValue(tryOut('N')),
+      // Default to submitted so a successful status lookup can prove a sendable PIN.
+      getTry: jest.fn().mockResolvedValue(tryOut('Y')),
     };
     ssgIssueLogRepository = { ...mock<Repository<SsgIssueLogEntity>>(), ...makeRepoMock() } as unknown as jest.Mocked<
       Repository<SsgIssueLogEntity>
@@ -114,6 +115,7 @@ describe('PartnerCompanyExternService - SSG orphan resolver', () => {
         { provide: getRepositoryToken(PartnerCompanyEntity), useValue: makeRepoMock() },
         { provide: getRepositoryToken(PinIssueDedupEntity), useValue: makeRepoMock() },
         { provide: getRepositoryToken(SsgIssueLogEntity), useValue: ssgIssueLogRepository },
+        { provide: getRepositoryToken(PinIssueCommandEntity), useValue: makeRepoMock() },
         { provide: getRepositoryToken(GiftielExchangeHistoryEntity), useValue: makeRepoMock() },
         { provide: getRepositoryToken(GalaxiaBarcodeLogEntity), useValue: makeRepoMock() },
         { provide: CryptoCipher, useValue: { safeDecryptDeliveryTarget: jest.fn() } },
@@ -138,22 +140,24 @@ describe('PartnerCompanyExternService - SSG orphan resolver', () => {
     expect(ssgInsertStateService.markFailed).not.toHaveBeenCalled();
   });
 
-  it('eventSeq NULL 후보만 있으면 SKIPPED_NO_CANDIDATES 반환', async () => {
+  it('후보가 없으면 발급 부재가 증명되지 않았으므로 NETWORK_UNKNOWN으로 보류한다', async () => {
     ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.ATTEMPTED);
-    ssgIssueLogRepository.find = jest.fn().mockResolvedValue([buildLog({ eventSeq: null })]);
+    ssgIssueLogRepository.find = jest.fn().mockResolvedValue([]);
 
     const result = await sut.resolveSsgOrphan(99);
 
-    expect(result).toBe(SsgOrphanResolveOutcome.SKIPPED_NO_CANDIDATES);
+    expect(result).toBe(SsgOrphanResolveOutcome.NETWORK_UNKNOWN);
     expect(ssgIssue.check).not.toHaveBeenCalled();
+    expect(ssgInsertStateService.markFailed).not.toHaveBeenCalled();
   });
 
-  it('첫 candidate 등록 확인 → markConfirmed + CONFIRMED 반환', async () => {
+  it('단일 CONFIRMED 후보라도 전체 후보를 조회한 뒤 markConfirmed 한다', async () => {
     ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.ATTEMPTED);
     const newer = buildLog({ id: 2, personalCode: '01300000002' });
-    const older = buildLog({ id: 1, personalCode: '01300000001' });
-    ssgIssueLogRepository.find = jest.fn().mockResolvedValue([newer, older]);
-    ssgIssue.check.mockResolvedValue({ response: { result: [{ code: ['1001'], reason: ['ok'] }] } });
+    ssgIssueLogRepository.find = jest.fn().mockResolvedValue([newer]);
+    ssgIssue.check.mockResolvedValue({
+      response: { result: [{ code: ['1001'], reason: ['ok'] }], value: [{ resultCd: ['0100'] }] },
+    });
 
     const result = await sut.resolveSsgOrphan(99);
 
@@ -176,16 +180,16 @@ describe('PartnerCompanyExternService - SSG orphan resolver', () => {
     expect(ssgInsertStateService.markFailed).not.toHaveBeenCalled();
   });
 
-  it('모든 candidate 정상 NotFound → markFailed + FAILED 반환', async () => {
+  it('미증빙 NotFound 응답만 있으면 UNKNOWN으로 보류하고 markFailed 하지 않는다', async () => {
     ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.ATTEMPTED);
     ssgIssueLogRepository.find = jest.fn().mockResolvedValue([buildLog({ id: 2 }), buildLog({ id: 1 })]);
     ssgIssue.check.mockRejectedValue(new SsgCheckNotFoundError('미등록'));
 
     const result = await sut.resolveSsgOrphan(99);
 
-    expect(result).toBe(SsgOrphanResolveOutcome.FAILED);
-    expect(ssgIssue.check).toHaveBeenCalledTimes(2);
-    expect(ssgInsertStateService.markFailed).toHaveBeenCalledWith(99);
+    expect(result).toBe(SsgOrphanResolveOutcome.NETWORK_UNKNOWN);
+    expect(ssgIssue.check).toHaveBeenCalledTimes(6);
+    expect(ssgInsertStateService.markFailed).not.toHaveBeenCalled();
     expect(ssgInsertStateService.markConfirmed).not.toHaveBeenCalled();
   });
 

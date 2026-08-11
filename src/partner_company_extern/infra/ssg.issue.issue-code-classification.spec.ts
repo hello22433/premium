@@ -1,12 +1,12 @@
 import { of } from 'rxjs';
-import { SsgIssue, SsgIssueRejectedError, SsgIssueUnknownError } from './ssg.issue';
+import { SsgIssue, SsgIssueUnknownError } from './ssg.issue';
 
 /**
  * SSG INSERT(`SsgCoupon.do`) 응답 code 분류 검증.
  *
  * - `1000` = 성공 → 정상 반환
  * - `9999` = 중계↔Oracle 통신 실패(미확정) → `SsgIssueUnknownError`
- * - 그 외 non-1000 = 확정 거절 → `SsgIssueRejectedError`
+ * - all other codes have no documented rejection contract → `SsgIssueUnknownError`
  * - code 파싱 불가 → `SsgIssueUnknownError`
  *
  * 실측: 9999 후 수동 재발송 성공률 100% — 일시적 오류. EP_P21 참조.
@@ -53,21 +53,30 @@ describe('SsgIssue.issue — 응답 code 분류', () => {
     await expect(sut.issue(issueParams)).rejects.toThrow('알 수 없는 오류입니다.');
   });
 
-  it('code 8021 → SsgIssueRejectedError (확정 거절)', async () => {
-    const sut = buildSut({ get: jest.fn(() => xmlResponse('8021', '잔액 부족')) });
+  it.each(['8021', '1001'])('code %s → SsgIssueUnknownError (official rejection allowlist 없음)', async (code) => {
+    const sut = buildSut({ get: jest.fn(() => xmlResponse(code, '미확정')) });
 
-    await expect(sut.issue(issueParams)).rejects.toBeInstanceOf(SsgIssueRejectedError);
-  });
-
-  it('code 1001 → SsgIssueRejectedError (확정 거절)', async () => {
-    const sut = buildSut({ get: jest.fn(() => xmlResponse('1001', '중복 요청')) });
-
-    await expect(sut.issue(issueParams)).rejects.toBeInstanceOf(SsgIssueRejectedError);
+    await expect(sut.issue(issueParams)).rejects.toBeInstanceOf(SsgIssueUnknownError);
   });
 
   it('code 파싱 불가 → SsgIssueUnknownError', async () => {
     const sut = buildSut({ get: jest.fn(() => of({ data: '<response><result></result></response>' } as any)) });
 
     await expect(sut.issue(issueParams)).rejects.toBeInstanceOf(SsgIssueUnknownError);
+  });
+  it.each(['9999', '0103', '8021'])('GetSsgStatus code %s → SsgIssueUnknownError', async (code) => {
+    const sut = buildSut({ get: jest.fn(() => xmlResponse(code, '미확정')) });
+
+    await expect(sut.check({ eventNo: 'EV1', eventSeq: 1, vno: '01312345678' })).rejects.toBeInstanceOf(
+      SsgIssueUnknownError,
+    );
+  });
+
+  it('GetSsgStatus missing code → SsgIssueUnknownError', async () => {
+    const sut = buildSut({ get: jest.fn(() => of({ data: '<response><result></result></response>' } as any)) });
+
+    await expect(sut.check({ eventNo: 'EV1', eventSeq: 1, vno: '01312345678' })).rejects.toBeInstanceOf(
+      SsgIssueUnknownError,
+    );
   });
 });

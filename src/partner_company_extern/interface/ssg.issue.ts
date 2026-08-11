@@ -85,6 +85,17 @@ export enum SsgPinVerdict {
   REGISTERED = 'REGISTERED', // result 유효(0100/0200/0400) → 기존 PIN 재사용
   REGISTRATION_FAILED = 'REGISTRATION_FAILED', // result 등록실패(01XX≠00) → 새 PIN INSERT
 }
+/**
+ * SSG PIN 후보 조회와 고아 복구가 공유하는 보수적 판정 결과.
+ * NOT_ISSUED는 SSG의 공식 미존재 계약이 증명될 때만 사용한다.
+ */
+export enum SsgPinResolution {
+  CONFIRMED = 'CONFIRMED',
+  NOT_ISSUED = 'NOT_ISSUED',
+  PROCESSING = 'PROCESSING',
+  UNKNOWN = 'UNKNOWN',
+  MULTIPLE_CONFIRMED = 'MULTIPLE_CONFIRMED',
+}
 
 export type ISsgAmountIn = {
   eventNo: string;

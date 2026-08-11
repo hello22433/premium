@@ -32,6 +32,7 @@ import { IProductType } from '../../product/interface/product.type';
 import { OrderReceiveChoiceDto } from '../api/dto/order.receive.choice.dto';
 import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
+import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 import { DeliverySendService } from '../../delivery/application/delivery.send.service';
 import { DeliveryAlimTalk } from '../../delivery/interface/delivery.alim.talk';
 import { AlimTalkTemplate } from '../../delivery/domain/alim.talk.template';
@@ -104,6 +105,7 @@ export class OrderReceiveService {
     @Inject('DeliveryAlimTalk')
     private deliveryAlimTalk: DeliveryAlimTalk,
     private partnerCompanyExternService: PartnerCompanyExternService,
+    private deliveryBatchService: DeliveryBatchService,
     private deliverySendService: DeliverySendService,
     @InjectRepository(SsgEventEntity)
     private ssgEventRepository: Repository<SsgEventEntity>,
@@ -114,6 +116,28 @@ export class OrderReceiveService {
   ) {}
 
   private readonly logger = new Logger(OrderReceiveService.name);
+  private async issueWithSsgAuthority(
+    orderDelivery: OrderDeliveryEntity,
+    ssgEvent: SsgEventEntity | null,
+    ownerToken: string,
+  ): Promise<void> {
+    const ssgIssueAuthority =
+      orderDelivery.orderProductMapping.order.type === IOrderType.SSG
+        ? await this.deliveryBatchService.createAndConsumeInitialSsgIssueAuthority(orderDelivery, ownerToken)
+        : undefined;
+
+    try {
+      await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent, undefined, ssgIssueAuthority);
+      if (ssgIssueAuthority) {
+        await this.deliveryBatchService.markSsgIssueSucceeded(ssgIssueAuthority, orderDelivery.id);
+      }
+    } catch (error) {
+      if (ssgIssueAuthority) {
+        await this.deliveryBatchService.markSsgIssueOpsReview(ssgIssueAuthority);
+      }
+      throw error;
+    }
+  }
 
   /**
    * coupon-view 페이지 방문 1건을 기록한다 (모든 방문 append).
@@ -273,7 +297,11 @@ export class OrderReceiveService {
     const originalProduct = orderDelivery.orderProductMapping.product;
     orderDelivery.orderProductMapping.product = productChoiceMapping.product;
     try {
-      await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
+      await this.issueWithSsgAuthority(
+        orderDelivery,
+        ssgEvent,
+        `order-receive-choice:${orderDelivery.id}:${selectionToken}`,
+      );
     } catch (e) {
       orderDelivery.orderProductMapping.product = originalProduct;
       console.error('초이스 쿠폰 PIN 발급 실패', orderDelivery.id, e);
@@ -1205,7 +1233,11 @@ export class OrderReceiveService {
       const originalProduct = orderDelivery.orderProductMapping.product;
       orderDelivery.orderProductMapping.product = issueProduct;
       try {
-        await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
+        await this.issueWithSsgAuthority(
+          orderDelivery,
+          ssgEvent,
+          `order-receive-email:${orderDelivery.id}:${emailClaimToken}`,
+        );
       } catch (e) {
         orderDelivery.orderProductMapping.product = originalProduct;
         // PIN 발급 실패. claim을 해제(REQUIRES_NEW로 outer tx 롤백과 무관하게 커밋)하고 FAIL 기록.

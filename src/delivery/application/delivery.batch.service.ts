@@ -90,6 +90,7 @@ import { DeliveryTrackHttp } from '../infra/delivery.track.http';
 import { DeliveryCreateCouponImage } from '../infra/delivery.create.coupon.image';
 
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
+import { SsgPinResolution } from '../../partner_company_extern/interface/ssg.issue';
 import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
 import { UserManagementService } from '../../user_management/application/user.management.service';
 import { DeliverySendService } from './delivery.send.service';
@@ -103,9 +104,10 @@ import { RefundPoolService } from '../../wallet/application/refund-pool.service'
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 import { SsgIssueUnknownError, SsgTryError } from '../../partner_company_extern/infra/ssg.issue';
 import { DeferredDeliveryError } from '../interface/deferred.delivery.error';
-import { PinIssueCommandService } from './pin-issue-command.service';
+import { PinIssueCommandAuthority, PinIssueCommandService } from './pin-issue-command.service';
 import { InventoryPinAllocationService } from '../../inventory_coupon/application/inventory.pin.allocation.service';
 import { InventoryPinSendService } from '../../inventory_coupon/application/inventory.pin.send.service';
+import { PinIssueCommandStatus } from '../interface/pin.issue.command.status';
 
 /**
  * 배치 단건 처리 결과 (§4.1 2-pass).
@@ -702,6 +704,20 @@ export class DeliveryBatchService {
           'WHERE opm.id = order_delivery.order_product_mapping_id AND o.type != :externalType)',
         { externalType: IOrderType.EXTERNAL },
       )
+      // An active SSG command owns this delivery; only its owner may resolve it
+      // through the targeted pass-2 path below.
+      .andWhere(
+        'NOT EXISTS (SELECT 1 FROM pin_issue_command pic WHERE pic.order_delivery_id = order_delivery.id ' +
+          'AND pic.status IN (:...activePinCommandStatuses))',
+        {
+          activePinCommandStatuses: [
+            PinIssueCommandStatus.STARTED,
+            PinIssueCommandStatus.RETRY_PENDING,
+            PinIssueCommandStatus.RETRYING,
+            PinIssueCommandStatus.OPS_REVIEW_REQUIRED,
+          ],
+        },
+      )
       // 컷오버 드레이닝·전환 건은 배치가 집지 않는다. 가드 통과 후 지연된 워커까지 막으려면
       // 판정이 아니라 **점유와 같은 문장**이어야 한다(§9 quiesce, admission race).
       .andWhere(NOT_CUTOVER_ORDER_DELIVERY)
@@ -810,11 +826,29 @@ export class DeliveryBatchService {
     //
     // 순차 실행이다 — 미룬 건은 소수이고, SSG mutex 를 두고 pass 1 잔여와 경쟁시킬 이유가 없다.
     if (deferredIds.length > 0) {
-      const retryList = await this.findClaimedDeliveries(claimedAt, deferredIds);
+      const deferredCommands = await this.pinIssueCommandService.findDeferredForResolution(
+        claimedAt.toISOString(),
+        deferredIds,
+      );
+      const authorities = new Map<number, PinIssueCommandAuthority>(
+        deferredCommands.map((command) => [
+          command.orderDeliveryId,
+          {
+            commandId: command.id,
+            ownerToken: command.ownerToken!,
+            generation: command.generation,
+            workflowVersion: command.workflowVersion!,
+          },
+        ]),
+      );
+      const retryList = await this.findClaimedDeliveries(
+        claimedAt,
+        deferredCommands.map((command) => command.orderDeliveryId),
+      );
       this.logger.log(`[BATCH][PASS2] 미룬 ${deferredIds.length}건 중 ${retryList.length}건 재시도`);
 
       for (const od of retryList) {
-        const outcome = await this.processOneDeliveryForBatch(od, false);
+        const outcome = await this.processOneDeliveryForBatch(od, false, authorities.get(od.id));
         if (outcome.kind === 'done' && outcome.result !== null) {
           allResults.push(outcome.result);
         }
@@ -1430,11 +1464,12 @@ export class DeliveryBatchService {
   private async processOneDeliveryForBatch(
     orderDelivery: OrderDeliveryEntity,
     allowDefer = false,
+    authority?: PinIssueCommandAuthority,
   ): Promise<BatchDeliveryOutcome> {
     const claimToken = orderDelivery.claimedAt;
     let deferred = false;
     try {
-      const result = await this.processOneDeliveryInternal(orderDelivery, claimToken, allowDefer);
+      const result = await this.processOneDeliveryInternal(orderDelivery, claimToken, allowDefer, authority);
       return { kind: 'done', result };
     } catch (error) {
       // 미룬 건은 실패가 아니다. claimedAt 을 풀지 않아야 다른 배치가 집어가지 않고,
@@ -1561,6 +1596,7 @@ export class DeliveryBatchService {
      * (§4.1 2-pass). pass 1 은 true, pass 2 는 false — pass 2 는 종전대로 확정한다.
      */
     allowDefer = false,
+    authority?: PinIssueCommandAuthority,
   ): Promise<{ deliveryHistory: DeliverySendHistoryEntity; orderId: number }> {
     const order = orderDelivery.orderProductMapping.order;
     const product = orderDelivery.orderProductMapping.product;
@@ -1618,6 +1654,7 @@ export class DeliveryBatchService {
     }
 
     if (!orderDelivery.barCode && !isChoiceCoupon && !isEmailDelivery) {
+      let commandAuthority = authority;
       try {
         let ssgEvent: SsgEventEntity | null = null;
         if (order.type === IOrderType.SSG && orderDelivery.ssgEventId) {
@@ -1626,19 +1663,67 @@ export class DeliveryBatchService {
           });
         }
 
-        await this.pinIssueCommandService.recordAttempt({
-          orderDeliveryId: orderDelivery.id,
-          partnerType: product.partnerCompany?.type ?? 'UNKNOWN',
-          requestKey: orderDelivery.ssgTransactionId ?? orderDelivery.transactionId,
-        });
+        if (order.type === IOrderType.SSG) {
+          if (!commandAuthority) {
+            const ownerToken = claimToken?.toISOString() ?? `batch:${orderDelivery.id}`;
+            const commandId = await this.pinIssueCommandService.createActiveCommand({
+              orderDeliveryId: orderDelivery.id,
+              partnerType: product.partnerCompany?.type ?? 'SSG',
+              requestKey: orderDelivery.ssgTransactionId ?? orderDelivery.transactionId,
+              ownerToken,
+              generation: '0',
+              workflowVersion: '0',
+              leaseExpiresAt: new Date(Date.now() + 5 * 60_000),
+              createdByOp: DeliveryExclusiveOp.PIN_ISSUE,
+            });
+            commandAuthority = { commandId, ownerToken, generation: '0', workflowVersion: '0' };
+            if (!(await this.pinIssueCommandService.consumeInitialIssueAuthority(commandAuthority))) {
+              throw new SsgIssueUnknownError(`SSG INSERT authority lost. orderDeliveryId=${orderDelivery.id}`);
+            }
+          } else {
+            const resolution = await this.partnerCompanyExternService.resolveDeferredSsgIssue(orderDelivery);
+            if (resolution === SsgPinResolution.CONFIRMED) {
+              if (!(await this.pinIssueCommandService.markSucceeded(commandAuthority))) {
+                throw new DeferredDeliveryError(orderDelivery.id, new Error('SSG PIN success authority lost'));
+              }
+            } else if (resolution === SsgPinResolution.NOT_ISSUED) {
+              await this.pinIssueCommandService.recordResolution(commandAuthority, {
+                resolution,
+                status: PinIssueCommandStatus.RETRYING,
+              });
+              if (!(await this.pinIssueCommandService.consumeNotIssuedRetryAuthority(commandAuthority))) {
+                throw new SsgIssueUnknownError(`SSG retry authority lost. orderDeliveryId=${orderDelivery.id}`);
+              }
+            } else if (resolution === SsgPinResolution.PROCESSING) {
+              await this.pinIssueCommandService.recordResolution(commandAuthority, {
+                resolution,
+                status: PinIssueCommandStatus.RETRY_PENDING,
+              });
+              throw new DeferredDeliveryError(orderDelivery.id, new Error('SSG INSERT still processing'));
+            } else {
+              await this.pinIssueCommandService.markOpsReviewRequired(commandAuthority, resolution);
+              throw new DeferredDeliveryError(orderDelivery.id, new Error(`SSG INSERT resolution=${resolution}`));
+            }
+          }
+        } else {
+          await this.pinIssueCommandService.recordAttemptAudit({
+            orderDeliveryId: orderDelivery.id,
+            partnerType: product.partnerCompany?.type ?? 'UNKNOWN',
+            requestKey: orderDelivery.ssgTransactionId ?? orderDelivery.transactionId,
+          });
+        }
 
-        await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
+        if (!orderDelivery.barCode) {
+          await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent, undefined, commandAuthority);
+        }
 
         if (orderDelivery.status === IOrderDeliveryStatus.FAIL || !orderDelivery.barCode) {
           throw new Error('PIN 발급 실패');
         }
 
-        await this.pinIssueCommandService.markSucceeded(orderDelivery.id);
+        if (commandAuthority && !(await this.pinIssueCommandService.markSucceeded(commandAuthority))) {
+          throw new DeferredDeliveryError(orderDelivery.id, new Error('SSG PIN success authority lost'));
+        }
 
         orderDelivery.imagePath = await this.createCouponImage(orderDelivery);
 
@@ -1647,6 +1732,10 @@ export class DeliveryBatchService {
         );
       } catch (error) {
         this.logger.error(`[BATCH] PIN 발급 실패 - orderDelivery.id: ${orderDelivery.id}, error: ${error}`);
+        if (error instanceof DeferredDeliveryError) {
+          throw error;
+        }
+
 
         // 미확정 실패(SsgTryError=조회 판정 불가, SsgIssueUnknownError=INSERT 결과 미확정)는
         // pass 1 이면 확정하지 않고 뒤로 미룬다 — status/환불/이력을 건드리지 않아야
@@ -1654,22 +1743,30 @@ export class DeliveryBatchService {
         // (계약 §2 조항 2: 본 처리 종료 직후 1회 재시도. 고정 대기 없음)
         const retryable = error instanceof SsgTryError || error instanceof SsgIssueUnknownError;
 
-        if (allowDefer && retryable) {
-          await this.pinIssueCommandService.markRetryPending(orderDelivery.id, error.message);
+        if (allowDefer && retryable && commandAuthority) {
+          await this.pinIssueCommandService.recordResolution(commandAuthority, {
+            resolution: SsgPinResolution.UNKNOWN,
+            status: PinIssueCommandStatus.RETRY_PENDING,
+          });
           this.logger.warn(
             `[BATCH][DEFER] SSG 미확정 — pass 2 로 미룸. orderDelivery.id: ${orderDelivery.id}: ${error.message}`,
           );
           throw new DeferredDeliveryError(orderDelivery.id, error);
         }
 
-        // §5.4 전이표: 재시도 가능 실패를 소진한 것(`RETRYING → EXHAUSTED`)과 애초에 재시도가
-        // 무의미한 실패(`STARTED → TERMINAL`)는 다른 상태다. 잔액 부족·파라미터 오류까지
-        // EXHAUSTED 로 적으면 "재시도했는데 안 됐다" 로 읽혀 원인 분석이 왜곡된다.
+        // An unresolved SSG INSERT is never a FAIL/refund outcome. It remains
+        // operator-owned after pass 2; no official NOT_ISSUED proof exists.
+        if (retryable && commandAuthority) {
+          await this.pinIssueCommandService.markOpsReviewRequired(commandAuthority, SsgPinResolution.UNKNOWN);
+          throw new DeferredDeliveryError(orderDelivery.id, error);
+        }
+
         const reason = error instanceof Error ? error.message : String(error);
-        if (retryable) {
-          await this.pinIssueCommandService.markExhausted(orderDelivery.id, reason);
-        } else {
-          await this.pinIssueCommandService.markTerminal(orderDelivery.id, reason);
+        if (commandAuthority) {
+          await this.pinIssueCommandService.recordResolution(commandAuthority, {
+            resolution: SsgPinResolution.UNKNOWN,
+            status: PinIssueCommandStatus.TERMINAL,
+          });
         }
 
         // B1/B3: 최초 발송 실패는 환불 보류. SSG 는 ATTEMPTED 만 환불, 재발송 실패는 환불.
@@ -2069,6 +2166,8 @@ export class DeliveryBatchService {
       const hadNoBarCode = !orderDelivery.barCode;
       let ssgEvent: SsgEventEntity | null = null;
       let resendDeducted = false;
+      // catch 에서 fenced 전이하려면 try 밖에 선언한다(HIGH: issue() 실패 시 STARTED 영구 잔류 차단).
+      let ssgIssueAuthority: PinIssueCommandAuthority | undefined;
       // 재발송 선차감 단위 멱등키. deduct 시 발급 → 역복원(refundResendEventDeduction)이 이 키로 멱등 처리.
       // 원래 발송 실패 환불 cycle 의 refund_ledger_id 와 분리해 recovery_log 충돌(leak) 방지.
       let resendDeductionId: string | null = null;
@@ -2134,6 +2233,13 @@ export class DeliveryBatchService {
           resendDeducted = true;
         }
 
+        if (order.type === IOrderType.SSG) {
+          ssgIssueAuthority = await this.createAndConsumeInitialSsgIssueAuthority(
+            orderDelivery,
+            `batch-resend:${orderDelivery.id}:${new Date().toISOString()}`,
+          );
+        }
+
         // 선차감 pending 에 issue 시도 기록 — sweep 이 W1(미시도 직접 역복원)과 구분하는 phase.
         if (resendDeducted && resendDeductionId) {
           await this.ssgEventService.markReissueIssueAttempted(resendDeductionId, orderDelivery.id);
@@ -2143,7 +2249,11 @@ export class DeliveryBatchService {
           orderDelivery,
           ssgEvent,
           resendDeductionId ?? undefined,
+          ssgIssueAuthority,
         );
+        if (ssgIssueAuthority && !(await this.pinIssueCommandService.markSucceeded(ssgIssueAuthority))) {
+          throw new SsgIssueUnknownError(`SSG INSERT completion authority lost. orderDeliveryId=${orderDelivery.id}`);
+        }
 
         if (!orderDelivery.barCode) {
           this.logger.error(`[RESEND] PIN 재발급 실패 - orderDelivery.id: ${orderDelivery.id}`);
@@ -2196,6 +2306,13 @@ export class DeliveryBatchService {
         if (resendDeducted && ssgEvent) {
           await this.refundResendDeduct(orderDelivery, ssgEvent.id, product.price, order.id, resendDeductionId!);
         }
+        // SSG INSERT 권한을 소비한 재발송이 issue() 실패로 STARTED+count=1 로 영구 잔류하면 활성 명령 unique
+        // fence 가 이후 재발송·일반 배치를 모두 막는다(HIGH). 선차감은 이미 역복원했고 INSERT 착지 여부가
+        // 불명이라 sweep 자동 재발급은 이중차감 위험이 있으므로, 자동 재시도(RETRY_PENDING)가 아니라
+        // 운영 확인(OPS_REVIEW_REQUIRED)으로 fenced 전이한다. 성공 확정 후 실패면 종결 가드로 no-op.
+        if (ssgIssueAuthority) {
+          await this.pinIssueCommandService.markOpsReviewRequired(ssgIssueAuthority, SsgPinResolution.UNKNOWN);
+        }
         return false;
       }
     }
@@ -2214,6 +2331,37 @@ export class DeliveryBatchService {
     }
 
     return true;
+  }
+
+  async createAndConsumeInitialSsgIssueAuthority(
+    orderDelivery: OrderDeliveryEntity,
+    ownerToken: string,
+  ): Promise<PinIssueCommandAuthority> {
+    const commandId = await this.pinIssueCommandService.createActiveCommand({
+      orderDeliveryId: orderDelivery.id,
+      partnerType: orderDelivery.orderProductMapping.product.partnerCompany?.type ?? 'SSG',
+      requestKey: orderDelivery.ssgTransactionId ?? orderDelivery.transactionId,
+      ownerToken,
+      generation: '0',
+      workflowVersion: '0',
+      leaseExpiresAt: new Date(Date.now() + 5 * 60_000),
+      createdByOp: DeliveryExclusiveOp.PIN_ISSUE,
+    });
+    const authority = { commandId, ownerToken, generation: '0', workflowVersion: '0' };
+    if (!(await this.pinIssueCommandService.consumeInitialIssueAuthority(authority))) {
+      throw new SsgIssueUnknownError(`SSG INSERT authority lost. orderDeliveryId=${orderDelivery.id}`);
+    }
+    return authority;
+  }
+
+  async markSsgIssueSucceeded(authority: PinIssueCommandAuthority, orderDeliveryId: number): Promise<void> {
+    if (!(await this.pinIssueCommandService.markSucceeded(authority))) {
+      throw new SsgIssueUnknownError(`SSG INSERT completion authority lost. orderDeliveryId=${orderDeliveryId}`);
+    }
+  }
+
+  async markSsgIssueOpsReview(authority: PinIssueCommandAuthority): Promise<void> {
+    await this.pinIssueCommandService.markOpsReviewRequired(authority, SsgPinResolution.UNKNOWN);
   }
 
   /**
