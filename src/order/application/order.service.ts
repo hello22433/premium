@@ -825,6 +825,7 @@ export class OrderService {
       entity.replaceCharacter1 = entry.replaceCharacter1 ?? null;
       entity.replaceCharacter2 = entry.replaceCharacter2 ?? null;
       entity.replaceCharacter3 = entry.replaceCharacter3 ?? null;
+      entity.memo = entry.memo ?? null;
       return entity;
     });
   }
@@ -1491,6 +1492,7 @@ export class OrderService {
             replaceCharacter1: orderDelivery.replaceCharacter1,
             replaceCharacter2: orderDelivery.replaceCharacter2,
             replaceCharacter3: orderDelivery.replaceCharacter3,
+            memo: orderDelivery.memo,
             status: orderDelivery.status,
             isResent: orderDelivery.resendAt !== null,
           });
@@ -4206,6 +4208,7 @@ export class OrderService {
         oneOrderDelivery.replaceCharacter1 = orderDelivery.replaceCharacter1 ?? null;
         oneOrderDelivery.replaceCharacter2 = orderDelivery.replaceCharacter2 ?? null;
         oneOrderDelivery.replaceCharacter3 = orderDelivery.replaceCharacter3 ?? null;
+        oneOrderDelivery.memo = orderDelivery.memo ?? null;
         oneOrderDelivery.sendRequestAt = productSendAt;
         orderDeliveryCreateList.push(oneOrderDelivery);
       }
@@ -4460,6 +4463,7 @@ export class OrderService {
         oneOrderDelivery.replaceCharacter1 = orderDelivery.replaceCharacter1 ?? null;
         oneOrderDelivery.replaceCharacter2 = orderDelivery.replaceCharacter2 ?? null;
         oneOrderDelivery.replaceCharacter3 = orderDelivery.replaceCharacter3 ?? null;
+        oneOrderDelivery.memo = orderDelivery.memo ?? null;
         oneOrderDelivery.sendRequestAt = productSendAt;
         orderDeliveryCreateList.push(oneOrderDelivery);
       });
@@ -4583,6 +4587,7 @@ export class OrderService {
       replaceCharacter1: entry.replaceCharacter1,
       replaceCharacter2: entry.replaceCharacter2,
       replaceCharacter3: entry.replaceCharacter3,
+      memo: entry.memo,
     }));
   }
 

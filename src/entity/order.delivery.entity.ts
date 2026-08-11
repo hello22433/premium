@@ -48,6 +48,14 @@ export class OrderDeliveryEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 200, nullable: true, comment: '대치문자 3' })
   replaceCharacter3: string | null;
 
+  @Column({
+    type: 'varchar',
+    length: 500,
+    nullable: true,
+    comment: '수신자별 운영자 메모 (고객 미노출, 치환 대상 아님)',
+  })
+  memo: string | null;
+
   @Column({ comment: '발송 요청 시각' })
   sendRequestAt: Date;
 
