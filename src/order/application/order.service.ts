@@ -6363,6 +6363,27 @@ export class OrderService {
         );
       }
       lockedOrder.settleAmount = recomputedSettleAmount;
+
+      // ★ 여기서 isSettleBalance / isCreditExcess 는 **일부러 건드리지 않는다** (1차 리뷰 LOW —
+      //   "remaining === 0 분기와 비대칭" 지적에 대한 답. 모양이 다른 것은 상황이 다르기 때문이다).
+      //
+      //   이 플래그는 두 가지를 겸한다. 이름만 보면 앞엣것만 같지만 실제 판정은 뒤엣것으로 쓰인다.
+      //     ① 결제 수단   : 예치금(선입금)으로 냈나(true) / 여신으로 냈나(false)
+      //     ② 미환불 표시 : 아직 돌려주지 않았다. 환불하고 나면 내려서 이중 환불을 막는다.
+      //   ②의 증거는 전체취소 legacy 분기다 — 예치금으로 돌려준 **직후** isSettleBalance=false 로
+      //   내린다(:6576-6582). 수단이 바뀐 것이 아니라 "처리 끝" 을 적는 것이다.
+      //
+      //   그래서 판단 기준은 "수단이 바뀌었나" 가 아니라 **"이 주문에 아직 돌려줄 게 남았나"** 다.
+      //     전체취소            : 전액 환불 → 내린다
+      //     부분취소(잔여 있음) : 남은 건은 아직 안 돌려줬다 → **내리면 안 된다**  ← 여기
+      //     부분취소(잔여 0)    : 결과적으로 전액 환불 → 전체취소와 같은 종단 상태로 내린다
+      //
+      //   내리면 실제로 돈이 잘못 간다. 이 플래그를 읽는 곳이 셋이고 전부 "어디로 돌려줄까" 를 정한다:
+      //     · CS 폐기환불   customer.service.service (shouldRestoreBalance = isSettleComplete || isSettleBalance)
+      //     · 배치 실패환불 delivery.batch.service (같은 판정)
+      //     · 자동 정산확정 delivery.batch.service (isSettleBalance=true 만 SETTLE_COMPLETE)
+      //   예치금으로 낸 주문에서 이 값을 false 로 내리면, 남은 발송건을 CS 가 폐기환불할 때
+      //   예치금을 복원하지 않고 여신(allSettleAmount)을 깎는다 — 고객사 예치금은 안 돌아온다.
     }
     await this.orderRepository.save(lockedOrder);
 
