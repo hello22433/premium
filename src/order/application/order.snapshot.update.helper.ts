@@ -9,9 +9,22 @@ import {
 
 export type OwnedLine = {
   productId: number;
+  testDeliveryCount: number;
   snapshot?: LineProductSnapshotPart;
   partnerSettleSnapshot?: PartnerSettleSnapshotPart;
 };
+
+/**
+ * 승계 대상 라인 id. 상품이 교체된 라인은 이력·한도가 이전 상품 것이라 승계하지 않는다.
+ * 승계 대입과 고아 정리가 같은 판정을 써야 "승계했는데 고아로 지운다"가 생기지 않는다.
+ */
+export function resolveCarriedLineId(
+  line: { id?: number; productId: number },
+  owned: Map<number, OwnedLine>,
+): number | null {
+  if (line.id == null) return null;
+  return owned.get(line.id)?.productId === line.productId ? line.id : null;
+}
 
 export function assertLineIdsValid(lines: { id?: number; productId: number }[], owned: Map<number, OwnedLine>): void {
   const seen = new Set<number>();
