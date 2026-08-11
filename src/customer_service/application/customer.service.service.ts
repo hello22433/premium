@@ -2918,6 +2918,12 @@ export class CustomerServiceService {
         try {
           const ssgEvent = fullDelivery.ssgEvent ?? null;
           let reissueDeductUsed = true;
+          const ssgIssueAuthority = isSsg
+            ? await this.deliveryBatchService.createAndConsumeInitialSsgIssueAuthority(
+                fullDelivery,
+                `cs-reissue:${fullDelivery.id}:${mutationClaimAt.toISOString()}`,
+              )
+            : undefined;
 
           // PIN 발급 — 실패 시 SSG 선차감 역복원 + (미등록 확정이면) 폐기 역전·새 delivery 제거
           try {
@@ -2931,7 +2937,11 @@ export class CustomerServiceService {
               fullDelivery,
               ssgEvent,
               resendDeductionId ?? undefined,
+              ssgIssueAuthority,
             );
+            if (ssgIssueAuthority) {
+              await this.deliveryBatchService.markSsgIssueSucceeded(ssgIssueAuthority, fullDelivery.id);
+            }
             if (isSsg && reissueEvent && resendDeductionId && issueResult?.ssgNewIssue === false) {
               await this.deliveryBatchService.reverseReissueDeductDirect(
                 resendDeductionId,
@@ -2945,6 +2955,9 @@ export class CustomerServiceService {
               }
             }
           } catch (issueError) {
+            if (ssgIssueAuthority) {
+              await this.deliveryBatchService.markSsgIssueOpsReview(ssgIssueAuthority);
+            }
             if (isSsg && reissueEvent && resendDeductionId) {
               const outcome = await this.deliveryBatchService.reverseSsgReissueDeduct(
                 fullDelivery,

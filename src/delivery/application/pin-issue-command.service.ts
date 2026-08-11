@@ -1,28 +1,40 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
+import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { PinIssueCommandEntity } from '../../entity/pin.issue.command.entity';
-import { LEGACY_SEND_OP } from '../interface/delivery.workflow.status';
-import { PartnerResponseClass, PinIssueCommandStatus } from '../interface/pin.issue.command.status';
+import { TrackingCreatedByOp } from '../interface/delivery.workflow.status';
+import {
+  PIN_ISSUE_ACTIVE_STATUSES,
+  PIN_ISSUE_AUTOMATED_TRANSITION_STATUSES,
+  PinIssueCommandStatus,
+  SsgPinResolution,
+} from '../interface/pin.issue.command.status';
+
+export interface PinIssueCommandAuthority {
+  commandId: string;
+  ownerToken: string;
+  generation: string;
+  workflowVersion: string;
+}
+/**
+ * A command may authorize exactly the consumed initial INSERT or the consumed
+ * NOT_ISSUED retry INSERT. Keep this predicate shared by the durable fence and
+ * the immediate pre-HTTP recheck.
+ */
+export function hasConsumedSsgIssueAuthority(
+  command: Pick<PinIssueCommandEntity, 'status' | 'externalIssueCount'> | null | undefined,
+): boolean {
+  return (
+    (command?.status === PinIssueCommandStatus.STARTED && command.externalIssueCount === 1) ||
+    (command?.status === PinIssueCommandStatus.RETRYING && command.externalIssueCount === 2)
+  );
+}
 
 /**
- * 협력사 PIN 발급 명령 기록 (§5.2 `pin_issue_command` **최소 배선**).
- *
- * 구현 범위는 `plans/2026-08-03-pin-issue-retry-wiring.md` §4.3 에 고정돼 있다. 이번에 쓰는 것은
- * `status`·`attempt_count`·`response_class`·`partner_response_code`·`request_key` 뿐이다.
- * Level B 3중 fencing(`owner_token`/`generation`/`workflow_version`)과 `dual_approval` 연계
- * (`approval_id`)는 컷오버 작업 소관이라 여기서 채우지 않는다.
- *
- * ⚠ **`created_by_op` 는 항상 `LEGACY_SEND` 다.** 컷오버 전 legacy 발송 경로가 만드는 행이므로
- * `PIN_ISSUE`/`RETRY` 로 찍으면 §10 불변식 ②-c(승인 없는 발급 탐지)가 **legacy 정상 동작을
- * 위반으로 집계**한다. `message_attempt` 쪽이 같은 이유로 같은 규약을 쓴다
- * (`message-resend-executor.service.ts:291-292`, `message-attempt.service.ts:314`).
- *
- * 부수 효과로 DDL 의 `initial_issue_key`(`created_by_op='PIN_ISSUE'` 일 때만 값이 생기는 생성 컬럼)가
- * 항상 NULL 이 되어 `uk_pin_issue_command_initial` 유니크 제약에도 걸리지 않는다.
- *
- * **이 서비스는 기록 전용이다.** 실패해도 발송 흐름을 막지 않는다 — 추적 기록을 남기려다
- * 실제 발송을 죽이면 본말전도다. 모든 메서드가 예외를 삼키고 로그만 남긴다.
+ * Durable authority for SSG PIN INSERT calls. Every authority mutation is a
+ * conditional UPDATE; a zero affected-row result means the worker is stale and
+ * must not call SSG. These methods deliberately propagate database failures.
  */
 @Injectable()
 export class PinIssueCommandService {
@@ -33,120 +45,269 @@ export class PinIssueCommandService {
     private readonly repository: Repository<PinIssueCommandEntity>,
   ) {}
 
+  /** Atomically creates the one active command permitted for an order delivery. */
+  async createActiveCommand(params: {
+    orderDeliveryId: number;
+    partnerType: string;
+    requestKey: string | null;
+    ownerToken: string;
+    generation: string;
+    workflowVersion: string;
+    leaseExpiresAt: Date;
+    createdByOp: TrackingCreatedByOp;
+    deliveryClaimToken?: string | null;
+  }): Promise<string> {
+    const result = await this.repository.insert({
+      orderDeliveryId: params.orderDeliveryId,
+      partnerType: params.partnerType,
+      requestKey: params.requestKey,
+      status: PinIssueCommandStatus.STARTED,
+      ownerToken: params.ownerToken,
+      generation: params.generation,
+      workflowVersion: params.workflowVersion,
+      deliveryClaimToken: toIsoDeliveryClaimToken(params.deliveryClaimToken ?? params.ownerToken),
+      leaseExpiresAt: params.leaseExpiresAt,
+      createdByOp: params.createdByOp,
+      createdWorkflowVersion: params.workflowVersion,
+      stateEnteredAt: new Date(),
+    });
+    return String(result.identifiers[0].id);
+  }
+
+  async findActiveCommand(orderDeliveryId: number): Promise<PinIssueCommandEntity | null> {
+    return this.repository.findOne({
+      where: { orderDeliveryId, status: In(PIN_ISSUE_ACTIVE_STATUSES) },
+      order: { id: 'DESC' },
+    });
+  }
+
+  async hasActiveCommand(orderDeliveryId: number): Promise<boolean> {
+    return (await this.repository.count({ where: { orderDeliveryId, status: In(PIN_ISSUE_ACTIVE_STATUSES) } })) > 0;
+  }
+
   /**
-   * 발급 시도를 기록한다. 같은 `order_delivery` 의 기존 명령이 있으면 `attempt_count` 를 올리고
-   * `RETRYING`(재시도 실행 중)으로, 없으면 `STARTED` 로 새 행을 만든다.
-   *
-   * 2-pass 배치에서 pass 1 은 새 행(`STARTED`, count=1), pass 2 는 같은 행 갱신
-   * (`RETRYING`, count=2)이 된다. 계약 §2 의 "1회 자동 재시도" 상한이 count=2 다.
+   * Consumes the sole initial SSG INSERT authority (0 → 1). The caller may
+   * invoke SSG only after this returns true.
    */
-  async recordAttempt(params: {
+  async consumeInitialIssueAuthority(authority: PinIssueCommandAuthority): Promise<boolean> {
+    return this.consumeAuthority(authority, 0, PinIssueCommandStatus.STARTED);
+  }
+
+  /**
+   * Consumes the sole NOT_ISSUED retry INSERT authority (1 → 2). No state or
+   * lease recovery can make this condition true again.
+   */
+  async consumeNotIssuedRetryAuthority(authority: PinIssueCommandAuthority): Promise<boolean> {
+    const result = await this.repository
+      .createQueryBuilder()
+      .update(PinIssueCommandEntity)
+      .set({ externalIssueCount: 2, stateEnteredAt: new Date() })
+      .where('id = :commandId', { commandId: authority.commandId })
+      .andWhere('owner_token = :ownerToken', { ownerToken: authority.ownerToken })
+      .andWhere('generation = :generation', { generation: authority.generation })
+      .andWhere('workflow_version = :workflowVersion', { workflowVersion: authority.workflowVersion })
+      .andWhere('status = :status', { status: PinIssueCommandStatus.RETRYING })
+      .andWhere('resolution = :resolution', { resolution: SsgPinResolution.NOT_ISSUED })
+      .andWhere('external_issue_count = 1')
+      .execute();
+    return result.affected === 1;
+  }
+
+  /** CAS claim used by the resolution sweep before it performs a lookup. */
+  async claimRetryPending(params: PinIssueCommandAuthority & { leaseExpiresAt: Date }): Promise<boolean> {
+    const result = await this.repository
+      .createQueryBuilder()
+      .update(PinIssueCommandEntity)
+      .set({
+        status: PinIssueCommandStatus.RETRYING,
+        leaseExpiresAt: params.leaseExpiresAt,
+        stateEnteredAt: new Date(),
+      })
+      .where('id = :commandId', { commandId: params.commandId })
+      .andWhere('owner_token = :ownerToken', { ownerToken: params.ownerToken })
+      .andWhere('generation = :generation', { generation: params.generation })
+      .andWhere('workflow_version = :workflowVersion', { workflowVersion: params.workflowVersion })
+      .andWhere('status = :status', { status: PinIssueCommandStatus.RETRY_PENDING })
+      .execute();
+    return result.affected === 1;
+  }
+  /**
+   * Returns only RETRY_PENDING commands still owned by this batch. General
+   * selection must never use this path: deferred authority remains with the
+   * owner through pass 2.
+   */
+  async findDeferredForResolution(ownerToken: string, ids: number[]): Promise<PinIssueCommandEntity[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+    return this.repository.find({
+      where: {
+        orderDeliveryId: In(ids),
+        ownerToken,
+        status: PinIssueCommandStatus.RETRY_PENDING,
+      },
+      order: { id: 'ASC' },
+    });
+  }
+
+  /** Fenced result transition; stale workers cannot overwrite a current owner. */
+  async recordResolution(
+    authority: PinIssueCommandAuthority,
+    params: {
+      resolution: SsgPinResolution;
+      status: PinIssueCommandStatus;
+      nextAttemptAt?: Date | null;
+      partnerResponseCode?: string | null;
+    },
+  ): Promise<boolean> {
+    const result = await this.repository
+      .createQueryBuilder()
+      .update(PinIssueCommandEntity)
+      .set({
+        resolution: params.resolution,
+        status: params.status,
+        nextAttemptAt: params.nextAttemptAt ?? null,
+        partnerResponseCode: params.partnerResponseCode ? params.partnerResponseCode.slice(0, 32) : null,
+        resolutionLookupCount: () => 'resolution_lookup_count + 1',
+        resolutionStartedAt: () => 'COALESCE(resolution_started_at, CURRENT_TIMESTAMP(6))',
+        stateEnteredAt: new Date(),
+      })
+      .where('id = :commandId', { commandId: authority.commandId })
+      .andWhere('owner_token = :ownerToken', { ownerToken: authority.ownerToken })
+      .andWhere('generation = :generation', { generation: authority.generation })
+      .andWhere('workflow_version = :workflowVersion', { workflowVersion: authority.workflowVersion })
+      .andWhere('status IN (:...allowedStatuses)', {
+        allowedStatuses: PIN_ISSUE_AUTOMATED_TRANSITION_STATUSES,
+      })
+      .execute();
+    return result.affected === 1;
+  }
+
+  async markSucceeded(authority: PinIssueCommandAuthority): Promise<boolean> {
+    return this.transitionOwned(authority, PinIssueCommandStatus.SUCCEEDED, SsgPinResolution.CONFIRMED);
+  }
+  /**
+   * Releases a durable delivery claim and terminalizes the command in one
+   * transaction, so either stale CAS leaves the command active.
+   */
+  async markSucceededAfterDeliveryClaimRelease(
+    authority: PinIssueCommandAuthority,
+    orderDeliveryId: number,
+    deliveryClaimToken: string | null,
+  ): Promise<boolean> {
+    if (!deliveryClaimToken) return this.markSucceeded(authority);
+
+    const claimedAt = new Date(deliveryClaimToken);
+    if (Number.isNaN(claimedAt.getTime()) || claimedAt.toISOString() !== deliveryClaimToken) return false;
+
+    try {
+      return await this.repository.manager.transaction(async (manager) => {
+        const released = await manager
+          .createQueryBuilder()
+          .update(OrderDeliveryEntity)
+          .set({ claimedAt: null, mutationClaimedAt: null })
+          .where('id = :id', { id: orderDeliveryId })
+          .andWhere('claimed_at = :claimedAt', { claimedAt })
+          .andWhere('mutation_claimed_at = :claimedAt', { claimedAt })
+          .execute();
+        if (released.affected !== 1) return false;
+
+        const succeeded = await manager
+          .createQueryBuilder()
+          .update(PinIssueCommandEntity)
+          .set({
+            status: PinIssueCommandStatus.SUCCEEDED,
+            resolution: SsgPinResolution.CONFIRMED,
+            resolvedAt: new Date(),
+            stateEnteredAt: new Date(),
+          })
+          .where('id = :commandId', { commandId: authority.commandId })
+          .andWhere('owner_token = :ownerToken', { ownerToken: authority.ownerToken })
+          .andWhere('generation = :generation', { generation: authority.generation })
+          .andWhere('workflow_version = :workflowVersion', { workflowVersion: authority.workflowVersion })
+          .andWhere('status IN (:...allowedStatuses)', {
+            allowedStatuses: PIN_ISSUE_AUTOMATED_TRANSITION_STATUSES,
+          })
+          .execute();
+        if (succeeded.affected !== 1) throw new PinIssueCommandTransitionConflictError();
+        return true;
+      });
+    } catch (error) {
+      if (error instanceof PinIssueCommandTransitionConflictError) return false;
+      throw error;
+    }
+  }
+
+  async markOpsReviewRequired(
+    authority: PinIssueCommandAuthority,
+    resolution: SsgPinResolution.UNKNOWN | SsgPinResolution.MULTIPLE_CONFIRMED,
+  ): Promise<boolean> {
+    return this.transitionOwned(authority, PinIssueCommandStatus.OPS_REVIEW_REQUIRED, resolution);
+  }
+
+  /** Best-effort audit only. It must never be used to authorize an SSG call. */
+  async recordAttemptAudit(params: {
     orderDeliveryId: number;
     partnerType: string;
     requestKey: string | null;
   }): Promise<void> {
     try {
-      const existing = await this.findLatest(params.orderDeliveryId);
-
-      if (!existing) {
-        await this.repository.insert({
-          orderDeliveryId: params.orderDeliveryId,
-          partnerType: params.partnerType,
-          requestKey: params.requestKey,
-          status: PinIssueCommandStatus.STARTED,
-          attemptCount: 1,
-          createdByOp: LEGACY_SEND_OP,
-          createdWorkflowVersion: '0',
-          stateEnteredAt: new Date(),
-        });
-        return;
-      }
-
-      await this.repository.update(
-        { id: existing.id },
-        {
-          status: PinIssueCommandStatus.RETRYING,
-          attemptCount: existing.attemptCount + 1,
-          requestKey: params.requestKey ?? existing.requestKey,
-          stateEnteredAt: new Date(),
-        },
-      );
-    } catch (e) {
-      this.logger.error(`[PIN_CMD] 시도 기록 실패(무시하고 발송 계속). odId=${params.orderDeliveryId}: ${e}`);
+      await this.repository.insert({
+        orderDeliveryId: params.orderDeliveryId,
+        partnerType: params.partnerType,
+        requestKey: params.requestKey,
+        status: PinIssueCommandStatus.TERMINAL,
+        createdByOp: 'LEGACY_SEND',
+        createdWorkflowVersion: '0',
+        stateEnteredAt: new Date(),
+      });
+    } catch (error) {
+      this.logger.error(`[PIN_CMD] audit write failed. odId=${params.orderDeliveryId}: ${error}`);
     }
   }
 
-  /** 발급 성공 확정. */
-  async markSucceeded(orderDeliveryId: number): Promise<void> {
-    await this.settle(orderDeliveryId, PinIssueCommandStatus.SUCCEEDED, PartnerResponseClass.SUCCESS, null);
-  }
-
-  /**
-   * 재시도 예약(§5.4 `RETRY_PENDING`). 2-pass 배치의 pass 1 이 조회 불가로 보류한 상태다.
-   *
-   * `next_attempt_at` 은 채우지 않는다 — 재시도가 **같은 배치 사이클의 pass 2** 에서 즉시
-   * 일어나므로 예약 시각이라는 개념이 없다(계약 §2: "30~60분 고정 대기는 사용하지 않는다").
-   * 별도 대기 배치로 바뀌면 그때 채운다.
-   */
-  async markRetryPending(orderDeliveryId: number, reason: string | null): Promise<void> {
-    await this.settle(orderDeliveryId, PinIssueCommandStatus.RETRY_PENDING, PartnerResponseClass.RETRYABLE, reason);
-  }
-
-  /** 재시도까지 소진하고 실패 확정(§5.4 `EXHAUSTED`). */
-  async markExhausted(orderDeliveryId: number, reason: string | null): Promise<void> {
-    await this.settle(orderDeliveryId, PinIssueCommandStatus.EXHAUSTED, PartnerResponseClass.RETRYABLE, reason);
-  }
-
-  /**
-   * 재시도 무의미한 확정 실패(§5.4 `STARTED → TERMINAL`).
-   *
-   * SSG 는 §9 `PARTNER_RESPONSE_*` 코드표 대상이 아니라(계약 610행) 응답만으로 버킷을 확정할 수
-   * 없다. 여기서 `TERMINAL` 은 "협력사가 terminal 코드를 줬다" 가 아니라 **"재시도 대상으로
-   * 분류되지 않았다"** 는 뜻이다 — 이번 배선이 `RETRYABLE` 로 인정하는 것은 조회 실패
-   * (`SsgTryError`)뿐이다(§7 결정 ②).
-   */
-  async markTerminal(orderDeliveryId: number, reason: string | null): Promise<void> {
-    await this.settle(orderDeliveryId, PinIssueCommandStatus.TERMINAL, PartnerResponseClass.TERMINAL, reason);
-  }
-
-  private async settle(
-    orderDeliveryId: number,
+  private async consumeAuthority(
+    authority: PinIssueCommandAuthority,
+    expectedExternalIssueCount: number,
     status: PinIssueCommandStatus,
-    responseClass: PartnerResponseClass,
-    reason: string | null,
-  ): Promise<void> {
-    try {
-      const existing = await this.findLatest(orderDeliveryId);
-      if (!existing) {
-        return;
-      }
-
-      const terminal =
-        status === PinIssueCommandStatus.SUCCEEDED ||
-        status === PinIssueCommandStatus.EXHAUSTED ||
-        status === PinIssueCommandStatus.TERMINAL;
-
-      await this.repository.update(
-        { id: existing.id },
-        {
-          status,
-          responseClass,
-          // 원본 응답코드 컬럼은 32자다. SSG 는 코드계가 없어 사유 문자열이 오므로 잘라 넣는다.
-          partnerResponseCode: reason ? reason.slice(0, 32) : null,
-          stateEnteredAt: new Date(),
-          resolvedAt: terminal ? new Date() : null,
-        },
-      );
-    } catch (e) {
-      this.logger.error(`[PIN_CMD] 상태 기록 실패(무시하고 발송 계속). odId=${orderDeliveryId}, status=${status}: ${e}`);
-    }
+  ): Promise<boolean> {
+    const result = await this.repository
+      .createQueryBuilder()
+      .update(PinIssueCommandEntity)
+      .set({ externalIssueCount: expectedExternalIssueCount + 1, stateEnteredAt: new Date() })
+      .where('id = :commandId', { commandId: authority.commandId })
+      .andWhere('owner_token = :ownerToken', { ownerToken: authority.ownerToken })
+      .andWhere('generation = :generation', { generation: authority.generation })
+      .andWhere('workflow_version = :workflowVersion', { workflowVersion: authority.workflowVersion })
+      .andWhere('status = :status', { status })
+      .andWhere('external_issue_count = :expectedExternalIssueCount', { expectedExternalIssueCount })
+      .execute();
+    return result.affected === 1;
   }
 
-  /**
-   * 같은 `order_delivery` 의 최신 명령. `created_by_op='LEGACY_SEND'` 라 유니크 제약이 없어
-   * 이론상 여러 행이 생길 수 있으므로 항상 최신 1건을 대상으로 한다.
-   */
-  private async findLatest(orderDeliveryId: number): Promise<PinIssueCommandEntity | null> {
-    return await this.repository.findOne({ where: { orderDeliveryId }, order: { id: 'DESC' } });
+  private async transitionOwned(
+    authority: PinIssueCommandAuthority,
+    status: PinIssueCommandStatus,
+    resolution: SsgPinResolution,
+  ): Promise<boolean> {
+    const result = await this.repository
+      .createQueryBuilder()
+      .update(PinIssueCommandEntity)
+      .set({ status, resolution, resolvedAt: new Date(), stateEnteredAt: new Date() })
+      .where('id = :commandId', { commandId: authority.commandId })
+      .andWhere('owner_token = :ownerToken', { ownerToken: authority.ownerToken })
+      .andWhere('generation = :generation', { generation: authority.generation })
+      .andWhere('workflow_version = :workflowVersion', { workflowVersion: authority.workflowVersion })
+      .andWhere('status IN (:...allowedStatuses)', {
+        allowedStatuses: PIN_ISSUE_AUTOMATED_TRANSITION_STATUSES,
+      })
+      .execute();
+    return result.affected === 1;
   }
 }
+function toIsoDeliveryClaimToken(token: string | null | undefined): string | null {
+  if (!token) return null;
+  const claimedAt = new Date(token);
+  return !Number.isNaN(claimedAt.getTime()) && claimedAt.toISOString() === token ? token : null;
+}
+class PinIssueCommandTransitionConflictError extends Error {}

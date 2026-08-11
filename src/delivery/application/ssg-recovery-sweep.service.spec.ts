@@ -1,9 +1,14 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.entity';
+import { PinIssueCommandEntity } from '../../entity/pin.issue.command.entity';
+import { SsgEventEntity } from '../../entity/ssg.event.entity';
+import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { SsgRecoveryResult } from '../interface/ssg.recovery.result';
 import { SsgRecoverySweepService } from './ssg-recovery-sweep.service';
+import { PinIssueCommandService } from './pin-issue-command.service';
 import { SsgRecoveryService } from './ssg-recovery.service';
 import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
 
@@ -57,7 +62,19 @@ describe('SsgRecoverySweepService', () => {
         },
         SsgRecoverySweepService,
         { provide: getRepositoryToken(OrderDeliveryRefundEntity), useValue: refundRepository },
+        { provide: getRepositoryToken(PinIssueCommandEntity), useValue: { createQueryBuilder: jest.fn() } },
+        { provide: getRepositoryToken(OrderDeliveryEntity), useValue: { findOne: jest.fn() } },
+        { provide: getRepositoryToken(SsgEventEntity), useValue: { findOne: jest.fn() } },
         { provide: SsgRecoveryService, useValue: recoveryService },
+        {
+          provide: PinIssueCommandService,
+          useValue: {
+            recordResolution: jest.fn(),
+            consumeNotIssuedRetryAuthority: jest.fn(),
+            markSucceeded: jest.fn().mockResolvedValue(true),
+          },
+        },
+        { provide: PartnerCompanyExternService, useValue: { resolveDeferredSsgIssue: jest.fn(), issue: jest.fn() } },
       ],
     }).compile();
     sut = module.get(SsgRecoverySweepService);
@@ -141,5 +158,426 @@ describe('SsgRecoverySweepService', () => {
     expect(stats.candidates).toBe(2);
     expect(stats.skipped).toBe(1);
     expect(stats.restored).toBe(1);
+  });
+});
+describe('P24 PIN resolution sweep fencing', () => {
+  const candidate = (overrides: Record<string, unknown> = {}) =>
+    ({
+      id: '91',
+      orderDeliveryId: 71,
+      ownerToken: 'dead-worker',
+      generation: '4',
+      workflowVersion: '9',
+      status: 'RETRY_PENDING',
+      resolution: 'PROCESSING',
+      externalIssueCount: 1,
+      resolutionLookupCount: 0,
+      resolutionStartedAt: new Date(),
+      ...overrides,
+    }) as any;
+
+  const query = (execute = jest.fn().mockResolvedValue({ affected: 1 }), rows: any[] = []) => {
+    const qb: any = {
+      where: jest.fn(() => qb),
+      andWhere: jest.fn(() => qb),
+      orderBy: jest.fn(() => qb),
+      limit: jest.fn(() => qb),
+      update: jest.fn(() => qb),
+      set: jest.fn(() => qb),
+      execute,
+      getMany: jest.fn().mockResolvedValue(rows),
+    };
+    return qb;
+  };
+
+  // command 회수는 이제 repository.manager(비-batch) 또는 manager.transaction(batch) 로 흐르고,
+  // findDuePinCommands 만 aliased repository.createQueryBuilder 를 쓴다. 한 트랜잭션 안에서는 첫
+  // createQueryBuilder 가 delivery 갱신, 그 다음이 command 회수 CAS 다.
+  const sweepRepo = (opts: { finder?: any; command: any; deliveryRefresh?: any; direct?: any }) => {
+    const { finder, command, deliveryRefresh = query(), direct = command } = opts;
+    // 실제 TypeORM transaction 처럼 callback 예외 시 rollback 하고 예외를 전파한다. rolledBack 으로
+    // "command CAS 실패 → delivery UPDATE rollback" 원자성 계약을 단위에서 검증한다.
+    const tx = { rolledBack: false, committed: false };
+    return {
+      // aliased = findDuePinCommands; no-alias = promoteOpsReview (repository.createQueryBuilder 직접).
+      createQueryBuilder: jest.fn((alias?: string) => (alias ? finder : direct)),
+      tx,
+      manager: {
+        createQueryBuilder: jest.fn(() => command),
+        transaction: jest.fn(async (cb: (m: any) => Promise<unknown>) => {
+          let deliveryServed = false;
+          const manager = {
+            createQueryBuilder: jest.fn(() => {
+              if (!deliveryServed) {
+                deliveryServed = true;
+                return deliveryRefresh;
+              }
+              return command;
+            }),
+          };
+          try {
+            const result = await cb(manager);
+            tx.committed = true;
+            return result;
+          } catch (error) {
+            tx.rolledBack = true;
+            throw error;
+          }
+        }),
+      },
+    };
+  };
+
+  const makeService = (
+    repo: any,
+    opts: { delivery?: any; ssgEvent?: any; pinCmd?: any; partner?: any } = {},
+  ): any =>
+    new SsgRecoverySweepService(
+      {} as any,
+      repo as any,
+      (opts.delivery ?? { findOne: jest.fn() }) as any,
+      (opts.ssgEvent ?? { findOne: jest.fn() }) as any,
+      {} as any,
+      (opts.pinCmd ?? {}) as any,
+      (opts.partner ?? {}) as any,
+    );
+
+  const ISO = '2026-08-11T00:00:00.000Z';
+
+  it('concurrent workers have one CAS winner and the stale candidate cannot lookup', async () => {
+    const command = query(jest.fn().mockResolvedValueOnce({ affected: 1 }).mockResolvedValue({ affected: 0 }));
+    const finder = query(undefined, [candidate()]);
+    const repo = sweepRepo({ finder, command });
+    const resolve = jest.fn().mockResolvedValue('PROCESSING');
+    const service = makeService(repo, {
+      delivery: { findOne: jest.fn().mockResolvedValue({ id: 71 }) },
+      pinCmd: { recordResolution: jest.fn().mockResolvedValue(true), consumeNotIssuedRetryAuthority: jest.fn() },
+      partner: { resolveDeferredSsgIssue: resolve },
+    });
+
+    await service.resolvePinIssuesOnce();
+    await service.resolvePinIssuesOnce();
+
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(command.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('reclaims a crashed PROCESSING lease and rotates the fence', async () => {
+    const command = query();
+    const service = makeService(sweepRepo({ command }));
+
+    await service.claimPinCommand(candidate({ status: 'RETRYING' }), new Date());
+
+    expect(command.set).toHaveBeenCalledWith(expect.objectContaining({ generation: '5' }));
+    expect(command.andWhere.mock.calls.map((call: any[]) => call[0]).join(' ')).toContain('lease_expires_at < :now');
+  });
+
+  it('does not let an unrelated expired RETRYING row bypass the candidate fence', async () => {
+    const command = query();
+    const service = makeService(sweepRepo({ command }));
+
+    await service.claimPinCommand(candidate({ id: 'target-command' }), new Date());
+
+    expect(command.where).toHaveBeenCalledWith('id = :id', { id: 'target-command' });
+    expect(command.andWhere).toHaveBeenCalledWith('owner_token = :previousOwnerToken', {
+      previousOwnerToken: 'dead-worker',
+    });
+    expect(command.andWhere).toHaveBeenCalledWith('generation = :previousGeneration', {
+      previousGeneration: '4',
+    });
+    expect(command.andWhere).toHaveBeenCalledWith('workflow_version = :workflowVersion', {
+      workflowVersion: '9',
+    });
+    const eligibility = command.andWhere.mock.calls
+      .find((call: any[]) => String(call[0]).includes(':retryPending'))[0]
+      .trim();
+    expect(eligibility).toMatch(/^\([\s\S]*\)$/);
+    expect(eligibility).toContain('status = :retrying');
+  });
+
+  it('escalates before a seventh lookup', async () => {
+    const command = query();
+    const promote = query();
+    const finder = query(undefined, [candidate({ resolutionLookupCount: 6 })]);
+    const resolve = jest.fn();
+    const service = makeService(sweepRepo({ finder, command, direct: promote }), {
+      delivery: { findOne: jest.fn().mockResolvedValue({ id: 71 }) },
+      pinCmd: { recordResolution: jest.fn(), consumeNotIssuedRetryAuthority: jest.fn() },
+      partner: { resolveDeferredSsgIssue: resolve },
+    });
+
+    await service.resolvePinIssuesOnce();
+
+    expect(resolve).not.toHaveBeenCalled();
+    expect(promote.execute).toHaveBeenCalled();
+  });
+
+  it('replays expired count-2 NOT_ISSUED through resolver only, without another INSERT', async () => {
+    const command = query();
+    const record = jest.fn().mockResolvedValue(true);
+    const finder = query(undefined, [candidate({ externalIssueCount: 2, resolution: 'NOT_ISSUED' })]);
+    const resolve = jest.fn().mockResolvedValue('NOT_ISSUED');
+    const issue = jest.fn();
+    const service = makeService(sweepRepo({ finder, command }), {
+      delivery: { findOne: jest.fn().mockResolvedValue({ id: 71, ssgEventId: 42 }) },
+      ssgEvent: { findOne: jest.fn().mockResolvedValue({ id: 42 }) },
+      pinCmd: { recordResolution: record, consumeNotIssuedRetryAuthority: jest.fn(), markSucceeded: jest.fn() },
+      partner: { resolveDeferredSsgIssue: resolve, issue },
+    });
+
+    await service.resolvePinIssuesOnce();
+    await service.resolvePinIssuesOnce();
+
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(issue).not.toHaveBeenCalled();
+    expect(record).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ resolution: 'NOT_ISSUED', status: 'OPS_REVIEW_REQUIRED' }),
+    );
+  });
+
+  // HIGH 1: batch 명령 회수는 한 트랜잭션에서 delivery mutation claim 을 새 ISO 토큰으로 갱신하고
+  // command 의 delivery_claim_token 도 함께 rotate 해야 한다. 이후 발급·완료는 rotate 된 토큰으로만.
+  it('refreshes the delivery mutation claim and rotates the token when reclaiming a batch command', async () => {
+    const command = query();
+    const deliveryRefresh = query();
+    const finder = query(undefined, [
+      candidate({ deliveryClaimToken: '2026-08-03T01:00:00.000Z', status: 'STARTED', externalIssueCount: 1, resolution: null }),
+    ]);
+    const markSucceededAfterDeliveryClaimRelease = jest.fn().mockResolvedValue(true);
+    const service = makeService(sweepRepo({ finder, command, deliveryRefresh }), {
+      delivery: { findOne: jest.fn().mockResolvedValue({ id: 71 }) },
+      pinCmd: {
+        recordResolution: jest.fn(),
+        consumeNotIssuedRetryAuthority: jest.fn(),
+        markSucceededAfterDeliveryClaimRelease,
+      },
+      partner: { resolveDeferredSsgIssue: jest.fn().mockResolvedValue('CONFIRMED'), issue: jest.fn() },
+    });
+
+    const stats = await service.resolvePinIssuesOnce();
+
+    expect(deliveryRefresh.set).toHaveBeenCalledWith(
+      expect.objectContaining({ claimedAt: expect.any(Date), mutationClaimedAt: expect.any(Date) }),
+    );
+    const deliveryPredicates = deliveryRefresh.andWhere.mock.calls.map((call: any[]) => call[0]);
+    expect(deliveryPredicates).toEqual(
+      expect.arrayContaining([
+        'status = :wait',
+        'claimed_at = :prior',
+        'mutation_claimed_at = :prior',
+        'destroyed_at IS NULL',
+        'discarded_at IS NULL',
+        'refunded_at IS NULL',
+      ]),
+    );
+    const rotated = command.set.mock.calls[0][0].deliveryClaimToken;
+    expect(rotated).toEqual(expect.any(String));
+    expect(rotated).not.toBe('2026-08-03T01:00:00.000Z');
+    expect(markSucceededAfterDeliveryClaimRelease).toHaveBeenCalledWith(expect.any(Object), 71, rotated);
+    expect(stats.confirmed).toBe(1);
+  });
+
+  it('does not issue when the expired delivery claim was stolen (refresh CAS fails)', async () => {
+    const command = query();
+    const deliveryRefresh = query(jest.fn().mockResolvedValue({ affected: 0 }));
+    const finder = query(undefined, [
+      candidate({ deliveryClaimToken: '2026-08-03T01:00:00.000Z', status: 'STARTED', externalIssueCount: 0, resolution: null }),
+    ]);
+    const consumeInitialIssueAuthority = jest.fn().mockResolvedValue(true);
+    const issue = jest.fn();
+    const service = makeService(sweepRepo({ finder, command, deliveryRefresh }), {
+      delivery: { findOne: jest.fn().mockResolvedValue({ id: 71, ssgEventId: null }) },
+      pinCmd: { consumeInitialIssueAuthority, consumeNotIssuedRetryAuthority: jest.fn(), recordResolution: jest.fn() },
+      partner: { resolveDeferredSsgIssue: jest.fn(), issue },
+    });
+
+    const stats = await service.resolvePinIssuesOnce();
+
+    expect(command.execute).not.toHaveBeenCalled();
+    expect(consumeInitialIssueAuthority).not.toHaveBeenCalled();
+    expect(issue).not.toHaveBeenCalled();
+    expect(stats.skipped).toBe(1);
+  });
+
+  it('rolls back the delivery refresh when the command reclaim CAS loses', async () => {
+    const command = query(jest.fn().mockResolvedValue({ affected: 0 }));
+    const deliveryRefresh = query();
+    const finder = query(undefined, [
+      candidate({ deliveryClaimToken: '2026-08-03T01:00:00.000Z', status: 'STARTED', externalIssueCount: 0, resolution: null }),
+    ]);
+    const consumeInitialIssueAuthority = jest.fn().mockResolvedValue(true);
+    const issue = jest.fn();
+    const repo = sweepRepo({ finder, command, deliveryRefresh });
+    const service = makeService(repo, {
+      delivery: { findOne: jest.fn().mockResolvedValue({ id: 71, ssgEventId: null }) },
+      pinCmd: { consumeInitialIssueAuthority, consumeNotIssuedRetryAuthority: jest.fn(), recordResolution: jest.fn() },
+      partner: { resolveDeferredSsgIssue: jest.fn(), issue },
+    });
+
+    const stats = await service.resolvePinIssuesOnce();
+
+    // 트랜잭션 callback 이 command CAS 실패로 throw → 전파(rollback) 되었고 commit 되지 않았다.
+    expect(deliveryRefresh.execute).toHaveBeenCalledTimes(1);
+    expect(repo.tx.rolledBack).toBe(true);
+    expect(repo.tx.committed).toBe(false);
+    expect(consumeInitialIssueAuthority).not.toHaveBeenCalled();
+    expect(issue).not.toHaveBeenCalled();
+    expect(stats.skipped).toBe(1);
+  });
+
+  // HIGH: sweep 시작 now 를 100개 후보 전체에 재사용하면, 앞 후보가 5분 넘게 걸릴 때 뒤 후보의
+  // lease/rotate 토큰이 claim 순간 이미 만료돼 fencing 이 깨진다. 후보마다 claim 시점의 새 시각을 써야 한다.
+  it('claims each candidate with a fresh timestamp, never reusing the sweep-start time', async () => {
+    const finder = query(undefined, [candidate({ id: 'a' }), candidate({ id: 'b' })]);
+    const service = makeService(sweepRepo({ finder, command: query() }));
+    const findSpy = jest.spyOn(service, 'findDuePinCommands');
+    const claimSpy = jest.spyOn(service, 'claimPinCommand').mockResolvedValue(null);
+
+    await service.resolvePinIssuesOnce();
+
+    const sweepNow = findSpy.mock.calls[0][0];
+    expect(claimSpy).toHaveBeenCalledTimes(2);
+    const t0 = claimSpy.mock.calls[0][1];
+    const t1 = claimSpy.mock.calls[1][1];
+    expect(t0).not.toBe(sweepNow);
+    expect(t1).not.toBe(sweepNow);
+    expect(t1).not.toBe(t0);
+  });
+
+  it('completes the initial INSERT for a reclaimed batch count-0 STARTED command', async () => {
+    const command = query();
+    const deliveryRefresh = query();
+    const finder = query(undefined, [
+      candidate({ status: 'STARTED', externalIssueCount: 0, resolution: null, deliveryClaimToken: ISO }),
+    ]);
+    const consumeInitialIssueAuthority = jest.fn().mockResolvedValue(true);
+    const markSucceededAfterDeliveryClaimRelease = jest.fn().mockResolvedValue(true);
+    const resolve = jest.fn();
+    const issue = jest.fn();
+    const service = makeService(sweepRepo({ finder, command, deliveryRefresh }), {
+      delivery: { findOne: jest.fn().mockResolvedValue({ id: 71, ssgEventId: null }) },
+      pinCmd: {
+        consumeInitialIssueAuthority,
+        consumeNotIssuedRetryAuthority: jest.fn(),
+        recordResolution: jest.fn(),
+        markSucceededAfterDeliveryClaimRelease,
+      },
+      partner: { resolveDeferredSsgIssue: resolve, issue },
+    });
+
+    const stats = await service.resolvePinIssuesOnce();
+
+    expect(resolve).not.toHaveBeenCalled();
+    expect(consumeInitialIssueAuthority).toHaveBeenCalledTimes(1);
+    expect(issue).toHaveBeenCalledTimes(1);
+    const rotated = command.set.mock.calls[0][0].deliveryClaimToken;
+    expect(markSucceededAfterDeliveryClaimRelease).toHaveBeenCalledWith(expect.any(Object), 71, rotated);
+    expect(stats.confirmed).toBe(1);
+  });
+
+  it('routes a reclaimed batch count-1 STARTED command through the resolver, never re-INSERTing the initial call', async () => {
+    const command = query();
+    const deliveryRefresh = query();
+    const finder = query(undefined, [
+      candidate({ status: 'STARTED', externalIssueCount: 1, resolution: null, deliveryClaimToken: ISO }),
+    ]);
+    const consumeInitialIssueAuthority = jest.fn();
+    const consumeNotIssuedRetryAuthority = jest.fn().mockResolvedValue(true);
+    const markSucceededAfterDeliveryClaimRelease = jest.fn().mockResolvedValue(true);
+    const issue = jest.fn();
+    const resolve = jest.fn().mockResolvedValue('NOT_ISSUED');
+    const service = makeService(sweepRepo({ finder, command, deliveryRefresh }), {
+      delivery: { findOne: jest.fn().mockResolvedValue({ id: 71, ssgEventId: 42 }) },
+      ssgEvent: { findOne: jest.fn().mockResolvedValue({ id: 42 }) },
+      pinCmd: {
+        consumeInitialIssueAuthority,
+        consumeNotIssuedRetryAuthority,
+        recordResolution: jest.fn().mockResolvedValue(true),
+        markSucceededAfterDeliveryClaimRelease,
+        markSucceeded: jest.fn(),
+      },
+      partner: { resolveDeferredSsgIssue: resolve, issue },
+    });
+
+    const stats = await service.resolvePinIssuesOnce();
+
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(consumeInitialIssueAuthority).not.toHaveBeenCalled();
+    expect(consumeNotIssuedRetryAuthority).toHaveBeenCalledTimes(1);
+    expect(issue).toHaveBeenCalledTimes(1);
+    expect(stats.retryPending).toBe(1);
+  });
+
+  it('reclaims a crashed count-0 STARTED command as STARTED so the initial INSERT can resume', async () => {
+    const command = query();
+    const service = makeService(sweepRepo({ command }));
+
+    await service.claimPinCommand(candidate({ status: 'STARTED', externalIssueCount: 0 }), new Date());
+
+    expect(command.set).toHaveBeenCalledWith(expect.objectContaining({ status: 'STARTED' }));
+    const eligibility = command.andWhere.mock.calls.find((call: any[]) => String(call[0]).includes(':started'))[0];
+    expect(eligibility).toContain('status = :started AND (lease_expires_at IS NULL OR lease_expires_at < :now)');
+  });
+
+  it('reclaims a crashed count-1 STARTED command as RETRYING for resolver-only replay', async () => {
+    const command = query();
+    const service = makeService(sweepRepo({ command }));
+
+    await service.claimPinCommand(candidate({ status: 'STARTED', externalIssueCount: 1 }), new Date());
+
+    expect(command.set).toHaveBeenCalledWith(expect.objectContaining({ status: 'RETRYING' }));
+  });
+
+  it('holds a reclaimed non-batch STARTED command for ops instead of resuming caller-specific work', async () => {
+    const command = query();
+    const finder = query(undefined, [
+      candidate({ status: 'STARTED', externalIssueCount: 0, resolution: null, deliveryClaimToken: null }),
+    ]);
+    const recordResolution = jest.fn().mockResolvedValue(true);
+    const issue = jest.fn();
+    const resolve = jest.fn();
+    const service = makeService(sweepRepo({ finder, command }), {
+      delivery: { findOne: jest.fn().mockResolvedValue({ id: 71, ssgEventId: null }) },
+      pinCmd: {
+        consumeInitialIssueAuthority: jest.fn(),
+        consumeNotIssuedRetryAuthority: jest.fn(),
+        recordResolution,
+        markSucceededAfterDeliveryClaimRelease: jest.fn(),
+      },
+      partner: { resolveDeferredSsgIssue: resolve, issue },
+    });
+
+    const stats = await service.resolvePinIssuesOnce();
+
+    expect(recordResolution).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ resolution: 'UNKNOWN', status: 'OPS_REVIEW_REQUIRED' }),
+    );
+    expect(issue).not.toHaveBeenCalled();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(stats.opsReview).toBe(1);
+  });
+
+  // HIGH 2: lease_expires_at 컬럼 신설 전 backfill 안 된 STARTED(lease=NULL)도 회수 대상이어야 한다.
+  it('selects lease-null STARTED rows so legacy migration residue cannot stall the fence', async () => {
+    const finder = query(undefined, []);
+    const service = makeService(sweepRepo({ finder, command: query() }));
+
+    await service.findDuePinCommands(new Date());
+
+    const where = finder.where.mock.calls.map((call: any[]) => String(call[0])).join(' ');
+    expect(where).toContain('c.status = :started');
+    expect(where).toContain('c.lease_expires_at IS NULL OR c.lease_expires_at < :now');
+  });
+
+  it('claims lease-null STARTED rows (CAS predicate tolerates a missing lease)', async () => {
+    const command = query();
+    const service = makeService(sweepRepo({ command }));
+
+    await service.claimPinCommand(candidate({ status: 'STARTED', externalIssueCount: 1, leaseExpiresAt: null }), new Date());
+
+    const eligibility = command.andWhere.mock.calls.find((call: any[]) => String(call[0]).includes(':started'))[0];
+    expect(eligibility).toContain('status = :started AND (lease_expires_at IS NULL OR lease_expires_at < :now)');
   });
 });

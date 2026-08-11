@@ -47,6 +47,10 @@ import { PinIssueCommandService } from './pin-issue-command.service';
 import { MessageResultReconcileService } from './message-result-reconcile.service';
 import { OrderHistoryEntity } from '../../entity/order.history.entity';
 import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
+import { InventoryPinAllocationService } from '../../inventory_coupon/application/inventory.pin.allocation.service';
+import { InventoryPinSendService } from '../../inventory_coupon/application/inventory.pin.send.service';
+import { SsgPinResolution } from '../../partner_company_extern/interface/ssg.issue';
+import { PinIssueCommandStatus } from '../interface/pin.issue.command.status';
 
 /**
  * 이번 핫픽스 회귀 테스트:
@@ -212,11 +216,13 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
         {
           provide: PinIssueCommandService,
           useValue: {
-            recordAttempt: jest.fn(),
-            markSucceeded: jest.fn(),
-            markRetryPending: jest.fn(),
-            markExhausted: jest.fn(),
-            markTerminal: jest.fn(),
+            recordAttemptAudit: jest.fn(),
+            createActiveCommand: jest.fn().mockResolvedValue('cmd-1'),
+            consumeInitialIssueAuthority: jest.fn().mockResolvedValue(true),
+            consumeNotIssuedRetryAuthority: jest.fn().mockResolvedValue(true),
+            recordResolution: jest.fn().mockResolvedValue(true),
+            markSucceeded: jest.fn().mockResolvedValue(true),
+            markOpsReviewRequired: jest.fn().mockResolvedValue(true),
           },
         },
         // shadow 추적은 발송을 대행하지 않는다 — 상관키 없이 그대로 통과시키는 스텁.
@@ -248,6 +254,8 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
         { provide: RefundPoolService, useValue: { refund: jest.fn(), reverseRefund: jest.fn() } },
         { provide: ResendDeductService, useValue: { resendDeduct: jest.fn(), resendUndo: jest.fn() } },
         { provide: LegacyWalletCreditSyncService, useValue: { syncCredit: jest.fn(), syncDeposit: jest.fn() } },
+        { provide: InventoryPinAllocationService, useValue: { allocate: jest.fn() } },
+        { provide: InventoryPinSendService, useValue: { send: jest.fn() } },
         { provide: getRepositoryToken(OrderDeliveryAttemptEntity), useValue: { findOne: jest.fn(), save: jest.fn() } },
         {
           provide: getRepositoryToken(OrderPaymentRefundEventEntity),
@@ -510,4 +518,35 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
       expect(refundLedgerService.release).not.toHaveBeenCalled();
     });
   });
+  /**
+   * HIGH (재리뷰) — 재발송이 SSG INSERT 권한을 소비한 뒤 issue() 가 실패하면
+   * 명령이 STARTED+count=1 로 영구 잔류해 활성 fence 가 이후 재발송·일반 배치를 막는다.
+   * catch 에서 선차감 역복원 + 명령을 OPS_REVIEW_REQUIRED 로 fenced 전이해야 한다.
+   */
+  describe('HIGH: SSG 재발송 issue() 실패 시 명령을 fenced 전이한다', () => {
+    it('issue() 가 throw 하면 선차감 역복원 + 명령을 OPS_REVIEW_REQUIRED 로 전이한다', async () => {
+      const od = buildFailNoBarCode();
+      refundLedgerService.exists.mockResolvedValue(true);
+      ssgInsertStateService.getState.mockResolvedValue(SsgInsertState.NONE);
+      partnerCompanyExternService.issue.mockRejectedValue(new Error('SSG INSERT boom'));
+      const pinCmd = (sut as any).pinIssueCommandService;
+
+      const result = await (sut as any).reissuePinAndCreateImageIfNeeded(od);
+
+      expect(result).toBe(false);
+      // 권한을 소비했으므로 STARTED 로 방치하지 않고 운영검토로 fenced 전이한다.
+      expect(pinCmd.markOpsReviewRequired).toHaveBeenCalledWith(
+        expect.objectContaining({ commandId: 'cmd-1' }),
+        SsgPinResolution.UNKNOWN,
+      );
+      // 선차감은 shared resolver 로 역복원한다(기존 동작 유지).
+      expect(ssgRefundResolverService.resolveAndRefundIfNeeded).toHaveBeenCalled();
+    });
+
+    it('markOpsReviewRequired 는 OPS_REVIEW_REQUIRED(활성) 로 전이해 fence 를 유지한다', () => {
+      // 전이 상태가 활성 목록에 있어야 이후 배치가 같은 delivery 를 다시 집지 않는다.
+      expect(PinIssueCommandStatus.OPS_REVIEW_REQUIRED).toBe('OPS_REVIEW_REQUIRED');
+    });
+  });
+
 });

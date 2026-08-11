@@ -18,6 +18,7 @@ import { PartnerCompanyEntity } from '../../entity/partner.company.entity';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
 import { PinIssueDedupEntity } from '../../entity/pin.issue.dedup.entity';
 import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
+import { PinIssueCommandEntity } from '../../entity/pin.issue.command.entity';
 import { SsgResendDeductPendingEntity } from '../../entity/ssg.resend.deduct.pending.entity';
 import { GiftielExchangeHistoryEntity } from '../../entity/giftiel.exchange.history.entity';
 import { GalaxiaBarcodeLogEntity } from '../../entity/galaxia.barcode.log.entity';
@@ -224,6 +225,7 @@ describe('PartnerCompanyExternService.refreshCouponStatus — 영속 계약 (tar
           provide: getRepositoryToken(SsgIssueLogEntity),
           useValue: { ...mock<Repository<SsgIssueLogEntity>>(), ...makeRepoMock() },
         },
+        { provide: getRepositoryToken(PinIssueCommandEntity), useValue: makeRepoMock() },
         { provide: getRepositoryToken(SsgResendDeductPendingEntity), useValue: {} },
         { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, isEnabledFor: () => false } },
         { provide: PartnerSettleProducerService, useValue: {} },

@@ -4,7 +4,8 @@ import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { IOrderType } from '../../order/interface/order.type';
 import { IProductType } from '../../product/interface/product.type';
-import { SsgIssueUnknownError, SsgTryError } from '../../partner_company_extern/infra/ssg.issue';
+import { SsgTryError } from '../../partner_company_extern/infra/ssg.issue';
+import { PinIssueCommandStatus, SsgPinResolution } from '../interface/pin.issue.command.status';
 
 /**
  * PIN 발급 실패 2-pass 재시도 (`plans/2026-08-03-pin-issue-retry-wiring.md` §4.1).
@@ -82,41 +83,59 @@ describe('DeliveryBatchService — PIN 발급 실패 2-pass 재시도', () => {
     });
   });
 
-  describe('processOneDeliveryInternal — PIN 발급 실패 분류', () => {
+  describe('processOneDeliveryInternal — P24 PIN command authority', () => {
     let sut: DeliveryBatchService;
-    let markRetryPending: jest.Mock;
-    let markExhausted: jest.Mock;
-    let markTerminal: jest.Mock;
+    let createActiveCommand: jest.Mock;
+    let consumeInitialIssueAuthority: jest.Mock;
+    let consumeNotIssuedRetryAuthority: jest.Mock;
+    let recordResolution: jest.Mock;
+    let markOpsReviewRequired: jest.Mock;
+    let markSucceeded: jest.Mock;
     let markSendFail: jest.Mock;
     let refundForFail: jest.Mock;
+    const authority = {
+      commandId: 'command-9001',
+      ownerToken: TOKEN.toISOString(),
+      generation: '0',
+      workflowVersion: '0',
+    };
 
     beforeEach(() => {
-      markRetryPending = jest.fn().mockResolvedValue(undefined);
-      markExhausted = jest.fn().mockResolvedValue(undefined);
-      markTerminal = jest.fn().mockResolvedValue(undefined);
+      createActiveCommand = jest.fn().mockResolvedValue(authority.commandId);
+      consumeInitialIssueAuthority = jest.fn().mockResolvedValue(true);
+      consumeNotIssuedRetryAuthority = jest.fn().mockResolvedValue(true);
+      recordResolution = jest.fn().mockResolvedValue(true);
+      markOpsReviewRequired = jest.fn().mockResolvedValue(true);
+      markSucceeded = jest.fn().mockResolvedValue(true);
       markSendFail = jest.fn();
       refundForFail = jest.fn().mockResolvedValue(undefined);
 
       sut = Object.create(DeliveryBatchService.prototype);
       (sut as any).logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
-      // §8 판정 SoT — 단위 테스트 기본값은 '미전환 건'(legacy status 로 최초/재발송 판별).
       (sut as any).cutoverGuard = { isWorkflowResend: jest.fn().mockResolvedValue(null) };
       (sut as any).ssgEventRepository = { findOne: jest.fn().mockResolvedValue({ id: 42, no: 'EV1', order: 1 }) };
       (sut as any).pinIssueCommandService = {
-        recordAttempt: jest.fn().mockResolvedValue(undefined),
-        markSucceeded: jest.fn().mockResolvedValue(undefined),
-        markRetryPending,
-        markExhausted,
-        markTerminal,
+        createActiveCommand,
+        consumeInitialIssueAuthority,
+        consumeNotIssuedRetryAuthority,
+        recordResolution,
+        markOpsReviewRequired,
+        markSucceeded,
       };
       (sut as any).markSendFail = markSendFail;
       (sut as any).refundForFail = refundForFail;
       (sut as any).shouldHoldRefundForFail = jest.fn().mockResolvedValue(true);
       (sut as any).updateDeliveryOwned = jest.fn().mockResolvedValue(true);
       (sut as any).createCouponImage = jest.fn().mockResolvedValue('img');
+      (sut as any).cryptoCipher = {
+        safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01011112222'),
+        encryptDeliveryTarget: jest.fn().mockReturnValue('encrypted'),
+        encryptJson: jest.fn().mockReturnValue('key'),
+      };
+      (sut as any).deliverySendService = { sendSms: jest.fn() };
     });
 
-    it('pass 1(allowDefer=true) + SSG 조회 실패 → DeferredDeliveryError. FAIL 확정·환불 없음', async () => {
+    it('pass 1 UNKNOWN은 소유 권한으로 RETRY_PENDING에만 기록하고 FAIL·환불하지 않는다', async () => {
       (sut as any).partnerCompanyExternService = {
         issue: jest.fn().mockRejectedValue(new SsgTryError('알 수 없는 오류입니다.')),
       };
@@ -125,87 +144,103 @@ describe('DeliveryBatchService — PIN 발급 실패 2-pass 재시도', () => {
         DeferredDeliveryError,
       );
 
-      // 미룬 건은 상태를 확정하지 않는다 — pass 2 가 깨끗한 상태에서 재판정해야 한다.
+      expect(createActiveCommand).toHaveBeenCalledWith(
+        expect.objectContaining({ orderDeliveryId: 9001, ownerToken: TOKEN.toISOString() }),
+      );
+      expect(consumeInitialIssueAuthority).toHaveBeenCalledWith(authority);
+      expect(recordResolution).toHaveBeenCalledWith(authority, {
+        resolution: SsgPinResolution.UNKNOWN,
+        status: PinIssueCommandStatus.RETRY_PENDING,
+      });
       expect(markSendFail).not.toHaveBeenCalled();
       expect(refundForFail).not.toHaveBeenCalled();
-      expect(markRetryPending).toHaveBeenCalledWith(9001, '알 수 없는 오류입니다.');
-      expect(markExhausted).not.toHaveBeenCalled();
     });
 
-    it('pass 2(allowDefer=false) + 같은 조회 실패 → 종전대로 FAIL 확정 + EXHAUSTED 기록', async () => {
+    it('pass 2 UNKNOWN은 같은 소유 권한을 OPS_REVIEW_REQUIRED로 올리고 FAIL·환불·INSERT하지 않는다', async () => {
+      const issue = jest.fn();
       (sut as any).partnerCompanyExternService = {
-        issue: jest.fn().mockRejectedValue(new SsgTryError('알 수 없는 오류입니다.')),
+        resolveDeferredSsgIssue: jest.fn().mockResolvedValue(SsgPinResolution.UNKNOWN),
+        issue,
       };
 
-      const result = await (sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN, false);
+      await expect(
+        (sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN, false, authority),
+      ).rejects.toBeInstanceOf(DeferredDeliveryError);
 
-      expect(markSendFail).toHaveBeenCalledWith(expect.objectContaining({ id: 9001 }), IOrderDeliveryStatus.FAIL);
-      expect(markExhausted).toHaveBeenCalled();
-      expect(markRetryPending).not.toHaveBeenCalled();
-      expect(result.deliveryHistory.isSuccess).toBe(false);
+      expect(markOpsReviewRequired).toHaveBeenCalledWith(authority, SsgPinResolution.UNKNOWN);
+      expect(markSendFail).not.toHaveBeenCalled();
+      expect(refundForFail).not.toHaveBeenCalled();
+      expect(issue).not.toHaveBeenCalled();
+      expect(consumeNotIssuedRetryAuthority).not.toHaveBeenCalled();
     });
 
-    it('조회 실패가 아닌 실패는 pass 1 에서도 미루지 않는다 — 재시도해도 결과가 같다', async () => {
+    it('pass 2 CONFIRMED는 기존 PIN을 재사용하고 새 INSERT 없이 성공 처리한다', async () => {
+      const delivery = makeDelivery();
+      const issue = jest.fn();
+      (sut as any).partnerCompanyExternService = {
+        resolveDeferredSsgIssue: jest.fn().mockImplementation(async (od: any) => {
+          od.barCode = '80000001';
+          od.personalCode = '01312345678';
+          return SsgPinResolution.CONFIRMED;
+        }),
+        issue,
+      };
+
+      const result = await (sut as any).processOneDeliveryInternal(delivery, TOKEN, false, authority);
+
+      expect(issue).not.toHaveBeenCalled();
+      expect(markSucceeded).toHaveBeenCalledWith(authority);
+      expect(result.deliveryHistory.isSuccess).toBe(true);
+    });
+
+    it.each([SsgPinResolution.UNKNOWN, SsgPinResolution.MULTIPLE_CONFIRMED])(
+      'pass 2 %s는 신규 INSERT 권한을 소비하지 않고 운영 검토로 중단한다',
+      async (resolution) => {
+        const issue = jest.fn();
+        (sut as any).partnerCompanyExternService = {
+          resolveDeferredSsgIssue: jest.fn().mockResolvedValue(resolution),
+          issue,
+        };
+
+        await expect(
+          (sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN, false, authority),
+        ).rejects.toBeInstanceOf(DeferredDeliveryError);
+
+        expect(markOpsReviewRequired).toHaveBeenCalledWith(authority, resolution);
+        expect(issue).not.toHaveBeenCalled();
+      },
+    );
+
+    it('pass 2 NOT_ISSUED만 한 번의 재발급 권한을 소비한다', async () => {
+      (sut as any).partnerCompanyExternService = {
+        resolveDeferredSsgIssue: jest.fn().mockResolvedValue(SsgPinResolution.NOT_ISSUED),
+        issue: jest.fn().mockImplementation(async (od: any) => {
+          od.barCode = '80000001';
+        }),
+      };
+
+      await (sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN, false, authority);
+
+      expect(recordResolution).toHaveBeenCalledWith(authority, {
+        resolution: SsgPinResolution.NOT_ISSUED,
+        status: PinIssueCommandStatus.RETRYING,
+      });
+      expect(consumeNotIssuedRetryAuthority).toHaveBeenCalledWith(authority);
+    });
+
+    it('비판정 불가 실패는 TERMINAL로 기록한 뒤 기존 FAIL 처리한다', async () => {
       (sut as any).partnerCompanyExternService = {
         issue: jest.fn().mockRejectedValue(new Error('잔액 부족')),
       };
 
       const result = await (sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN, true);
 
-      expect(markSendFail).toHaveBeenCalled();
-      expect(markRetryPending).not.toHaveBeenCalled();
-      expect(result.deliveryHistory.isSuccess).toBe(false);
-    });
-
-    it('비재시도 실패는 TERMINAL 로 기록한다 — EXHAUSTED 로 적으면 "재시도했는데 안 됐다" 로 왜곡된다', async () => {
-      (sut as any).partnerCompanyExternService = {
-        issue: jest.fn().mockRejectedValue(new Error('잔액 부족')),
-      };
-
-      await (sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN, true);
-
-      // §5.4 전이표: STARTED + TERMINAL → TERMINAL / RETRYING + 소진 → EXHAUSTED
-      expect(markTerminal).toHaveBeenCalledWith(9001, '잔액 부족');
-      expect(markExhausted).not.toHaveBeenCalled();
-    });
-
-    it('조회 실패를 pass 2 까지 소진했을 때만 EXHAUSTED 다', async () => {
-      (sut as any).partnerCompanyExternService = {
-        issue: jest.fn().mockRejectedValue(new SsgTryError('알 수 없는 오류입니다.')),
-      };
-
-      await (sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN, false);
-
-      expect(markExhausted).toHaveBeenCalledWith(9001, '알 수 없는 오류입니다.');
-      expect(markTerminal).not.toHaveBeenCalled();
-    });
-
-    it('pass 1 + SsgIssueUnknownError(INSERT 9999) → DeferredDeliveryError. FAIL 확정·환불 없음', async () => {
-      (sut as any).partnerCompanyExternService = {
-        issue: jest.fn().mockRejectedValue(new SsgIssueUnknownError('SSG 등록 결과 미확정 (code: 9999)')),
-      };
-
-      await expect((sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN, true)).rejects.toBeInstanceOf(
-        DeferredDeliveryError,
+      expect(recordResolution).toHaveBeenCalledWith(
+        authority,
+        { resolution: SsgPinResolution.UNKNOWN, status: PinIssueCommandStatus.TERMINAL },
       );
-
-      expect(markSendFail).not.toHaveBeenCalled();
-      expect(refundForFail).not.toHaveBeenCalled();
-      expect(markRetryPending).toHaveBeenCalledWith(9001, 'SSG 등록 결과 미확정 (code: 9999)');
-      expect(markExhausted).not.toHaveBeenCalled();
-    });
-
-    it('pass 2 + SsgIssueUnknownError → FAIL 확정 + EXHAUSTED', async () => {
-      (sut as any).partnerCompanyExternService = {
-        issue: jest.fn().mockRejectedValue(new SsgIssueUnknownError('SSG 등록 결과 미확정 (code: 9999)')),
-      };
-
-      await (sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN, false);
-
-      expect(markSendFail).toHaveBeenCalledWith(expect.objectContaining({ id: 9001 }), IOrderDeliveryStatus.FAIL);
-      expect(markExhausted).toHaveBeenCalledWith(9001, 'SSG 등록 결과 미확정 (code: 9999)');
-      expect(markTerminal).not.toHaveBeenCalled();
-      expect(markRetryPending).not.toHaveBeenCalled();
+      expect(markSendFail).toHaveBeenCalled();
+      expect(result.deliveryHistory.isSuccess).toBe(false);
     });
   });
 
@@ -213,6 +248,7 @@ describe('DeliveryBatchService — PIN 발급 실패 2-pass 재시도', () => {
     let sut: DeliveryBatchService;
     let findClaimed: jest.Mock;
     let processOne: jest.Mock;
+    let findDeferredForResolution: jest.Mock;
 
     beforeEach(() => {
       sut = Object.create(DeliveryBatchService.prototype);
@@ -222,6 +258,10 @@ describe('DeliveryBatchService — PIN 발급 실패 2-pass 재시도', () => {
       (sut as any).claimWaitDeliveries = jest.fn().mockResolvedValue(2);
       (sut as any).deliverySendHistoryRepository = { insert: jest.fn().mockResolvedValue({}) };
       (sut as any).markOrderTerminalAndSettle = jest.fn().mockResolvedValue(undefined);
+      findDeferredForResolution = jest.fn().mockResolvedValue([]);
+      (sut as any).pinIssueCommandService = {
+        findDeferredForResolution,
+      };
 
       findClaimed = jest.fn();
       processOne = jest.fn();
@@ -238,16 +278,30 @@ describe('DeliveryBatchService — PIN 발급 실패 2-pass 재시도', () => {
         .mockResolvedValueOnce({ kind: 'done', result: { deliveryHistory: {}, orderId: 7001 } })
         .mockResolvedValueOnce({ kind: 'deferred' })
         .mockResolvedValueOnce({ kind: 'done', result: { deliveryHistory: {}, orderId: 7001 } });
+      findDeferredForResolution.mockImplementation(async (ownerToken: string) => [
+        {
+          id: 'command-2',
+          orderDeliveryId: 2,
+          ownerToken,
+          generation: '0',
+          workflowVersion: '0',
+        },
+      ]);
 
       await sut.issueAndSend();
 
-      // 2회차 조회가 미룬 id 만 대상으로 한다 = pass 1 스냅샷 재사용이 아니라 fresh 재조회
+      // RETRY_PENDING은 일반 claim 경로가 아닌, 같은 ownerToken의 표적 pass 2에만 보인다.
       expect(findClaimed).toHaveBeenCalledTimes(2);
+      expect(findDeferredForResolution).toHaveBeenCalledWith(expect.any(String), [2]);
       expect(findClaimed.mock.calls[1][1]).toEqual([2]);
-
-      // pass 2 는 allowDefer=false — 여기서 실패하면 확정한다(무한 보류 방지)
       const lastCall = processOne.mock.calls[processOne.mock.calls.length - 1];
       expect(lastCall[1]).toBe(false);
+      expect(lastCall[2]).toEqual({
+        commandId: 'command-2',
+        ownerToken: findDeferredForResolution.mock.calls[0][0],
+        generation: '0',
+        workflowVersion: '0',
+      });
     });
 
     it('미룬 건이 없으면 재조회하지 않는다', async () => {

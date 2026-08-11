@@ -21,21 +21,18 @@ import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { PartnerCompanyEntity } from '../../entity/partner.company.entity';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
 import { PinIssueDedupEntity } from '../../entity/pin.issue.dedup.entity';
+import { PinIssueCommandEntity } from '../../entity/pin.issue.command.entity';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
 import { SsgResendDeductPendingEntity } from '../../entity/ssg.resend.deduct.pending.entity';
-import { SsgPinVerdict } from '../interface/ssg.issue';
-import { SsgProcessingError } from '../infra/ssg.issue';
+import { SsgIssueUnknownError } from '../infra/ssg.issue';
 import { PartnerCompanyExternService } from './partner.company.extern.service';
 
 /**
- * issue() SSG 분기의 barCode-empty cust_info 후보 재조회(결정점 단일화) 회귀 테스트.
- * (ralplan G001 / AC1·AC2·AC3·AC5)
+ * issue() SSG 분기의 barCode-empty cust_info 후보 재조회 회귀 테스트.
  *
- * 1차 발송 실패가 tx 롤백으로 order_delivery.barCode 를 남기지 못한 고아 케이스에서,
- * issue() 가 ssg_issue_log 후보를 cust_info 진실원천으로 분류해 재사용/보류/새발급을 결정한다.
- * eventSeq 있는 후보는 classifySsgPin(등록/처리중/미제출/등록실패) — spy 로 verdict 제어.
- * eventSeq 없는 legacy 후보는 ssgIssue.getTry(제출여부)로 보류 판단.
+ * 후보가 있으면 계약상 입증된 단일 등록 PIN만 재사용한다. 미확정, legacy,
+ * 복수 등록 후보는 새 PIN을 만들지 않고 안전하게 중단한다.
  */
 describe('PartnerCompanyExternService - issue() SSG barCode-empty 후보 재조회', () => {
   let sut: PartnerCompanyExternService;
@@ -51,9 +48,19 @@ describe('PartnerCompanyExternService - issue() SSG barCode-empty 후보 재조�
     markFailed: jest.Mock;
     restoreConfirmedPinFromIssueLog: jest.Mock;
   };
+  let pinIssueCommandRepository: { findOne: jest.Mock };
+  const activeAuthority = {
+    commandId: 'command-1',
+    ownerToken: 'owner-1',
+    generation: '1',
+    workflowVersion: '1',
+  } as any;
 
   const tryOut = (tryYn: 'Y' | 'N') => ({
     response: { result: [{ code: ['1001'], reason: ['ok'] }], value: [{ vno: ['x'], tryYn: [tryYn] }] },
+  });
+  const checkOut = (resultCd: string) => ({
+    response: { result: [{ code: ['1001'], reason: ['ok'] }], value: [{ resultCd: [resultCd] }] },
   });
 
   const makeRepoMock = () => ({
@@ -139,6 +146,9 @@ describe('PartnerCompanyExternService - issue() SSG barCode-empty 후보 재조�
       Repository<SsgIssueLogEntity>
     >;
     orderDeliveryRepository = { ...mock<Repository<OrderDeliveryEntity>>(), ...makeRepoMock() };
+    pinIssueCommandRepository = {
+      findOne: jest.fn().mockResolvedValue({ status: 'STARTED', externalIssueCount: 1 }),
+    };
     ssgInsertStateService = {
       getState: jest.fn(),
       markAttempted: jest.fn().mockResolvedValue(MarkAttemptedResult.TRANSITIONED),
@@ -171,6 +181,7 @@ describe('PartnerCompanyExternService - issue() SSG barCode-empty 후보 재조�
         { provide: getRepositoryToken(PartnerCompanyEntity), useValue: makeRepoMock() },
         { provide: getRepositoryToken(PinIssueDedupEntity), useValue: makeRepoMock() },
         { provide: getRepositoryToken(SsgIssueLogEntity), useValue: ssgIssueLogRepository },
+        { provide: getRepositoryToken(PinIssueCommandEntity), useValue: pinIssueCommandRepository },
         { provide: getRepositoryToken(GiftielExchangeHistoryEntity), useValue: makeRepoMock() },
         { provide: getRepositoryToken(GalaxiaBarcodeLogEntity), useValue: makeRepoMock() },
         { provide: CryptoCipher, useValue: { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000') } },
@@ -189,16 +200,17 @@ describe('PartnerCompanyExternService - issue() SSG barCode-empty 후보 재조�
     const classifySpy = jest.spyOn(sut as any, 'classifySsgPin');
     const od = buildOrderDelivery();
 
-    await sut.issue(od, buildSsgEvent());
+    await sut.issue(od, buildSsgEvent(), undefined, activeAuthority);
 
     expect(classifySpy).not.toHaveBeenCalled();
     expect(ssgIssue.issue).toHaveBeenCalledTimes(1);
     expect(od.barCode).toBe('80000001');
   });
 
-  it('후보 REGISTERED → 그 후보 PIN 재사용(새 INSERT 미발생)', async () => {
+  it('단일 CONFIRMED 후보 → 그 후보 PIN 재사용(새 INSERT 미발생)', async () => {
     ssgIssueLogRepository.find.mockResolvedValue([buildCandidate()]);
-    jest.spyOn(sut as any, 'classifySsgPin').mockResolvedValue(SsgPinVerdict.REGISTERED);
+    ssgIssue.getTry.mockResolvedValue(tryOut('Y'));
+    ssgIssue.check.mockResolvedValue(checkOut('0100'));
     const od = buildOrderDelivery();
 
     await sut.issue(od, buildSsgEvent());
@@ -206,29 +218,28 @@ describe('PartnerCompanyExternService - issue() SSG barCode-empty 후보 재조�
     expect(ssgIssue.issue).not.toHaveBeenCalled();
     expect(od.barCode).toBe('8EXIST01');
     expect(od.personalCode).toBe('01300001234');
-    // 행사 귀속(ssgEventId)을 메모리 반영 + markConfirmed 의 REQUIRES_NEW(PIN 과 동일 tx)로 durable 복원.
-    // outer REQUIRED tx 에서 order_delivery 를 직접 update 하지 않는다(markConfirmed 와 self-deadlock 방지).
     expect(od.ssgEventId).toBe(42);
     expect(ssgInsertStateService.markConfirmed).toHaveBeenCalledWith(9001, expect.objectContaining({ ssgEventId: 42 }));
   });
 
-  it('HIGH crash 안전: resendDeductionId 전달 + REGISTERED 후보 재사용 → pending 을 durable REUSED 마킹', async () => {
+  it('HIGH crash 안전: resendDeductionId 전달 + 단일 CONFIRMED 후보 재사용 → pending 을 durable REUSED 마킹', async () => {
     ssgIssueLogRepository.find.mockResolvedValue([buildCandidate()]);
-    jest.spyOn(sut as any, 'classifySsgPin').mockResolvedValue(SsgPinVerdict.REGISTERED);
+    ssgIssue.getTry.mockResolvedValue(tryOut('Y'));
+    ssgIssue.check.mockResolvedValue(checkOut('0200'));
     const od = buildOrderDelivery();
 
     const result = await sut.issue(od, buildSsgEvent(), 'rd-batch-1');
 
     expect(ssgIssue.issue).not.toHaveBeenCalled();
     expect(result.ssgNewIssue).toBe(false);
-    // 재사용 시점에 pending(C) 을 'REUSED' 로 즉시(REQUIRES_NEW) durable 마킹 → sweep 이 state 무관하게 REVERSED.
     expect(pendingQb.set).toHaveBeenCalledWith({ issueOutcome: 'REUSED' });
     expect(pendingQb.where).toHaveBeenCalledWith('resend_deduction_id = :rid', { rid: 'rd-batch-1' });
   });
 
-  it('resendDeductionId 미전달(비-배치 경로) → REGISTERED 재사용해도 pending 마킹 없음', async () => {
+  it('resendDeductionId 미전달(비-배치 경로) + 단일 CONFIRMED 재사용 → pending 마킹 없음', async () => {
     ssgIssueLogRepository.find.mockResolvedValue([buildCandidate()]);
-    jest.spyOn(sut as any, 'classifySsgPin').mockResolvedValue(SsgPinVerdict.REGISTERED);
+    ssgIssue.getTry.mockResolvedValue(tryOut('Y'));
+    ssgIssue.check.mockResolvedValue(checkOut('0400'));
     const od = buildOrderDelivery();
 
     await sut.issue(od, buildSsgEvent());
@@ -236,97 +247,80 @@ describe('PartnerCompanyExternService - issue() SSG barCode-empty 후보 재조�
     expect(pendingQb.set).not.toHaveBeenCalled();
   });
 
-  it('후보 REGISTRATION_FAILED 전부 → 새 PIN (등록실패 PIN 재사용 금지)', async () => {
+  it.each<[string, () => void]>([
+    ['resultCd=0103', () => {
+      ssgIssue.getTry.mockResolvedValue(tryOut('Y'));
+      ssgIssue.check.mockResolvedValue(checkOut('0103'));
+    }],
+    ['getTry=N', () => {
+      ssgIssue.getTry.mockResolvedValue(tryOut('N'));
+    }],
+  ])('후보 %s → SsgIssueUnknownError로 중단, 새 PIN INSERT 없음', async (_label, mockCandidate) => {
     ssgIssueLogRepository.find.mockResolvedValue([buildCandidate()]);
-    jest.spyOn(sut as any, 'classifySsgPin').mockResolvedValue(SsgPinVerdict.REGISTRATION_FAILED);
+    mockCandidate();
     const od = buildOrderDelivery();
 
-    await sut.issue(od, buildSsgEvent());
+    await expect(sut.issue(od, buildSsgEvent())).rejects.toBeInstanceOf(SsgIssueUnknownError);
 
-    expect(ssgIssue.issue).toHaveBeenCalledTimes(1);
-    expect(od.barCode).toBe('80000001');
-  });
-
-  it('후보 NOT_SUBMITTED 전부 → 새 PIN', async () => {
-    ssgIssueLogRepository.find.mockResolvedValue([buildCandidate()]);
-    jest.spyOn(sut as any, 'classifySsgPin').mockResolvedValue(SsgPinVerdict.NOT_SUBMITTED);
-    const od = buildOrderDelivery();
-
-    await sut.issue(od, buildSsgEvent());
-
-    expect(ssgIssue.issue).toHaveBeenCalledTimes(1);
-    expect(od.barCode).toBe('80000001');
-  });
-
-  it('후보 PROCESSING(REGISTERED 없음) → 보류(SsgProcessingError, 새 INSERT 미발생)', async () => {
-    ssgIssueLogRepository.find.mockResolvedValue([buildCandidate()]);
-    jest.spyOn(sut as any, 'classifySsgPin').mockResolvedValue(SsgPinVerdict.PROCESSING);
-    const od = buildOrderDelivery();
-
-    await expect(sut.issue(od, buildSsgEvent())).rejects.toBeInstanceOf(SsgProcessingError);
     expect(ssgIssue.issue).not.toHaveBeenCalled();
   });
 
-  it('classify 네트워크 오류(REGISTERED 없음) → 보류(SsgProcessingError)', async () => {
+  it.each<[string, () => void]>([
+    ['PROCESSING', () => jest.spyOn(sut as any, 'classifySsgPin').mockResolvedValue('PROCESSING')],
+    ['getTry 네트워크 오류', () => ssgIssue.getTry.mockRejectedValue(new Error('network'))],
+  ])('후보 %s → SsgIssueUnknownError로 중단, 새 INSERT 미발생', async (_label, mockCandidate) => {
     ssgIssueLogRepository.find.mockResolvedValue([buildCandidate()]);
-    jest.spyOn(sut as any, 'classifySsgPin').mockRejectedValue(new Error('network'));
+    mockCandidate();
     const od = buildOrderDelivery();
 
-    await expect(sut.issue(od, buildSsgEvent())).rejects.toBeInstanceOf(SsgProcessingError);
+    await expect(sut.issue(od, buildSsgEvent())).rejects.toBeInstanceOf(SsgIssueUnknownError);
     expect(ssgIssue.issue).not.toHaveBeenCalled();
   });
 
-  it('다중후보: 최신 REGISTRATION_FAILED + 직전 REGISTERED → REGISTERED 후보 재사용', async () => {
+  it('다중후보: 등록 확정 후보와 미확정 후보가 공존 → SsgIssueUnknownError, PIN 선택 없음', async () => {
     const newer = buildCandidate({ id: 2, barCode: '8NEWFAIL', personalCode: '01300000002' });
     const older = buildCandidate({ id: 1, barCode: '8OLDOK', personalCode: '01300000001' });
-    ssgIssueLogRepository.find.mockResolvedValue([newer, older]); // id DESC
-    jest
-      .spyOn(sut as any, 'classifySsgPin')
-      .mockResolvedValueOnce(SsgPinVerdict.REGISTRATION_FAILED)
-      .mockResolvedValueOnce(SsgPinVerdict.REGISTERED);
+    ssgIssueLogRepository.find.mockResolvedValue([newer, older]);
+    ssgIssue.getTry
+      .mockResolvedValueOnce(tryOut('Y'))
+      .mockResolvedValueOnce(tryOut('Y'));
+    ssgIssue.check
+      .mockResolvedValueOnce(checkOut('0103'))
+      .mockResolvedValueOnce(checkOut('0100'));
     const od = buildOrderDelivery();
 
-    await sut.issue(od, buildSsgEvent());
+    await expect(sut.issue(od, buildSsgEvent())).rejects.toBeInstanceOf(SsgIssueUnknownError);
 
     expect(ssgIssue.issue).not.toHaveBeenCalled();
-    expect(od.barCode).toBe('8OLDOK');
-    expect(od.personalCode).toBe('01300000001');
+    expect(od.barCode).toBeNull();
   });
 
-  it('복수 REGISTERED → 최신 후보 재사용 + 잠재 이중등록 운영 알림', async () => {
+  it('복수 CONFIRMED → SsgIssueUnknownError, 최신 후보를 선택하지 않음', async () => {
     const newer = buildCandidate({ id: 2, barCode: '8NEWOK', personalCode: '01300000002' });
     const older = buildCandidate({ id: 1, barCode: '8OLDOK', personalCode: '01300000001' });
-    ssgIssueLogRepository.find.mockResolvedValue([newer, older]); // id DESC
-    jest.spyOn(sut as any, 'classifySsgPin').mockResolvedValue(SsgPinVerdict.REGISTERED);
-    const errSpy = jest.spyOn((sut as any).logger, 'error');
+    ssgIssueLogRepository.find.mockResolvedValue([newer, older]);
+    ssgIssue.getTry.mockResolvedValue(tryOut('Y'));
+    ssgIssue.check.mockResolvedValue(checkOut('0100'));
     const od = buildOrderDelivery();
 
-    await sut.issue(od, buildSsgEvent());
+    await expect(sut.issue(od, buildSsgEvent())).rejects.toBeInstanceOf(SsgIssueUnknownError);
 
     expect(ssgIssue.issue).not.toHaveBeenCalled();
-    expect(od.barCode).toBe('8NEWOK'); // 최신 채택
-    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('다중 등록 PIN 감지'));
+    expect(od.barCode).toBeNull();
   });
 
-  it('eventSeq=null legacy 후보 + getTry=Y(제출이력) → 보류(SsgProcessingError, classifySsgPin 미호출)', async () => {
+  it.each<[string, () => void]>([
+    ['getTry=Y', () => ssgIssue.getTry.mockResolvedValue(tryOut('Y'))],
+    ['getTry=N', () => ssgIssue.getTry.mockResolvedValue(tryOut('N'))],
+  ])('eventSeq=null legacy 후보 + %s → SsgIssueUnknownError로 중단, 새 PIN INSERT 없음', async (_label, mockCandidate) => {
     ssgIssueLogRepository.find.mockResolvedValue([buildCandidate({ eventSeq: null })]);
-    ssgIssue.getTry.mockResolvedValue(tryOut('Y'));
+    mockCandidate();
     const classifySpy = jest.spyOn(sut as any, 'classifySsgPin');
     const od = buildOrderDelivery();
 
-    await expect(sut.issue(od, buildSsgEvent())).rejects.toBeInstanceOf(SsgProcessingError);
+    await expect(sut.issue(od, buildSsgEvent())).rejects.toBeInstanceOf(SsgIssueUnknownError);
+
     expect(classifySpy).not.toHaveBeenCalled();
     expect(ssgIssue.issue).not.toHaveBeenCalled();
-  });
-
-  it('eventSeq=null legacy 후보 + getTry=N(미제출) → 새 PIN', async () => {
-    ssgIssueLogRepository.find.mockResolvedValue([buildCandidate({ eventSeq: null })]);
-    ssgIssue.getTry.mockResolvedValue(tryOut('N'));
-    const od = buildOrderDelivery();
-
-    await sut.issue(od, buildSsgEvent());
-
-    expect(ssgIssue.issue).toHaveBeenCalledTimes(1);
-    expect(od.barCode).toBe('80000001');
   });
 });

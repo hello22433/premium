@@ -24,6 +24,7 @@ import { PinIssueDedupEntity } from '../entity/pin.issue.dedup.entity';
 import { SsgIssueLogEntity } from '../entity/ssg.issue.log.entity';
 import { GiftielExchangeHistoryEntity } from '../entity/giftiel.exchange.history.entity';
 import { SsgResendDeductPendingEntity } from '../entity/ssg.resend.deduct.pending.entity';
+import { PinIssueCommandEntity } from '../entity/pin.issue.command.entity';
 import { GiftielPushController } from './api/giftiel.push.controller';
 import { GiftielIpGuard } from './api/giftiel.ip.guard';
 import { GiftishowBalanceController } from './api/giftishow.balance.controller';
@@ -43,6 +44,7 @@ import { PartnerSettleModule } from '../partner_settle/partner.settle.module';
       SsgIssueLogEntity,
       GiftielExchangeHistoryEntity,
       SsgResendDeductPendingEntity,
+      PinIssueCommandEntity,
     ]),
     SsgInsertStateModule,
     PartnerSettleModule,

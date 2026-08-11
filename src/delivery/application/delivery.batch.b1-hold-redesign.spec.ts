@@ -50,6 +50,8 @@ import { PinIssueCommandService } from './pin-issue-command.service';
 import { MessageResultReconcileService } from './message-result-reconcile.service';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
+import { InventoryPinAllocationService } from '../../inventory_coupon/application/inventory.pin.allocation.service';
+import { InventoryPinSendService } from '../../inventory_coupon/application/inventory.pin.send.service';
 
 /**
  * B1: 정산 복구 이벤트 미생성(초기 발송 실패 보류) redesign 회귀 테스트.
@@ -220,11 +222,13 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
         {
           provide: PinIssueCommandService,
           useValue: {
-            recordAttempt: jest.fn(),
-            markSucceeded: jest.fn(),
-            markRetryPending: jest.fn(),
-            markExhausted: jest.fn(),
-            markTerminal: jest.fn(),
+            recordAttemptAudit: jest.fn(),
+            createActiveCommand: jest.fn().mockResolvedValue('cmd-1'),
+            consumeInitialIssueAuthority: jest.fn().mockResolvedValue(true),
+            consumeNotIssuedRetryAuthority: jest.fn().mockResolvedValue(true),
+            recordResolution: jest.fn().mockResolvedValue(true),
+            markSucceeded: jest.fn().mockResolvedValue(true),
+            markOpsReviewRequired: jest.fn().mockResolvedValue(true),
           },
         },
         // shadow 추적은 발송을 대행하지 않는다 — 상관키 없이 그대로 통과시키는 스텁.
@@ -266,6 +270,8 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
         { provide: RefundPoolService, useValue: { refund: jest.fn(), reverseRefund: jest.fn() } },
         { provide: ResendDeductService, useValue: { resendDeduct: jest.fn(), resendUndo: jest.fn() } },
         { provide: LegacyWalletCreditSyncService, useValue: { syncCredit: jest.fn(), syncDeposit: jest.fn() } },
+        { provide: InventoryPinAllocationService, useValue: { allocate: jest.fn() } },
+        { provide: InventoryPinSendService, useValue: { send: jest.fn() } },
         { provide: getRepositoryToken(OrderDeliveryAttemptEntity), useValue: attemptRepository },
         {
           provide: getRepositoryToken(OrderPaymentRefundEventEntity),

@@ -233,8 +233,8 @@ export class DeliveryBatchSchedule {
     }
   }
 
-  // SSG 행사 잔액 복구 sweep. DEFERRED backlog 를 lease 게이트로 자동 수렴.
-  // docs/plans/2026-06-12-external-api-wallet-integration.md B-7.
+  // SSG 행사 잔액 복구 및 PIN INSERT 판정 sweep. 같은 5분 cron에서 실행해
+  // 독립 cron 경쟁 없이 각각의 DB CAS/lease fencing으로 수렴시킨다.
   // 5분마다 실행. 다른 5분 cron 과 동시 trigger 회피를 위해 15초 offset.
   @Cron('15 */5 * * * *')
   async handleSsgRecoverySweep() {
@@ -245,6 +245,7 @@ export class DeliveryBatchSchedule {
     this.ssgRecoverySweepStartedAt = Date.now();
     try {
       await this.ssgRecoverySweepService.sweepOnce();
+      await this.ssgRecoverySweepService.resolvePinIssuesOnce();
     } catch (e) {
       this.logger.error(e);
     } finally {

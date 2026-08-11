@@ -21,6 +21,7 @@ import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { PartnerCompanyEntity } from '../../entity/partner.company.entity';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
 import { PinIssueDedupEntity } from '../../entity/pin.issue.dedup.entity';
+import { PinIssueCommandEntity } from '../../entity/pin.issue.command.entity';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
 import { SsgResendDeductPendingEntity } from '../../entity/ssg.resend.deduct.pending.entity';
@@ -31,7 +32,6 @@ import {
   SsgIssueLogKeyCollisionError,
   SsgIssueRejectedError,
   SsgIssueUnknownError,
-  SsgProcessingError,
 } from '../infra/ssg.issue';
 import { PartnerCompanyExternService } from './partner.company.extern.service';
 
@@ -60,6 +60,13 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
     markConfirmed: jest.Mock;
     markFailed: jest.Mock;
   };
+  let pinIssueCommandRepository: { findOne: jest.Mock };
+  const activeAuthority = {
+    commandId: 'command-1',
+    ownerToken: 'owner-1',
+    generation: '1',
+    workflowVersion: '1',
+  } as any;
 
   const makeRepoMock = () => ({
     create: jest.fn(),
@@ -143,6 +150,9 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
       ...mock<Repository<PartnerCompanyExternHistoryEntity>>(),
       ...makeRepoMock(),
     };
+    pinIssueCommandRepository = {
+      findOne: jest.fn().mockResolvedValue({ status: 'STARTED', externalIssueCount: 1 }),
+    };
     ssgInsertStateService = {
       getState: jest.fn(),
       markAttempted: jest.fn(),
@@ -168,6 +178,7 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
         { provide: getRepositoryToken(PartnerCompanyEntity), useValue: makeRepoMock() },
         { provide: getRepositoryToken(PinIssueDedupEntity), useValue: pinIssueDedupRepository },
         { provide: getRepositoryToken(SsgIssueLogEntity), useValue: ssgIssueLogRepository },
+        { provide: getRepositoryToken(PinIssueCommandEntity), useValue: pinIssueCommandRepository },
         { provide: getRepositoryToken(GiftielExchangeHistoryEntity), useValue: makeRepoMock() },
         { provide: getRepositoryToken(GalaxiaBarcodeLogEntity), useValue: makeRepoMock() },
         { provide: CryptoCipher, useValue: { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000') } },
@@ -190,10 +201,23 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
       ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
       ssgIssue.issue.mockResolvedValue({ response: { result: [{ code: ['1000'], reason: ['ok'] }] } });
 
-      await sut.issue(orderDelivery, ssgEvent);
+      await sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority);
 
       expect(ssgInsertStateService.markAttempted).toHaveBeenCalledTimes(1);
+      expect(ssgInsertStateService.markAttempted).toHaveBeenCalledWith(
+        orderDelivery.id,
+        expect.any(Object),
+        activeAuthority,
+      );
       expect(ssgIssue.issue).toHaveBeenCalledTimes(1);
+      expect(pinIssueCommandRepository.findOne).toHaveBeenCalledWith({
+        where: {
+          id: 'command-1',
+          ownerToken: 'owner-1',
+          generation: '1',
+          workflowVersion: '1',
+        },
+      });
       expect(ssgInsertStateService.markConfirmed).toHaveBeenCalledWith(
         orderDelivery.id,
         expect.objectContaining({
@@ -226,7 +250,7 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
           .mockResolvedValueOnce(MarkAttemptedResult.TRANSITIONED);
         ssgIssue.issue.mockResolvedValue({ response: { result: [{ code: ['1000'], reason: ['ok'] }] } });
 
-        await sut.issue(orderDelivery, ssgEvent);
+        await sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority);
 
         expect(ssgInsertStateService.markAttempted).toHaveBeenCalledTimes(2);
         // 벤더 호출은 살아남은 후보에 대해 정확히 1회
@@ -251,7 +275,7 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
           .mockResolvedValueOnce(MarkAttemptedResult.TRANSITIONED);
         ssgIssue.issue.mockResolvedValue({ response: { result: [{ code: ['1000'], reason: ['ok'] }] } });
 
-        await sut.issue(orderDelivery, ssgEvent);
+        await sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority);
 
         const firstPayload = ssgInsertStateService.markAttempted.mock.calls[0][1];
         const secondPayload = ssgInsertStateService.markAttempted.mock.calls[1][1];
@@ -280,7 +304,7 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
         ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
         ssgIssue.issue.mockResolvedValue({ response: { result: [{ code: ['1000'], reason: ['ok'] }] } });
 
-        await sut.issue(orderDelivery, ssgEvent);
+        await sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority);
 
         expect(orderDelivery.encourageAt).toBeNull();
         expect(ssgInsertStateService.markAttempted.mock.calls[0][1].encourageAt).toBeNull();
@@ -300,7 +324,7 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
         ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
         ssgIssue.issue.mockResolvedValue({ response: { result: [{ code: ['1000'], reason: ['ok'] }] } });
 
-        await sut.issue(orderDelivery, ssgEvent);
+        await sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority);
 
         const expireAt = orderDelivery.expireAt!;
         const encourageAt = orderDelivery.encourageAt!;
@@ -378,7 +402,7 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
       ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
       ssgIssue.issue.mockRejectedValue(new SsgIssueRejectedError('8021', '한도 초과'));
 
-      await expect(sut.issue(orderDelivery, ssgEvent)).rejects.toBeInstanceOf(SsgIssueRejectedError);
+      await expect(sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority)).rejects.toBeInstanceOf(SsgIssueRejectedError);
       expect(ssgInsertStateService.markFailed).toHaveBeenCalledWith(orderDelivery.id);
       expect(ssgInsertStateService.markConfirmed).not.toHaveBeenCalled();
     });
@@ -390,9 +414,38 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
       ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
       ssgIssue.issue.mockRejectedValue(new SsgIssueUnknownError('XML 파싱 실패'));
 
-      await expect(sut.issue(orderDelivery, ssgEvent)).rejects.toBeInstanceOf(SsgIssueUnknownError);
+      await expect(sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority)).rejects.toBeInstanceOf(SsgIssueUnknownError);
       expect(ssgInsertStateService.markFailed).not.toHaveBeenCalled();
       expect(ssgInsertStateService.markConfirmed).not.toHaveBeenCalled();
+    });
+    it('SSG INSERT authority 없으면 벤더 호출 전에 거절한다', async () => {
+      const orderDelivery = buildOrderDelivery();
+      ssgIssue.check.mockRejectedValue(new SsgCheckNotFoundError('미등록'));
+      ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
+
+      await expect(sut.issue(orderDelivery, buildSsgEvent())).rejects.toThrow('SSG INSERT authority is required.');
+      expect(pinIssueCommandRepository.findOne).not.toHaveBeenCalled();
+      expect(ssgIssue.issue).not.toHaveBeenCalled();
+    });
+
+    it('stale SSG INSERT authority면 벤더 호출 전에 거절한다', async () => {
+      const orderDelivery = buildOrderDelivery();
+      ssgIssue.check.mockRejectedValue(new SsgCheckNotFoundError('미등록'));
+      ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
+      pinIssueCommandRepository.findOne.mockResolvedValue(null);
+
+      await expect(sut.issue(orderDelivery, buildSsgEvent(), undefined, activeAuthority)).rejects.toThrow(
+        'SSG INSERT authority is stale. commandId=command-1',
+      );
+      expect(pinIssueCommandRepository.findOne).toHaveBeenCalledWith({
+        where: {
+          id: 'command-1',
+          ownerToken: 'owner-1',
+          generation: '1',
+          workflowVersion: '1',
+        },
+      });
+      expect(ssgIssue.issue).not.toHaveBeenCalled();
     });
   });
 
@@ -422,72 +475,59 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
       expect(ssgIssue.issue).not.toHaveBeenCalled();
     });
 
-    it('기존 PIN 미제출(getTry=N) → 새 PIN 생성 경로 진입 → markAttempted + issue() 호출', async () => {
+    it('기존 PIN getTry=N → SsgIssueUnknownError로 중단, 새 PIN INSERT 없음', async () => {
       const orderDelivery = buildOrderDelivery({
         barCode: '8EXIST01',
         personalCode: '01300001234',
         ssgTransactionId: 'tr-existing',
       });
       const ssgEvent = buildSsgEvent();
-      ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
-      // classifySsgPin: getTry=N → NOT_SUBMITTED → 기존 PIN 폐기 후 새 PIN. step2 dedup getTry=N = 사용 가능.
       ssgIssue.getTry.mockResolvedValue(tryOut('N'));
-      ssgIssue.issue.mockResolvedValue({ response: { result: [{ code: ['1000'], reason: ['ok'] }] } });
 
-      await sut.issue(orderDelivery, ssgEvent);
+      await expect(sut.issue(orderDelivery, ssgEvent)).rejects.toBeInstanceOf(SsgIssueUnknownError);
 
-      expect(ssgInsertStateService.markAttempted).toHaveBeenCalledTimes(1);
-      expect(ssgIssue.issue).toHaveBeenCalledTimes(1);
-      expect(ssgInsertStateService.markConfirmed).toHaveBeenCalled();
-      // 기존 PIN 은 폐기되고 새로 생성된 PIN 으로 교체
-      expect(orderDelivery.barCode).toBe('80000001');
+      expect(ssgInsertStateService.markAttempted).not.toHaveBeenCalled();
+      expect(ssgIssue.issue).not.toHaveBeenCalled();
+      expect(ssgInsertStateService.markConfirmed).not.toHaveBeenCalled();
     });
 
-    it('기존 PIN 제출됨(getTry=Y) + result 등록실패(0103 잔액부족) → 새 PIN 생성 경로', async () => {
+    it('기존 PIN resultCd=0103 → SsgIssueUnknownError로 중단, 새 PIN INSERT 없음', async () => {
       const orderDelivery = buildOrderDelivery({
         barCode: '8EXIST01',
         personalCode: '01300001234',
         ssgTransactionId: 'tr-existing',
       });
       const ssgEvent = buildSsgEvent();
-      ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
-      // step1 classify: getTry=Y + resultCd=0103(등록실패) → REGISTRATION_FAILED → 기존 PIN 폐기.
-      // step2 dedup 은 새 PIN(01312345678) 에 대해 getTry=N(사용가능) 이어야 하므로 분기 mock.
-      ssgIssue.getTry.mockImplementation(async ({ vno }: { vno: string }) =>
-        vno === '01300001234' ? tryOut('Y') : tryOut('N'),
-      );
+      ssgIssue.getTry.mockResolvedValue(tryOut('Y'));
       ssgIssue.check.mockResolvedValue(checkOut('0103'));
-      ssgIssue.issue.mockResolvedValue({ response: { result: [{ code: ['1000'], reason: ['ok'] }] } });
 
-      await sut.issue(orderDelivery, ssgEvent);
+      await expect(sut.issue(orderDelivery, ssgEvent)).rejects.toBeInstanceOf(SsgIssueUnknownError);
 
-      expect(ssgIssue.issue).toHaveBeenCalledTimes(1);
-      expect(orderDelivery.barCode).toBe('80000001');
+      expect(ssgInsertStateService.markAttempted).not.toHaveBeenCalled();
+      expect(ssgIssue.issue).not.toHaveBeenCalled();
+      expect(ssgInsertStateService.markConfirmed).not.toHaveBeenCalled();
     });
 
-    it('기존 PIN 제출됨(getTry=Y) + result 미반영(처리중) → SsgProcessingError throw, issue() 호출 안 됨', async () => {
+    it('기존 PIN 제출됨(getTry=Y) + result 미반영(처리중) → SsgIssueUnknownError throw, issue() 호출 안 됨', async () => {
       const orderDelivery = buildOrderDelivery({
         barCode: '8EXIST01',
         personalCode: '01300001234',
         ssgTransactionId: 'tr-existing',
       });
       const ssgEvent = buildSsgEvent();
-      // step1 classify: getTry=Y + GetSsgStatus NotFound(8021) → PROCESSING
       ssgIssue.getTry.mockResolvedValue(tryOut('Y'));
       ssgIssue.check.mockRejectedValue(new SsgCheckNotFoundError('조회 결과 없음'));
 
-      await expect(sut.issue(orderDelivery, ssgEvent)).rejects.toBeInstanceOf(SsgProcessingError);
+      await expect(sut.issue(orderDelivery, ssgEvent)).rejects.toBeInstanceOf(SsgIssueUnknownError);
       expect(ssgIssue.issue).not.toHaveBeenCalled();
       expect(ssgInsertStateService.markFailed).not.toHaveBeenCalled();
     });
   });
 
   describe('9999 재분류 — pass 2 재진입 시 Mutex 내 orphan 확인 후 ATTEMPTED→FAILED 전이', () => {
-    it('barCode null + ssg_issue_log 후보 미등록 + state ATTEMPTED → Mutex 내 orphan 미등록 확정 → markFailed 후 새 PIN INSERT 성공', async () => {
+    it('barCode null + ssg_issue_log 후보 getTry=N → SsgIssueUnknownError로 중단, 새 PIN INSERT 없음', async () => {
       const orderDelivery = buildOrderDelivery();
       const ssgEvent = buildSsgEvent();
-
-      // ssg_issue_log 에 pass 1 시도 후보가 있다 (9999 로 실패)
       const staleCandidate = {
         id: 100,
         orderDeliveryId: orderDelivery.id,
@@ -502,34 +542,13 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
         encourageAt: null,
       };
       ssgIssueLogRepository.find.mockResolvedValue([staleCandidate] as any);
-      ssgIssueLogRepository.findOne.mockResolvedValue(null);
-
-      // classifySsgPin: stale 후보의 getTry=N(미제출) → NOT_SUBMITTED → 재사용 불가
-      // SKIPPED_ACTIVE orphan getTry=N → 미제출 확정
-      // 새 PIN dedup getTry=N → 사용가능
       ssgIssue.getTry.mockResolvedValue(tryOut('N'));
-      // SKIPPED_ACTIVE orphan: checkSsgWithRetry → 미등록
-      ssgIssue.check.mockRejectedValue(new SsgCheckNotFoundError('미등록'));
 
-      // 첫 markAttempted → SKIPPED_ACTIVE (이전 9999 ATTEMPTED 상태)
-      // Mutex 내 orphan 확인 → 미등록 → markFailed → continue → 새 후보
-      // 둘째 markAttempted → TRANSITIONED (FAILED→ATTEMPTED)
-      ssgInsertStateService.markAttempted
-        .mockResolvedValueOnce(MarkAttemptedResult.SKIPPED_ACTIVE)
-        .mockResolvedValueOnce(MarkAttemptedResult.TRANSITIONED);
-      // Mutex 내 markFailed → FAILED 전이 성공
-      ssgInsertStateService.markFailed.mockResolvedValue(true);
-      // 새 후보로 INSERT 성공
-      ssgIssue.issue.mockResolvedValue({ response: { result: [{ code: ['1000'], reason: ['ok'] }] } });
+      await expect(sut.issue(orderDelivery, ssgEvent)).rejects.toBeInstanceOf(SsgIssueUnknownError);
 
-      await sut.issue(orderDelivery, ssgEvent);
-
-      // 핵심: Mutex 내 orphan 확인 → markFailed → 새 PIN 발급 (경쟁 조건 없음)
-      expect(ssgInsertStateService.markAttempted).toHaveBeenCalledTimes(2);
-      expect(ssgInsertStateService.markFailed).toHaveBeenCalledWith(orderDelivery.id);
-      expect(ssgIssue.issue).toHaveBeenCalledTimes(1);
-      expect(ssgInsertStateService.markConfirmed).toHaveBeenCalled();
-      expect(orderDelivery.barCode).toBe('80000001');
+      expect(ssgInsertStateService.markAttempted).not.toHaveBeenCalled();
+      expect(ssgInsertStateService.markFailed).not.toHaveBeenCalled();
+      expect(ssgIssue.issue).not.toHaveBeenCalled();
     });
 
     it('SKIPPED_ACTIVE + orphan 실제 등록 → Mutex 내 CONFIRMED, 새 INSERT 없이 PIN 재사용', async () => {
@@ -553,14 +572,8 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
       ssgIssueLogRepository.find.mockResolvedValue([registeredCandidate] as any);
       ssgIssueLogRepository.findOne.mockResolvedValue(null);
 
-      // classifySsgPin: getTry=N(stale, SSG 아직 미반영) → NOT_SUBMITTED
-      // 이후 SKIPPED_ACTIVE handler 에서 getTry/check 다시 호출
-      let getTryCallCount = 0;
-      ssgIssue.getTry.mockImplementation(async () => {
-        getTryCallCount++;
-        return tryOut('N');
-      });
-      // SKIPPED_ACTIVE handler: checkSsgWithRetry → 등록됨(1001)
+      // 정확히 하나의 등록 확정 후보만 재사용한다.
+      ssgIssue.getTry.mockResolvedValue(tryOut('Y'));
       ssgIssue.check.mockResolvedValue(checkOut('0100'));
 
       // markAttempted → SKIPPED_ACTIVE (이전 ATTEMPTED 상태)
@@ -580,10 +593,9 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
       expect(orderDelivery.couponNum).toBe('CPN-ORPHAN');
     });
 
-    it('SKIPPED_ACTIVE + check resultCd=0103(등록실패) → 재사용 안 하고 markFailed 후 새 PIN INSERT', async () => {
+    it('barCode null + ssg_issue_log 후보 resultCd=0103 → SsgIssueUnknownError로 중단, 새 PIN INSERT 없음', async () => {
       const orderDelivery = buildOrderDelivery();
       const ssgEvent = buildSsgEvent();
-
       const failedCandidate = {
         id: 100,
         orderDeliveryId: orderDelivery.id,
@@ -598,36 +610,17 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
         encourageAt: null,
       };
       ssgIssueLogRepository.find.mockResolvedValue([failedCandidate] as any);
-      ssgIssueLogRepository.findOne.mockResolvedValue(null);
-
-      // classifySsgPin: getTry=Y(제출됨) + resultCd=0103(등록실패) → REGISTRATION_FAILED → 재사용 불가
-      // SKIPPED_ACTIVE orphan: check=0103(등록실패) → confirmedCandidate=null
-      //   → registrationFailedVnos 에 기록 → getTry 루프에서 제외 → markFailed
-      // 새 PIN dedup: getTry=N(미사용)
-      ssgIssue.getTry.mockImplementation(async ({ vno }: { vno: string }) =>
-        vno === '01399990001' ? tryOut('Y') : tryOut('N'),
-      );
+      ssgIssue.getTry.mockResolvedValue(tryOut('Y'));
       ssgIssue.check.mockResolvedValue(checkOut('0103'));
 
-      // 첫 markAttempted → SKIPPED_ACTIVE
-      // orphan check: resultCd=0103 → 등록실패 → registrationFailedVnos 제외 → markFailed
-      // 둘째 markAttempted → TRANSITIONED
-      ssgInsertStateService.markAttempted
-        .mockResolvedValueOnce(MarkAttemptedResult.SKIPPED_ACTIVE)
-        .mockResolvedValueOnce(MarkAttemptedResult.TRANSITIONED);
-      ssgInsertStateService.markFailed.mockResolvedValue(true);
-      ssgIssue.issue.mockResolvedValue({ response: { result: [{ code: ['1000'], reason: ['ok'] }] } });
+      await expect(sut.issue(orderDelivery, ssgEvent)).rejects.toBeInstanceOf(SsgIssueUnknownError);
 
-      await sut.issue(orderDelivery, ssgEvent);
-
-      // 등록실패 PIN 재사용 안 함 → markFailed → 새 PIN 발급
-      expect(ssgInsertStateService.markFailed).toHaveBeenCalledWith(orderDelivery.id);
-      expect(ssgInsertStateService.markAttempted).toHaveBeenCalledTimes(2);
-      expect(ssgIssue.issue).toHaveBeenCalledTimes(1);
-      expect(orderDelivery.barCode).toBe('80000001');
+      expect(ssgInsertStateService.markAttempted).not.toHaveBeenCalled();
+      expect(ssgInsertStateService.markFailed).not.toHaveBeenCalled();
+      expect(ssgIssue.issue).not.toHaveBeenCalled();
     });
 
-    it('SKIPPED_ACTIVE + markConfirmed 반환 false(race) → SsgIssueAttemptAlreadyActiveError', async () => {
+    it('단일 CONFIRMED 후보 + markConfirmed 반환 false → 새 INSERT 없이 PIN 재사용', async () => {
       const orderDelivery = buildOrderDelivery();
       const ssgEvent = buildSsgEvent();
 
@@ -645,18 +638,14 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
         encourageAt: null,
       };
       ssgIssueLogRepository.find.mockResolvedValue([candidate] as any);
-      ssgIssueLogRepository.findOne.mockResolvedValue(null);
-
-      ssgIssue.getTry.mockResolvedValue(tryOut('N'));
-      // check → 등록됨 (0100)
+      ssgIssue.getTry.mockResolvedValue(tryOut('Y'));
       ssgIssue.check.mockResolvedValue(checkOut('0100'));
-
-      ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.SKIPPED_ACTIVE);
-      // markConfirmed CAS 실패 = 다른 흐름이 상태 변경
       ssgInsertStateService.markConfirmed.mockResolvedValue(false);
 
-      await expect(sut.issue(orderDelivery, ssgEvent)).rejects.toBeInstanceOf(SsgIssueAttemptAlreadyActiveError);
+      await sut.issue(orderDelivery, ssgEvent);
+
       expect(ssgIssue.issue).not.toHaveBeenCalled();
+      expect(orderDelivery.barCode).toBe('8RACE01');
     });
 
     it('barCode null + ssg_issue_log 후보 등록됨 → markFailed 없이 PIN 재사용', async () => {

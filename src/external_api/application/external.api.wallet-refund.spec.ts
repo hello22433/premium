@@ -39,8 +39,15 @@ import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { IOrderType } from '../../order/interface/order.type';
 import { IOrderStatus } from '../../order/interface/order.status';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
+import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { SsgRecoveryResult } from '../../delivery/interface/ssg.recovery.result';
 import { ActivityLogActionType } from '../../activity_log/interface/activity.log.action.type';
+import {
+  SsgIssueAlreadyConfirmedError,
+  SsgIssueAttemptAlreadyActiveError,
+  SsgIssueRejectedError,
+  SsgIssueUnknownError,
+} from '../../partner_company_extern/infra/ssg.issue';
 
 // External API 환불(실패/취소) + 재발송 가드 wallet 정합화 단위 테스트.
 //   - R7-A: phaseC_handleFailure claim 멱등 흡수.
@@ -293,6 +300,43 @@ describe('phaseC_handleFailure — R7-A claim 멱등 + R2 wallet 환불', () => 
 
     expect(mocks.refund).not.toHaveBeenCalled();
     expect(mocks.refundBalance).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['UNKNOWN', new SsgIssueUnknownError('SSG 후보 판정 미확정(UNKNOWN)')],
+    ['MULTIPLE', new SsgIssueUnknownError('SSG 후보 판정 미확정(MULTIPLE_CONFIRMED)')],
+    ['stale active completion', new SsgIssueAttemptAlreadyActiveError(55)],
+    ['stale confirmed completion', new SsgIssueAlreadyConfirmedError(55)],
+  ])('SSG %s는 WAIT/운영 보류를 유지하고 FAIL·환불을 수행하지 않는다', async (_case, error) => {
+    const { svc, mocks } = refundService({ isWalletManaged: true });
+    const order = makeOrder({ type: IOrderType.SSG });
+    const orderDelivery = makeOrderDelivery({ ssgEventId: 7, status: IOrderDeliveryStatus.WAIT });
+
+    await (svc as any).phaseC_handleFailure(order, orderDelivery, makeAccount(), error);
+
+    expect(orderDelivery.status).toBe(IOrderDeliveryStatus.WAIT);
+    expect(mocks.odUpdate).not.toHaveBeenCalled();
+    expect(mocks.claim).not.toHaveBeenCalled();
+    expect(mocks.recoverWithLease).not.toHaveBeenCalled();
+    expect(mocks.refund).not.toHaveBeenCalled();
+    expect(mocks.refundBalance).not.toHaveBeenCalled();
+  });
+
+  it('SSG 확정 거절은 기존 FAIL·환불 경로로 처리한다', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: true });
+    const order = makeOrder({ type: IOrderType.SSG });
+    const orderDelivery = makeOrderDelivery({ ssgEventId: 7 });
+
+    await (svc as any).phaseC_handleFailure(
+      order,
+      orderDelivery,
+      makeAccount(),
+      new SsgIssueRejectedError('1001', 'SSG INSERT rejected'),
+    );
+
+    expect(mocks.odUpdate).toHaveBeenCalled();
+    expect(mocks.claim).toHaveBeenCalledTimes(1);
+    expect(mocks.recoverWithLease).toHaveBeenCalledTimes(1);
+    expect(mocks.refund).toHaveBeenCalledTimes(1);
   });
 
   it('SSG 발송실패 → recoverWithLease 단일 CAS 게이트 경유 (resolver 직접 호출 안 함, 선체크 isSsgSettled 제거)', async () => {

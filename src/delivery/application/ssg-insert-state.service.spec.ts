@@ -12,6 +12,7 @@ import { Repository } from 'typeorm';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliverySsgInsertStateEntity } from '../../entity/order.delivery.ssg.insert.state.entity';
 import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
+import { PinIssueCommandAuthority } from './pin-issue-command.service';
 import { MarkAttemptedResult, SsgInsertState } from '../interface/ssg.insert.state';
 import { SsgIssueLogKeyCollisionError } from '../../partner_company_extern/infra/ssg.issue';
 import { SsgAttemptPayload, SsgConfirmInfo, SsgInsertStateService } from './ssg-insert-state.service';
@@ -80,13 +81,30 @@ describe('SsgInsertStateService', () => {
     expireAt: new Date('2026-07-18T00:00:00Z'),
     encourageAt: new Date('2026-06-01T00:00:00Z'),
   };
+  const sampleAuthority: PinIssueCommandAuthority = {
+    commandId: 'cmd-1',
+    ownerToken: 'owner-1',
+    generation: 'generation-1',
+    workflowVersion: 'workflow-1',
+  };
 
   beforeEach(async () => {
     jest.clearAllMocks();
 
+    const commandChain: any = {
+      setLock: jest.fn(() => commandChain),
+      where: jest.fn(() => commandChain),
+      andWhere: jest.fn(() => commandChain),
+      getOne: jest.fn().mockResolvedValue({ status: 'STARTED', externalIssueCount: 1 }),
+    };
     stateRepository = {
       createQueryBuilder: jest.fn(),
       findOne: jest.fn(),
+      manager: {
+        getRepository: jest.fn().mockReturnValue({
+          createQueryBuilder: jest.fn().mockReturnValue(commandChain),
+        }),
+      },
     } as unknown as jest.Mocked<Repository<OrderDeliverySsgInsertStateEntity>>;
 
     deliveryRepository = {
@@ -114,7 +132,7 @@ describe('SsgInsertStateService', () => {
       const chain = makeInsertChain(async () => ({ raw: { affectedRows: 1 } }));
       (stateRepository.createQueryBuilder as jest.Mock).mockReturnValue(chain);
 
-      const result = await sut.markAttempted(123, samplePayload);
+      const result = await sut.markAttempted(123, samplePayload, sampleAuthority);
 
       expect(result).toBe(MarkAttemptedResult.TRANSITIONED);
       expect(chain.values).toHaveBeenCalledWith({
@@ -138,6 +156,12 @@ describe('SsgInsertStateService', () => {
         }),
       );
     });
+    it('missing authority → state/log writes 없이 SKIPPED_ACTIVE 반환', async () => {
+      await expect(sut.markAttempted(123, samplePayload, undefined)).resolves.toBe(MarkAttemptedResult.SKIPPED_ACTIVE);
+
+      expect(stateRepository.createQueryBuilder).not.toHaveBeenCalled();
+      expect(issueLogRepository.insert).not.toHaveBeenCalled();
+    });
 
     it('FAILED row 존재 → INSERT 0 affected → UPDATE FAILED→ATTEMPTED 성공 → 새 log INSERT + TRANSITIONED 반환', async () => {
       const insertChain = makeInsertChain(async () => ({ raw: { affectedRows: 0 } }));
@@ -146,7 +170,7 @@ describe('SsgInsertStateService', () => {
         .mockReturnValueOnce(insertChain)
         .mockReturnValueOnce(updateChain);
 
-      const result = await sut.markAttempted(123, samplePayload);
+      const result = await sut.markAttempted(123, samplePayload, sampleAuthority);
 
       expect(result).toBe(MarkAttemptedResult.TRANSITIONED);
       expect(updateChain.set).toHaveBeenCalledWith({ state: SsgInsertState.ATTEMPTED });
@@ -167,7 +191,7 @@ describe('SsgInsertStateService', () => {
         state: SsgInsertState.ATTEMPTED,
       });
 
-      const result = await sut.markAttempted(123, samplePayload);
+      const result = await sut.markAttempted(123, samplePayload, sampleAuthority);
 
       expect(result).toBe(MarkAttemptedResult.SKIPPED_ACTIVE);
       expect(issueLogRepository.insert).not.toHaveBeenCalled();
@@ -184,7 +208,7 @@ describe('SsgInsertStateService', () => {
         state: SsgInsertState.CONFIRMED,
       });
 
-      const result = await sut.markAttempted(123, samplePayload);
+      const result = await sut.markAttempted(123, samplePayload, sampleAuthority);
 
       expect(result).toBe(MarkAttemptedResult.SKIPPED_TERMINAL);
       expect(issueLogRepository.insert).not.toHaveBeenCalled();
@@ -213,7 +237,7 @@ describe('SsgInsertStateService', () => {
         arrangeTransitioned();
         (issueLogRepository.insert as jest.Mock).mockRejectedValue(dupError(sqlMessage));
 
-        await expect(sut.markAttempted(123, samplePayload)).rejects.toMatchObject({
+        await expect(sut.markAttempted(123, samplePayload, sampleAuthority)).rejects.toMatchObject({
           name: 'SsgIssueLogKeyCollisionError',
           orderDeliveryId: 123,
           collidedKey,
@@ -225,7 +249,7 @@ describe('SsgInsertStateService', () => {
         const original = dupError("Duplicate entry '1' for key 'uq_some_other_table_key'");
         (issueLogRepository.insert as jest.Mock).mockRejectedValue(original);
 
-        await expect(sut.markAttempted(123, samplePayload)).rejects.toBe(original);
+        await expect(sut.markAttempted(123, samplePayload, sampleAuthority)).rejects.toBe(original);
       });
 
       it('ER_DUP_ENTRY 가 아닌 DB 오류는 원본 그대로 전파', async () => {
@@ -234,7 +258,7 @@ describe('SsgInsertStateService', () => {
         original.driverError = { code: 'ER_LOCK_WAIT_TIMEOUT', errno: 1205 };
         (issueLogRepository.insert as jest.Mock).mockRejectedValue(original);
 
-        await expect(sut.markAttempted(123, samplePayload)).rejects.toBe(original);
+        await expect(sut.markAttempted(123, samplePayload, sampleAuthority)).rejects.toBe(original);
       });
 
       it('errno 1062 라도 code 가 ER_DUP_ENTRY 가 아니면 전파 (errno 단독 판정 금지)', async () => {
@@ -245,7 +269,7 @@ describe('SsgInsertStateService', () => {
         original.driverError = { errno: 1062, sqlMessage: "for key 'uq_ssg_issue_log_bar_code'" };
         (issueLogRepository.insert as jest.Mock).mockRejectedValue(original);
 
-        await expect(sut.markAttempted(123, samplePayload)).rejects.toBe(original);
+        await expect(sut.markAttempted(123, samplePayload, sampleAuthority)).rejects.toBe(original);
       });
 
       it('driverError 없이 최상위에 code/message 만 있어도 분류한다', async () => {
@@ -256,7 +280,7 @@ describe('SsgInsertStateService', () => {
         flat.code = 'ER_DUP_ENTRY';
         (issueLogRepository.insert as jest.Mock).mockRejectedValue(flat);
 
-        await expect(sut.markAttempted(123, samplePayload)).rejects.toBeInstanceOf(SsgIssueLogKeyCollisionError);
+        await expect(sut.markAttempted(123, samplePayload, sampleAuthority)).rejects.toBeInstanceOf(SsgIssueLogKeyCollisionError);
       });
     });
   });
