@@ -4,6 +4,7 @@ import { OrderProductMappingEntity } from '../entity/order.product.mapping.entit
 import { OrderFeeCalculator, applyCardSurcharge } from '../order/domain/order.fee.calculator';
 import { IPriceAdjustment } from '../user_discount/interface/price.adjustment';
 import { OrderDeliveryCouponStatus } from '../delivery/interface/order.delivery.coupon.status';
+import { IOrderDeliveryStatus } from '../delivery/interface/order.delivery.status';
 import { readLineProductView } from '../order/util/order.snapshot.builder';
 
 /**
@@ -41,6 +42,38 @@ export function calculateSettlementPrice(
     price = OrderFeeCalculator({ fee, priceAdjustment, price });
   }
   return applyCardSurcharge(price, cardSurchargeApplied);
+}
+
+/**
+ * 발송건 목록을 주문별 정산 netAmount(카드할증 1회 적용)로 집계한다.
+ * - status COMPLETE/COMPLETE_SMS 이고 couponStatus 가 CANCEL(고객사 폐기)이 아닌 건만 합산
+ *   (REFUND_CANCEL 수령고객 환불은 고객사 정산 100% 유지 → 포함)
+ * - 주문 합계에 카드할증(order.cardSurchargeApplied)을 1회 적용 (발송건별 적용의 비선형 차이 방지)
+ * 호출부는 relations 로 orderProductMapping · orderProductMapping.product · orderProductMapping.order 를 로드해야 한다.
+ */
+export function computeSettleNetAmountByOrder(deliveries: OrderDeliveryEntity[]): Map<number, number> {
+  const baseByOrder = new Map<number, number>();
+  const surchargeByOrder = new Map<number, boolean>();
+
+  for (const d of deliveries) {
+    const order = d.orderProductMapping?.order;
+    if (!order) continue;
+
+    const isComplete = d.status === IOrderDeliveryStatus.COMPLETE || d.status === IOrderDeliveryStatus.COMPLETE_SMS;
+    if (!isComplete || d.couponStatus === OrderDeliveryCouponStatus.CANCEL) continue;
+
+    baseByOrder.set(
+      order.id,
+      (baseByOrder.get(order.id) ?? 0) + calculateSettlementPrice(d.orderProductMapping, false, d),
+    );
+    surchargeByOrder.set(order.id, order.cardSurchargeApplied);
+  }
+
+  const netByOrder = new Map<number, number>();
+  for (const [orderId, base] of baseByOrder) {
+    netByOrder.set(orderId, applyCardSurcharge(base, surchargeByOrder.get(orderId) ?? false));
+  }
+  return netByOrder;
 }
 
 /**

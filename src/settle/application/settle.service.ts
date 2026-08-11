@@ -94,11 +94,10 @@ import { SettleOtherProductDetailDto } from '../api/dto/settle.other.product.dto
 import { OrderDeliveryCouponStatus, couponStatusToKorean } from '../../delivery/interface/order.delivery.coupon.status';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import {
-  calculateSettlementPrice,
   calculateMappingSettlementBaseAmount,
   buildSettlementDisplayLines,
+  computeSettleNetAmountByOrder,
 } from '../../util/settle-fee.util';
-import { applyCardSurcharge } from '../../order/domain/order.fee.calculator';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.entity';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
@@ -3355,7 +3354,7 @@ export class SettleService {
   private async getOrderSettlementSummary(
     orderIds: number[],
   ): Promise<Map<number, { netAmount: number; hasPending: boolean }>> {
-    const map = new Map<number, { netAmount: number; hasPending: boolean; cardSurchargeApplied?: boolean }>();
+    const map = new Map<number, { netAmount: number; hasPending: boolean }>();
     if (orderIds.length === 0) return map;
 
     for (const id of orderIds) {
@@ -3375,6 +3374,8 @@ export class SettleService {
       withDeleted: true,
     });
 
+    const netByOrder = computeSettleNetAmountByOrder(deliveries);
+
     for (const d of deliveries) {
       const orderId = d.orderProductMapping.order.id;
       const entry = map.get(orderId);
@@ -3382,20 +3383,11 @@ export class SettleService {
 
       if (d.status === IOrderDeliveryStatus.WAIT || d.status === IOrderDeliveryStatus.TEMP) {
         entry.hasPending = true;
-        continue;
       }
-
-      const isComplete = d.status === IOrderDeliveryStatus.COMPLETE || d.status === IOrderDeliveryStatus.COMPLETE_SMS;
-      // CANCEL(고객사 폐기 요청)만 정산 제외. REFUND_CANCEL(수령 고객 환불)은 고객사 정산 100% 유지
-      if (!isComplete || d.couponStatus === OrderDeliveryCouponStatus.CANCEL) continue;
-
-      entry.cardSurchargeApplied = d.orderProductMapping.order.cardSurchargeApplied;
-      entry.netAmount += calculateSettlementPrice(d.orderProductMapping, false, d);
     }
 
-    for (const entry of map.values()) {
-      entry.netAmount = applyCardSurcharge(entry.netAmount, entry.cardSurchargeApplied ?? false);
-      delete entry.cardSurchargeApplied;
+    for (const [orderId, entry] of map) {
+      entry.netAmount = netByOrder.get(orderId) ?? 0;
     }
     return map;
   }

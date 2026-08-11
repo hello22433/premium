@@ -3,10 +3,12 @@ import {
   calculateMappingSettlementBaseAmount,
   calculateOrderSettlementAmount,
   calculateSettlementPrice,
+  computeSettleNetAmountByOrder,
 } from './settle-fee.util';
 import { applyCardSurcharge, OrderFeeCalculator } from '../order/domain/order.fee.calculator';
 import { IPriceAdjustment } from '../user_discount/interface/price.adjustment';
 import { OrderDeliveryCouponStatus } from '../delivery/interface/order.delivery.coupon.status';
+import { IOrderDeliveryStatus } from '../delivery/interface/order.delivery.status';
 
 describe('settle-fee.util 주문 정산금액 계산', () => {
   const createMapping = (overrides: Record<string, unknown> = {}) =>
@@ -519,5 +521,81 @@ describe('buildSettlementDisplayLines — 요율별 행 분리 (D3-49)', () => {
     );
 
     expectMatchesSettlement(mapping);
+  });
+});
+
+describe('computeSettleNetAmountByOrder — 주문별 netAmount 집계 (카드할증 1회)', () => {
+  const makeDelivery = (over: {
+    orderId: number;
+    cardSurchargeApplied: boolean;
+    price?: number;
+    status?: IOrderDeliveryStatus;
+    couponStatus?: OrderDeliveryCouponStatus;
+  }): any => ({
+    id: `${over.orderId}-${Math.random()}`,
+    status: over.status ?? IOrderDeliveryStatus.COMPLETE,
+    couponStatus: over.couponStatus ?? OrderDeliveryCouponStatus.NOT_USED,
+    settleFee: null,
+    settlePriceAdjustment: null,
+    orderProductMapping: {
+      snapshotProductPrice: over.price ?? 3335,
+      product: { price: over.price ?? 3335 },
+      fee: null,
+      priceAdjustment: null,
+      orderDeliveries: [],
+      amount: 1,
+      order: { id: over.orderId, cardSurchargeApplied: over.cardSurchargeApplied },
+    },
+  });
+
+  it('카드할증은 발송건별이 아니라 주문 합계에 1회 적용된다 (비선형 차이 방지)', () => {
+    const deliveries = [
+      makeDelivery({ orderId: 1, cardSurchargeApplied: true }),
+      makeDelivery({ orderId: 1, cardSurchargeApplied: true }),
+    ];
+
+    const net = computeSettleNetAmountByOrder(deliveries);
+
+    expect(net.get(1)).toBe(applyCardSurcharge(6670, true)); // 6870 = 합계 1회 적용
+    // 발송건별 적용(레거시 버그 경로)이면 3430 + 3430 = 6860 이 됐을 것
+    expect(net.get(1)).not.toBe(applyCardSurcharge(3335, true) * 2);
+  });
+
+  it('비카드 주문은 base 합계 그대로 (경로 A·B 동일)', () => {
+    const deliveries = [
+      makeDelivery({ orderId: 2, cardSurchargeApplied: false }),
+      makeDelivery({ orderId: 2, cardSurchargeApplied: false }),
+    ];
+
+    expect(computeSettleNetAmountByOrder(deliveries).get(2)).toBe(6670);
+  });
+
+  it('COMPLETE/COMPLETE_SMS 아니거나 CANCEL 폐기건은 제외, REFUND_CANCEL 은 포함', () => {
+    const deliveries = [
+      makeDelivery({ orderId: 3, cardSurchargeApplied: false }), // 포함 3335
+      makeDelivery({ orderId: 3, cardSurchargeApplied: false, status: IOrderDeliveryStatus.WAIT }), // 제외
+      makeDelivery({ orderId: 3, cardSurchargeApplied: false, couponStatus: OrderDeliveryCouponStatus.CANCEL }), // 제외
+      makeDelivery({
+        orderId: 3,
+        cardSurchargeApplied: false,
+        couponStatus: OrderDeliveryCouponStatus.REFUND_CANCEL,
+      }), // 포함 3335
+      makeDelivery({ orderId: 3, cardSurchargeApplied: false, status: IOrderDeliveryStatus.COMPLETE_SMS }), // 포함 3335
+    ];
+
+    expect(computeSettleNetAmountByOrder(deliveries).get(3)).toBe(10005);
+  });
+
+  it('여러 주문을 주문별로 분리 집계한다', () => {
+    const deliveries = [
+      makeDelivery({ orderId: 10, cardSurchargeApplied: false }),
+      makeDelivery({ orderId: 11, cardSurchargeApplied: false }),
+      makeDelivery({ orderId: 11, cardSurchargeApplied: false }),
+    ];
+
+    const net = computeSettleNetAmountByOrder(deliveries);
+
+    expect(net.get(10)).toBe(3335);
+    expect(net.get(11)).toBe(6670);
   });
 });
