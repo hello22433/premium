@@ -1,6 +1,6 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource, EntityManager, IsNull } from 'typeorm';
+import { DataSource, EntityManager } from 'typeorm';
 import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
 import { OrderPaymentAllocationLineEntity } from '../../entity/order.payment.allocation.line.entity';
 import {
@@ -34,7 +34,12 @@ export interface SettledDiscardRefundInput {
 
 export interface RefundEventResult {
   ledgerIds: string[]; // 라인별 ledger row PK
-  totalRefundedAmount: number;
+  totalRefundedAmount: number; // 실제 복구액 합계. 만료 포인트 skip은 pointSkippedExpiredAmount로 별도 반환.
+  refundedPointAmount: number;
+  refundedDepositAmount: number;
+  refundedCreditUsedAmount: number;
+  refundedCreditExcessAmount: number;
+  pointSkippedExpiredAmount: number;
   // 이번 호출이 실제로 잔액/ledger 를 변경했는지 여부.
   //  - false: 신규 환불 적용됨 (wallet/allocation 변경 발생).
   //  - true : 멱등 retry — 기존 ledger 결과만 반환, 잔액 미변경 (no-op).
@@ -47,7 +52,8 @@ export interface RefundEventResult {
  *  - allocation FOR UPDATE row lock.
  *  - already_refunded 체크.
  *  - 라인 payable_base ASC 정렬 후 한 라인씩 ledger row 생성.
- *  - 자사 이득 우선순위: 포인트 → 신용초과 → 여신 → 예치금.
+ *  - 실패 환불: 포인트 → 신용초과 → 여신 → 예치금.
+ *  - 정산확정 전 개별 폐기: 포인트 → 신용초과 → 예치금 → 여신.
  *  - 만료 포인트 skip (skip 금액은 다음 우선순위로 넘기지 않음).
  *  - 카드할증 delta = applyCardSurcharge(before) - applyCardSurcharge(after).
  *
@@ -94,11 +100,7 @@ export class RefundPoolService {
       .andWhere('e.reversedAt IS NULL')
       .getMany();
     if (existingForPrefix.length > 0) {
-      const totalRefundedAmount = existingForPrefix.reduce(
-        (s, e) => s + e.refundedDepositAmount + e.refundedPointAmount,
-        0,
-      );
-      return { ledgerIds: existingForPrefix.map((e) => e.id), totalRefundedAmount, alreadyRefunded: true };
+      return this.buildRefundResult(existingForPrefix, true);
     }
 
     const peekAlloc = await manager.findOne(OrderPaymentAllocationEntity, {
@@ -133,20 +135,21 @@ export class RefundPoolService {
     const existingAfterLock = await manager
       .getRepository(OrderPaymentRefundEventEntity)
       .createQueryBuilder('e')
+      .setLock('pessimistic_read')
       .where('e.idempotencyKey LIKE :prefix', { prefix: `${ledgerKey}%` })
       .andWhere('e.reversedAt IS NULL')
       .getMany();
     if (existingAfterLock.length > 0) {
-      const totalRefundedAmount = existingAfterLock.reduce(
-        (s, e) => s + e.refundedDepositAmount + e.refundedPointAmount,
-        0,
-      );
-      return { ledgerIds: existingAfterLock.map((e) => e.id), totalRefundedAmount, alreadyRefunded: true };
+      return this.buildRefundResult(existingAfterLock, true);
     }
 
-    const activeEvents = await manager.find(OrderPaymentRefundEventEntity, {
-      where: { allocationId: alloc.id, reversedAt: IsNull() },
-    });
+    const activeEvents = await manager
+      .getRepository(OrderPaymentRefundEventEntity)
+      .createQueryBuilder('e')
+      .setLock('pessimistic_read')
+      .where('e.allocationId = :allocationId', { allocationId: alloc.id })
+      .andWhere('e.reversedAt IS NULL')
+      .getMany();
     for (const ev of activeEvents) {
       if ((ev.affectedDeliveryIds ?? []).includes(input.orderDeliveryId)) {
         throw new BadRequestException('already_refunded');
@@ -231,11 +234,7 @@ export class RefundPoolService {
       reversedByWalletTransactionId: null,
     });
 
-    return {
-      ledgerIds: [ledger.id],
-      totalRefundedAmount: depositRefundAmount + pointRefund.restored,
-      alreadyRefunded: false,
-    };
+    return this.buildRefundResult([ledger], false);
   }
 
   private async refundPointsForSettledDiscard(
@@ -305,8 +304,7 @@ export class RefundPoolService {
       .andWhere('e.reversedAt IS NULL')
       .getMany();
     if (existingForPrefix.length > 0) {
-      const totalRefundedAmount = existingForPrefix.reduce((s, e) => s + this.refundedAmountForRetry(e), 0);
-      return { ledgerIds: existingForPrefix.map((e) => e.id), totalRefundedAmount, alreadyRefunded: true };
+      return this.buildRefundResult(existingForPrefix, true);
     }
 
     // Plan §3 lock 순서: wallet_account → allocation → wallet_transaction.
@@ -347,18 +345,23 @@ export class RefundPoolService {
     const existingAfterLock = await manager
       .getRepository(OrderPaymentRefundEventEntity)
       .createQueryBuilder('e')
+      .setLock('pessimistic_read')
       .where('e.idempotencyKey LIKE :prefix', { prefix: `${input.idempotencyKeyPrefix}:%` })
       .andWhere('e.reversedAt IS NULL')
       .getMany();
     if (existingAfterLock.length > 0) {
-      const totalRefundedAmount = existingAfterLock.reduce((s, e) => s + this.refundedAmountForRetry(e), 0);
-      return { ledgerIds: existingAfterLock.map((e) => e.id), totalRefundedAmount, alreadyRefunded: true };
+      return this.buildRefundResult(existingAfterLock, true);
     }
 
-    // already_refunded 체크 (different prefix — 진짜 중복 요청)
-    const activeEvents = await manager.find(OrderPaymentRefundEventEntity, {
-      where: { allocationId: alloc.id, reversedAt: IsNull() },
-    });
+    // allocation lock 획득 뒤 locking read로 현재 커밋된 이벤트를 읽는다.
+    // 호출자 트랜잭션이 REPEATABLE READ여도 lock 전 snapshot에 고정되면 안 된다.
+    const activeEvents = await manager
+      .getRepository(OrderPaymentRefundEventEntity)
+      .createQueryBuilder('e')
+      .setLock('pessimistic_read')
+      .where('e.allocationId = :allocationId', { allocationId: alloc.id })
+      .andWhere('e.reversedAt IS NULL')
+      .getMany();
     for (const ev of activeEvents) {
       const overlap = (ev.affectedDeliveryIds ?? []).some((d) => input.targetDeliveryIds.includes(d));
       if (overlap) {
@@ -386,9 +389,16 @@ export class RefundPoolService {
       throw new BadRequestException(`no allocation lines for deliveryIds=${input.targetDeliveryIds.join(',')}`);
     }
 
-    const ledgerIds: string[] = [];
-    let totalRefund = 0;
-    let activeGrossSum = activeEvents.reduce((s, ev) => s + ev.refundedGrossBase, 0);
+    // fail-closed preflight: point grant 등 어떤 mutation보다 먼저 allocation counter drift를 차단한다.
+    this.availableResourceAmount(
+      WalletResourceType.CREDIT_EXCESS,
+      alloc.creditExcessAmount,
+      alloc.creditExcessRestoredAmount,
+    );
+    this.availableResourceAmount(WalletResourceType.DEPOSIT, alloc.depositUsedAmount, alloc.depositRestoredAmount);
+    this.availableResourceAmount(WalletResourceType.CREDIT, alloc.creditUsedAmount, alloc.creditUsedRestoredAmount);
+
+    const ledgers: OrderPaymentRefundEventEntity[] = [];
     let activePayableSum = activeEvents.reduce((s, ev) => s + ev.refundedPayableBase, 0);
     let pointRestoredTotal = alloc.pointRestoredAmount;
     let creditExcessRestoredTotal = alloc.creditExcessRestoredAmount;
@@ -480,22 +490,42 @@ export class RefundPoolService {
       }
 
       // 2-2 신용초과 (allocation 누적)
-      const excessAvail = alloc.creditExcessAmount - creditExcessRestoredTotal;
+      const excessAvail = this.availableResourceAmount(
+        WalletResourceType.CREDIT_EXCESS,
+        alloc.creditExcessAmount,
+        creditExcessRestoredTotal,
+      );
       const restoreExcess = Math.min(refundRemaining, excessAvail);
       creditExcessRestoredTotal += restoreExcess;
       refundRemaining -= restoreExcess;
 
-      // 2-3 여신
-      const creditAvail = alloc.creditUsedAmount - creditUsedRestoredTotal;
-      const restoreCredit = Math.min(refundRemaining, creditAvail);
-      creditUsedRestoredTotal += restoreCredit;
-      refundRemaining -= restoreCredit;
-
-      // 2-4 예치금
-      const depositAvail = alloc.depositUsedAmount - depositRestoredTotal;
-      const restoreDeposit = Math.min(refundRemaining, depositAvail);
+      const depositAvail = this.availableResourceAmount(
+        WalletResourceType.DEPOSIT,
+        alloc.depositUsedAmount,
+        depositRestoredTotal,
+      );
+      const creditAvail = this.availableResourceAmount(
+        WalletResourceType.CREDIT,
+        alloc.creditUsedAmount,
+        creditUsedRestoredTotal,
+      );
+      let restoreDeposit: number;
+      let restoreCredit: number;
+      if (input.eventType === OrderPaymentRefundEventType.DISCARD_REFUND) {
+        // 정산확정 전 개별 폐기: 최대서비스한도 내 여신을 유지하고 예치금 사용분을 먼저 복구한다.
+        restoreDeposit = Math.min(refundRemaining, depositAvail);
+        refundRemaining -= restoreDeposit;
+        restoreCredit = Math.min(refundRemaining, creditAvail);
+        refundRemaining -= restoreCredit;
+      } else {
+        // 발송 실패 등 기존 정책: 정상 여신을 먼저 해소한 뒤 예치금을 복구한다.
+        restoreCredit = Math.min(refundRemaining, creditAvail);
+        refundRemaining -= restoreCredit;
+        restoreDeposit = Math.min(refundRemaining, depositAvail);
+        refundRemaining -= restoreDeposit;
+      }
       depositRestoredTotal += restoreDeposit;
-      refundRemaining -= restoreDeposit;
+      creditUsedRestoredTotal += restoreCredit;
 
       if (refundRemaining !== 0) {
         throw new BadRequestException(`refund invariant violation: refundRemaining=${refundRemaining}`);
@@ -589,12 +619,10 @@ export class RefundPoolService {
         reversedAt: null,
         reversedByWalletTransactionId: null,
       });
-      ledgerIds.push(ledger.id);
+      ledgers.push(ledger);
       pointRestoredTotal += restorablePoint;
       pointSkippedTotal += skippedPoint;
-      activeGrossSum += thisGrossBase;
       activePayableSum += thisPayableBase;
-      totalRefund += thisGrossBase + thisSurcharge;
     }
 
     // allocation 누적 갱신
@@ -605,7 +633,7 @@ export class RefundPoolService {
     alloc.pointSkippedExpiredAmount = pointSkippedTotal;
     await manager.save(OrderPaymentAllocationEntity, alloc);
 
-    return { ledgerIds, totalRefundedAmount: totalRefund, alreadyRefunded: false };
+    return this.buildRefundResult(ledgers, false);
   }
 
   private async runRefundFromResendDeductTransactions(
@@ -806,7 +834,45 @@ export class RefundPoolService {
       reversedByWalletTransactionId: null,
     });
 
-    return { ledgerIds: [ledger.id], totalRefundedAmount: refundedPayable, alreadyRefunded: false };
+    return this.buildRefundResult([ledger], false);
+  }
+
+  private availableResourceAmount(resource: WalletResourceType, used: number, restored: number): number {
+    const available = used - restored;
+    if (used < 0 || restored < 0 || available < 0) {
+      throw new BadRequestException(
+        `refund resource counter drift: resource=${resource}, used=${used}, restored=${restored}`,
+      );
+    }
+    return available;
+  }
+  private buildRefundResult(events: OrderPaymentRefundEventEntity[], alreadyRefunded: boolean): RefundEventResult {
+    const totals = events.reduce(
+      (result, event) => ({
+        refundedPointAmount: result.refundedPointAmount + event.refundedPointAmount,
+        refundedDepositAmount: result.refundedDepositAmount + event.refundedDepositAmount,
+        refundedCreditUsedAmount: result.refundedCreditUsedAmount + event.refundedCreditUsedAmount,
+        refundedCreditExcessAmount: result.refundedCreditExcessAmount + event.refundedCreditExcessAmount,
+        pointSkippedExpiredAmount: result.pointSkippedExpiredAmount + event.pointSkippedExpiredAmount,
+      }),
+      {
+        refundedPointAmount: 0,
+        refundedDepositAmount: 0,
+        refundedCreditUsedAmount: 0,
+        refundedCreditExcessAmount: 0,
+        pointSkippedExpiredAmount: 0,
+      },
+    );
+    return {
+      ledgerIds: events.map((event) => event.id),
+      totalRefundedAmount:
+        totals.refundedPointAmount +
+        totals.refundedDepositAmount +
+        totals.refundedCreditUsedAmount +
+        totals.refundedCreditExcessAmount,
+      ...totals,
+      alreadyRefunded,
+    };
   }
 
   private parseResendPointGrantId(tx: WalletTransactionEntity, attemptId: string): { grantId: string } {
@@ -829,13 +895,6 @@ export class RefundPoolService {
       );
     }
     return { grantId };
-  }
-
-  private refundedAmountForRetry(e: OrderPaymentRefundEventEntity): number {
-    if ((e.idempotencyKey ?? '').includes(':attempt:')) {
-      return e.refundedPayableBase + e.refundedCardSurchargeAmount;
-    }
-    return e.refundedGrossBase + e.refundedCardSurchargeAmount;
   }
 
   /**
