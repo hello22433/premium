@@ -67,5 +67,26 @@ describe('OrderDeliveryCancelReqDto — deliveryIds 검증', () => {
 
       expect(dto.deliveryIds).toEqual([9003, 9004]);
     });
+
+    // 상한을 잘못 낮추면 정상 요청이 막힌다. 경계 바로 아래가 통과하는지까지 봐야
+    // "1000 초과는 거부" 단언 하나로는 못 잡는 회귀(예: 상한을 100 으로 오타)를 잡는다.
+    it('상한(1000) 이내의 큰 목록은 통과한다', async () => {
+      const atLimit = Array.from({ length: 1000 }, (_, i) => i + 1);
+
+      const dto = await validate({ ...base, deliveryIds: atLimit });
+
+      expect(dto.deliveryIds).toHaveLength(1000);
+    });
+  });
+
+  // deliveryIds 를 얹으면서 기존 필드 검증이 깨지지 않았는지 — 이 DTO 는 종전 전체취소도 함께 받는다.
+  describe('기존 필드 규칙 보존', () => {
+    it('id·cancelReason 이 없으면 400 이다', async () => {
+      await expect(validate({ deliveryIds: [9003] })).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('cancelReason 1000자 초과는 400 이다', async () => {
+      await expect(validate({ ...base, cancelReason: 'x'.repeat(1001) })).rejects.toBeInstanceOf(BadRequestException);
+    });
   });
 });
