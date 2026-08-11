@@ -1580,6 +1580,7 @@ export class OrderService {
       const result = await this.ssgEventService.getSsgBalanceCheckForOrder(order.id);
       ssgBalanceCheck = result ? toSsgBalanceCheckView(result) : undefined;
     }
+    const wallet = await this.walletAccountResolverService.resolveForOrder(order);
 
     return {
       id: order.id,
@@ -1593,7 +1594,7 @@ export class OrderService {
       productList: productList,
       settlePeriodCondition: order.user!.settlePeriodCondition,
       settlePeriodCount: order.user!.settlePeriodCount,
-      isPreSettle: order.user!.settleCondition === IUserSettleCondition.PRE_PAYMENT,
+      isPreSettle: wallet.settleCondition === IUserSettleCondition.PRE_PAYMENT,
       cancelReason: order.cancelReason,
       canceledAt: order.canceledAt ? format(order.canceledAt, DateFormatStr) : null,
       totalFailCount: totalFailCount,
@@ -1917,6 +1918,7 @@ export class OrderService {
     }
 
     const clientView = readClientUserView(order);
+    const wallet = await this.walletAccountResolverService.resolveForOrder(order);
 
     return {
       id: order.id,
@@ -1930,7 +1932,7 @@ export class OrderService {
       productList: productList,
       settlePeriodCondition: order.user!.settlePeriodCondition,
       settlePeriodCount: order.user!.settlePeriodCount,
-      isPreSettle: order.user!.settleCondition === IUserSettleCondition.PRE_PAYMENT,
+      isPreSettle: wallet.settleCondition === IUserSettleCondition.PRE_PAYMENT,
       cancelReason: order.cancelReason,
       canceledAt: order.canceledAt ? format(order.canceledAt, DateFormatStr) : null,
       totalFailCount: 0, // 이벤트 불러오기 시 발송 정보가 없으므로 0
