@@ -244,13 +244,43 @@ describe('SettleConfirmationWalletService', () => {
     expect(userUpdates[0].amount).toBe(10000);
   });
 
-  it('undoSettlement: settle_release 부재 → BadRequest', async () => {
-    fx.alloc = { walletAccountId: '5' };
+  it('undoSettlement: settle_release 부재 + 미복원 여신 0 → no-op (정산해제 차단 안 함)', async () => {
+    fx.alloc = {
+      walletAccountId: '5',
+      creditUsedAmount: 0,
+      creditUsedRestoredAmount: 0,
+      creditExcessAmount: 0,
+      creditExcessRestoredAmount: 0,
+    };
     fx.wallet = { id: '5' };
     fx.order = { id: 404, userId: 1 };
     fx.walletTxs = [];
 
-    await expect(sut.undoSettlement(404)).rejects.toBeInstanceOf(BadRequestException);
+    const r = await sut.undoSettlement(404);
+
+    expect(r.creditRestored).toBe(0);
+    expect(r.excessRestored).toBe(0);
+    expect(r.settleCycleId).toBeNull();
+    expect(r.walletTransactionIds).toHaveLength(0);
+    expect(savedWalletTxs).toHaveLength(0);
+    expect(userUpdates).toHaveLength(0);
+  });
+
+  it('undoSettlement: settle_release 부재 + 미복원 여신 잔존 → BadRequest (원장 유실 차단)', async () => {
+    fx.alloc = {
+      walletAccountId: '5',
+      creditUsedAmount: 7000,
+      creditUsedRestoredAmount: 0,
+      creditExcessAmount: 0,
+      creditExcessRestoredAmount: 0,
+    };
+    fx.wallet = { id: '5' };
+    fx.order = { id: 405, userId: 1 };
+    fx.walletTxs = [];
+
+    await expect(sut.undoSettlement(405)).rejects.toBeInstanceOf(BadRequestException);
+    expect(savedWalletTxs).toHaveLength(0);
+    expect(userUpdates).toHaveLength(0);
   });
 
   it('allocation 미존재 → BadRequest', async () => {
