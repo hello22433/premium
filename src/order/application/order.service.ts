@@ -107,6 +107,7 @@ import { UserCompanyEntity } from '../../entity/user.company.entity';
 import {
   buildPartnerSettleSnapshot,
   buildLineProductSnapshot,
+  buildClientAssignmentTransition,
   buildOrderClientUserSnapshot,
   buildOrderOperationUserSnapshot,
   buildOrderUserSnapshot,
@@ -4338,11 +4339,30 @@ export class OrderService {
     order.sendAmount = sendAmount;
     order.settleAmount = sendAmount;
 
-    // 대행주문 관련 정보 업데이트
+    // 대행주문 관련 정보 업데이트 — 고객사 변경을 감지해 스냅샷을 재기록한다.
+    // 변경이 없으면 기존 스냅샷을 유지한다(계정정보 변경 후 일반수정만으로 덮어쓰지 않음).
+    // 레거시 NULL 스냅샷은 여기서 자동 보정하지 않는다(별도 백필/탐지 대상).
+    const previousClientUserId = order.clientUserId ?? null;
+    const clientChanged = previousClientUserId !== clientUserId;
     order.clientUserId = clientUserId;
-    if (clientUserId) {
-      // 대행주문인 경우 현재 관리자를 운영 담당자로 자동 배정 (createTemp와 동일 로직)
-      order.operationUserId = user.id;
+
+    if (clientChanged) {
+      const nextClientUser =
+        clientUserId != null
+          ? await this.userRepository.findOneOrFail({ where: { id: clientUserId }, relations: ['company'] })
+          : null;
+      const operationUser =
+        clientUserId != null ? await this.userRepository.findOneOrFail({ where: { id: user.id } }) : null;
+
+      const transition = buildClientAssignmentTransition({
+        previousClientUserId,
+        nextClientUserId: clientUserId,
+        nextClientUser,
+        operationUser,
+      });
+      if (transition) {
+        Object.assign(order, transition);
+      }
     }
 
     await this.orderRepository.save(order);
