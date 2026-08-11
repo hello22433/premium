@@ -313,6 +313,8 @@ describe('SettleService — getPartnerCompanyList (#54 fix)', () => {
         password: 'pw',
         startAt: '2026-06-20T00:00:00',
         endAt: '2026-06-20T23:59:59',
+        settleMethod: 'CARD',
+        businessName: '협력사',
         downloadReason: '검증',
       },
     );
@@ -327,8 +329,31 @@ describe('SettleService — getPartnerCompanyList (#54 fix)', () => {
     expect(idQb.andWhere).toHaveBeenCalledWith('orderDelivery.actualSendAt <= :actualSendAtEndAt', {
       actualSendAtEndAt: '2026-06-20 23:59:59',
     });
+    expect(idQb.andWhere).toHaveBeenCalledWith('partnerCompany.settleMethod LIKE :settleMethod', {
+      settleMethod: '%CARD%',
+    });
+    expect(idQb.andWhere).toHaveBeenCalledWith('partnerCompany.businessName LIKE :businessName', {
+      businessName: '%협력사%',
+    });
     expectNoGalaxiaPartnerFilter(idQb);
     expect(graphQb.whereInIds).toHaveBeenCalledWith([101, 202]);
+    expect(graphQb.andWhere).toHaveBeenCalledWith('order.status IN (:...status)', {
+      status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'],
+    });
+    expect(graphQb.andWhere).toHaveBeenCalledWith('orderDelivery.actualSendAt IS NOT NULL');
+    expect(graphQb.andWhere).toHaveBeenCalledWith('partnerCompany.settleMethod LIKE :settleMethod', {
+      settleMethod: '%CARD%',
+    });
+    expect(graphQb.andWhere).toHaveBeenCalledWith('partnerCompany.businessName LIKE :businessName', {
+      businessName: '%협력사%',
+    });
+    expect(graphQb.andWhere).toHaveBeenCalledWith('orderDelivery.actualSendAt >= :actualSendAtStartAt', {
+      actualSendAtStartAt: '2026-06-20 00:00:00',
+    });
+    expect(graphQb.andWhere).toHaveBeenCalledWith('orderDelivery.actualSendAt <= :actualSendAtEndAt', {
+      actualSendAtEndAt: '2026-06-20 23:59:59',
+    });
+    expectNoGalaxiaPartnerFilter(graphQb);
     expect(mockExcelAddRow).toHaveBeenCalledTimes(2);
     expect(mockExcelAddRow).toHaveBeenCalledWith(expect.objectContaining({ partnerCompanyName: '갤럭시아' }));
     expect(mockExcelSheetCommit).toHaveBeenCalled();
