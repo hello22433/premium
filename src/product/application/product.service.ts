@@ -732,7 +732,7 @@ export class ProductService {
     newProduct.partnerCompanyId = templateProduct.partnerCompanyId;
     newProduct.partnerCompanyCode = templateProduct.partnerCompanyCode;
     newProduct.brandId = templateProduct.brandId;
-    newProduct.name = `신세계 상품권 ${price.toLocaleString()}원`;
+    newProduct.name = `신세계 모바일 교환권 ${price.toLocaleString()}원`;
     newProduct.price = price;
     newProduct.expireDay = currentSsgEvent?.couponExpiration || 60;
     newProduct.category = templateProduct.category;
