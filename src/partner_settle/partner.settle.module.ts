@@ -20,7 +20,6 @@ import { PartnerSettleObservationService } from './application/partner.settle.ob
 import { PartnerCreditConfigService } from './application/partner.credit.config.service';
 import { PartnerCreditListService } from './application/partner.credit.list.service';
 import { CreditFeatureFlag } from './application/credit.feature.flag';
-import { GalaxiaBalanceInquiryStub } from './application/partner.balance.inquiry.stub';
 import { GiftShowBalanceInquiry } from './application/giftshow.balance.inquiry';
 import { GiftishowHttp } from '../partner_company_extern/infra/giftishow.http';
 import { HttpModule } from '@nestjs/axios';
@@ -141,11 +140,10 @@ import { PartnerSettleRepriceService } from './application/partner.settle.repric
     CreditFeatureFlag,
     GiftShowBalanceInquiry,
     GiftishowHttp,
-    GalaxiaBalanceInquiryStub,
     {
       provide: PARTNER_BALANCE_INQUIRIES,
-      useFactory: (giftShow: GiftShowBalanceInquiry, galaxia: GalaxiaBalanceInquiryStub) => [giftShow, galaxia],
-      inject: [GiftShowBalanceInquiry, GalaxiaBalanceInquiryStub],
+      useFactory: (giftShow: GiftShowBalanceInquiry) => [giftShow],
+      inject: [GiftShowBalanceInquiry],
     },
     PartnerSettleFeatureFlag,
     PartnerSettleProducerService,

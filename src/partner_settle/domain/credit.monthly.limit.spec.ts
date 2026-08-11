@@ -8,13 +8,24 @@ import {
 describe('calculateMonthlyLimit (정본 §4.4)', () => {
   const amounts = { insuranceAmount: 100n, prepaidAmount: 200n, etcAmount: 30n };
 
-  it.each([
-    IPartnerCompanyType.SSG,
-    IPartnerCompanyType.GIFT_SHOW,
-    IPartnerCompanyType.GALAXIA,
-    IPartnerCompanyType.CULTURELAND,
-  ])('선입금+기타 타입(%s)은 보증보험을 제외한다', (type) => {
-    expect(calculateMonthlyLimit(type, amounts)).toBe(230n);
+  it.each([IPartnerCompanyType.SSG, IPartnerCompanyType.GIFT_SHOW, IPartnerCompanyType.CULTURELAND])(
+    '선입금+기타 타입(%s)은 보증보험을 제외한다',
+    (type) => {
+      expect(calculateMonthlyLimit(type, amounts)).toBe(230n);
+    },
+  );
+
+  it('갤럭시아: 쿠폰(MOBILE)은 보증보험 포함, 백화점은 선입금+기타', () => {
+    expect(calculateMonthlyLimit(IPartnerCompanyType.GALAXIA, amounts, 'GALAXIA_MOBILE')).toBe(330n);
+    for (const dept of ['GALAXIA_LOTTE', 'GALAXIA_HYUNDAI', 'GALAXIA_GALLERIA']) {
+      expect(calculateMonthlyLimit(IPartnerCompanyType.GALAXIA, amounts, dept)).toBe(230n);
+    }
+  });
+
+  it('갤럭시아 미등록 하위항목은 보증보험 제외 공식으로 추정하지 않고 fail-closed 한다', () => {
+    expect(() => calculateMonthlyLimit(IPartnerCompanyType.GALAXIA, amounts, 'GALAXIA_TYPO')).toThrow(
+      UnsupportedCreditPartnerTypeError,
+    );
   });
 
   it.each([IPartnerCompanyType.DAOU, IPartnerCompanyType.GIFTIEL])(

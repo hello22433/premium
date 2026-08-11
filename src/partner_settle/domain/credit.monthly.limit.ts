@@ -1,4 +1,5 @@
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
+import { GALAXIA_SUB_ITEM_KEY_MOBILE, GALAXIA_SUB_ITEM_KEYS } from './settle.sub.item.key';
 
 /**
  * 협력사 월 한도 계산 (정본 §4.4).
@@ -7,8 +8,9 @@ import { IPartnerCompanyType } from '../../partner_company/interface/partner.com
  * 전 구간 `bigint` 정수산술이다(2^53 초과 정확성 · §5 금액 계약).
  *
  * 공식(§4.4):
- * - `SSG` / `GIFT_SHOW` / `GALAXIA` / `CULTURELAND` : 선입금 + 기타
- * - `DAOU` / `GIFTIEL`                              : 보증보험 + 선입금 + 기타
+ * - `SSG` / `GIFT_SHOW` / `CULTURELAND`  : 선입금 + 기타
+ * - `DAOU` / `GIFTIEL`                   : 보증보험 + 선입금 + 기타
+ * - `GALAXIA` : 쿠폰(GALAXIA_MOBILE)만 보증보험 포함(=여신), 백화점 선충전은 선입금+기타(=충전금액)
  *
  * 여신 표 6개 협력사 밖(`GS_M_BIZ` 등)은 대상이 아니며 추정 공식 금지 — 미매핑 타입은 fail-closed(에러).
  */
@@ -21,11 +23,10 @@ const INSURANCE_INCLUDED_TYPES: ReadonlySet<IPartnerCompanyType> = new Set([
   IPartnerCompanyType.GIFTIEL,
 ]);
 
-/** 선입금+기타 만 쓰는 협력사 타입(이마트·케이티알파·갤럭시아·한국문화진흥). */
+/** 선입금+기타 만 쓰는 협력사 타입(이마트·케이티알파·한국문화진흥). 갤럭시아는 subItem별로 갈려 별도 처리. */
 const PREPAID_ONLY_TYPES: ReadonlySet<IPartnerCompanyType> = new Set([
   IPartnerCompanyType.SSG,
   IPartnerCompanyType.GIFT_SHOW,
-  IPartnerCompanyType.GALAXIA,
   IPartnerCompanyType.CULTURELAND,
 ]);
 
@@ -43,9 +44,17 @@ export type CreditConfigAmounts = {
 export function calculateMonthlyLimit(
   partnerType: IPartnerCompanyType,
   amounts: CreditConfigAmounts,
+  subItemKey?: string,
 ): bigint {
   const prepaidAndEtc = amounts.prepaidAmount + amounts.etcAmount;
 
+  if (partnerType === IPartnerCompanyType.GALAXIA) {
+    if (!subItemKey || !GALAXIA_SUB_ITEM_KEYS.includes(subItemKey as (typeof GALAXIA_SUB_ITEM_KEYS)[number])) {
+      throw new UnsupportedCreditPartnerTypeError(`갤럭시아 월 한도 하위항목 미등록: ${subItemKey ?? '(없음)'}`);
+    }
+    // 쿠폰(MOBILE)은 보증보험 포함(=여신). 백화점 선충전은 충전금액(선입금+기타)만.
+    return subItemKey === GALAXIA_SUB_ITEM_KEY_MOBILE ? amounts.insuranceAmount + prepaidAndEtc : prepaidAndEtc;
+  }
   if (INSURANCE_INCLUDED_TYPES.has(partnerType)) {
     return amounts.insuranceAmount + prepaidAndEtc;
   }
@@ -62,5 +71,9 @@ export function calculateMonthlyLimit(
  * 조회(GET)에서만 `calculateMonthlyLimit` 이 400 을 내 "쓰기는 성공·읽기는 깨짐" 상태가 된다.
  */
 export function isSupportedCreditPartnerType(partnerType: IPartnerCompanyType): boolean {
-  return INSURANCE_INCLUDED_TYPES.has(partnerType) || PREPAID_ONLY_TYPES.has(partnerType);
+  return (
+    INSURANCE_INCLUDED_TYPES.has(partnerType) ||
+    PREPAID_ONLY_TYPES.has(partnerType) ||
+    partnerType === IPartnerCompanyType.GALAXIA
+  );
 }
