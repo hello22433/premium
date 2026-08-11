@@ -10,12 +10,7 @@ import { IPartnerCompanyType } from '../../partner_company/interface/partner.com
 import { serializeAmount } from '../domain/credit.amount.string';
 import { calculateMonthlyLimit } from '../domain/credit.monthly.limit';
 import { balanceSourceKind, CREDIT_ROW_AXIS } from '../domain/credit.row.axis';
-import {
-  buildCreditRow,
-  CreditListRow,
-  CreditRowAggregate,
-  ResolvedBalance,
-} from '../domain/credit.list.assembly';
+import { buildCreditRow, CreditListRow, CreditRowAggregate, ResolvedBalance } from '../domain/credit.list.assembly';
 import { startOfMonthKst } from '../domain/settle.time';
 import { IPartnerBalanceInquiry, PartnerBalanceResult } from '../interface/partner.balance.inquiry';
 import { PARTNER_BALANCE_INQUIRIES } from './partner.balance.inquiry.token';
@@ -29,15 +24,12 @@ export type PaymentVarianceRow = {
   availableBalance: null;
 };
 
-
 export type CreditListResponse = {
   rows: CreditListRow[];
   paymentVarianceRows: PaymentVarianceRow[];
 };
 
-const TARGET_TYPES: readonly IPartnerCompanyType[] = Array.from(
-  new Set(CREDIT_ROW_AXIS.map((r) => r.partnerType)),
-);
+const TARGET_TYPES: readonly IPartnerCompanyType[] = Array.from(new Set(CREDIT_ROW_AXIS.map((r) => r.partnerType)));
 
 const ACTIVE_STATUSES = ['NORMAL', 'ON_HOLD'];
 
@@ -75,7 +67,7 @@ export class PartnerCreditListService {
       return { rows: [], paymentVarianceRows: [] };
     }
 
-    const [aggMap, configMap, ssgBalance, orphanByPartner, varianceByPartner, balancesByPartner] =
+    const [aggMap, configMap, ssgBalance, orphanByPartner, varianceByPartner, balancesByPartner, prepaidSpentMap] =
       await Promise.all([
         this.aggregateLedger(partnerIds, now),
         this.loadConfigs(partnerIds),
@@ -83,6 +75,7 @@ export class PartnerCreditListService {
         this.orphanPendingByPartner(partnerIds),
         this.paymentVarianceByPartner(partnerIds),
         this.loadExternalBalances(partnersByType),
+        this.prepaidSpentByKey(partnerIds),
       ]);
 
     const rows: CreditListRow[] = [];
@@ -91,20 +84,29 @@ export class PartnerCreditListService {
       if (!partner) continue; // 대상 협력사 미존재 — 행 생략(로그는 loadPartnersByType 에서)
 
       const key = rowKey(partner.id, spec.subItemKey);
-      const agg: CreditRowAggregate =
-        aggMap.get(key) ?? { unsettled: 0n, prevMonth: 0n, reviewCount: 0, reviewBase: 0n };
+      const agg: CreditRowAggregate = aggMap.get(key) ?? {
+        unsettled: 0n,
+        prevMonth: 0n,
+        reviewCount: 0,
+        reviewBase: 0n,
+      };
       const cfg = configMap.get(key) ?? { insuranceAmount: 0n, prepaidAmount: 0n, etcAmount: 0n };
-      const monthlyLimit = calculateMonthlyLimit(spec.partnerType, cfg);
+      const monthlyLimit = calculateMonthlyLimit(spec.partnerType, cfg, spec.subItemKey);
       const orphanCount = orphanByPartner.get(partner.id) ?? 0;
 
-      const balance = this.resolveBalance(
-        spec.partnerType,
-        spec.subItemKey,
-        monthlyLimit,
-        agg.unsettled,
-        ssgBalance,
-        balancesByPartner.get(partner.id),
-      );
+      // 갤럭시아는 실 config 미등록 상태에서 0-spent를 숫자로 노출하면 배포 즉시 오판한다.
+      const balance =
+        spec.partnerType === IPartnerCompanyType.GALAXIA && !configMap.has(key)
+          ? ({ balance: null, status: 'NOT_AVAILABLE' } as const)
+          : this.resolveBalance(
+              spec.partnerType,
+              spec.subItemKey,
+              monthlyLimit,
+              agg.unsettled,
+              ssgBalance,
+              balancesByPartner.get(partner.id),
+              prepaidSpentMap.get(key) ?? 0n,
+            );
 
       rows.push(
         buildCreditRow({
@@ -144,10 +146,14 @@ export class PartnerCreditListService {
     unsettled: bigint,
     ssgBalance: bigint | null,
     externalBalances: PartnerBalanceResult[] | undefined,
+    prepaidSpent: bigint,
   ): ResolvedBalance {
-    switch (balanceSourceKind(partnerType)) {
+    switch (balanceSourceKind(partnerType, subItemKey)) {
       case 'LIMIT_MINUS_UNSETTLED':
         return { balance: monthlyLimit - unsettled, status: 'AVAILABLE' };
+      case 'PREPAID_LEDGER':
+        // 선충전 충전금액(monthlyLimit) − 정산액 소진 합계. 정산확정과 무관하게 영구 차감.
+        return { balance: monthlyLimit - prepaidSpent, status: 'AVAILABLE' };
       case 'SSG_EVENT':
         if (ssgBalance === null) return { balance: null, status: 'NOT_AVAILABLE' };
         return { balance: ssgBalance, status: 'AVAILABLE' };
@@ -159,6 +165,30 @@ export class PartnerCreditListService {
     }
   }
 
+  /**
+   * 선충전(갤럭시아 백화점) 소진액 = Σ settle_amount (수수료 뺀 정산액).
+   * 정산확정 무관 전체 배치 합산 — 선충전은 발송 즉시 영구 차감이라 settle_batch_id 필터 없음.
+   * 역분개(취소)는 음수 settle_amount 로 자동 상쇄. ADJUSTMENT(내부 차액정정)는 제외.
+   */
+  private async prepaidSpentByKey(partnerIds: number[]): Promise<Map<string, bigint>> {
+    const rows = await this.ledgerRepository
+      .createQueryBuilder('l')
+      .select('l.partner_company_id', 'partnerCompanyId')
+      .addSelect('l.sub_item_key', 'subItemKey')
+      .addSelect(
+        `SUM(CASE WHEN l.status IN (:...active) AND l.source_type <> 'ADJUSTMENT' THEN COALESCE(l.settle_amount, 0) ELSE 0 END)`,
+        'spent',
+      )
+      .where('l.partner_company_id IN (:...partnerIds)', { partnerIds })
+      .setParameters({ active: ACTIVE_STATUSES })
+      .groupBy('l.partner_company_id')
+      .addGroupBy('l.sub_item_key')
+      .getRawMany<{ partnerCompanyId: number; subItemKey: string; spent: string | null }>();
+    const map = new Map<string, bigint>();
+    for (const r of rows) map.set(rowKey(r.partnerCompanyId, r.subItemKey), BigInt(r.spent ?? '0'));
+    return map;
+  }
+
   private async loadPartnersByType(): Promise<Map<IPartnerCompanyType, PartnerCompanyEntity>> {
     const partners = await this.partnerRepository.find({
       where: { type: In([...TARGET_TYPES]) },
@@ -168,7 +198,9 @@ export class PartnerCreditListService {
     for (const partner of partners) {
       if (!partner.type) continue;
       if (map.has(partner.type)) {
-        this.logger.warn(`협력사 type=${partner.type} 이 2건 이상 — id=${map.get(partner.type)!.id} 사용, id=${partner.id} 무시`);
+        this.logger.warn(
+          `협력사 type=${partner.type} 이 2건 이상 — id=${map.get(partner.type)!.id} 사용, id=${partner.id} 무시`,
+        );
         continue;
       }
       map.set(partner.type, partner);

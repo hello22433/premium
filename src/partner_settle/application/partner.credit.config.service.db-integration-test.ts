@@ -33,6 +33,7 @@ describe('PartnerCreditConfigService — 여신 설정 DB 통합', () => {
   let service: PartnerCreditConfigService;
   let partnerId: number;
   let nonTargetPartnerId: number;
+  let galaxiaPartnerId: number;
 
   beforeAll(async () => {
     initializeTransactionalContext();
@@ -106,6 +107,30 @@ describe('PartnerCreditConfigService — 여신 설정 DB 통합', () => {
       }),
     );
     partnerId = partner.id;
+
+    const galaxia = await pcRepo.save(
+      pcRepo.create({
+        code: `GALAXIA-${Date.now()}`,
+        corporateNumber: null,
+        businessNumber: '002',
+        businessName: '갤럭시아',
+        businessAddress: '-',
+        businessPhoneNumber: '-',
+        personName: '-',
+        personPhoneNumber: '-',
+        personEmail: '-',
+        settleCondition: 'POST_PAYMENT' as any,
+        settleDay: 1,
+        settleMethod: 'CASH' as any,
+        maximumLimit: 0,
+        bankName: '-',
+        bankNumber: '-',
+        status: 'ACTIVE' as any,
+        validityStartsNextDay: true,
+        type: IPartnerCompanyType.GALAXIA,
+      }),
+    );
+    galaxiaPartnerId = galaxia.id;
 
     // 비대상 type(GS_M_BIZ) — PUT 이 400 으로 거부하는지 검증용.
     const nonTarget = await pcRepo.save(
@@ -183,16 +208,10 @@ describe('PartnerCreditConfigService — 여신 설정 DB 통합', () => {
 
   it('갱신 → version+1 · UPDATE history(before 스냅샷)', async () => {
     await service.putConfig(partnerId, [item()], 1);
-    const updated = await service.putConfig(
-      partnerId,
-      [item({ insuranceAmount: '500', expectedVersion: 0 })],
-      2,
-    );
+    const updated = await service.putConfig(partnerId, [item({ insuranceAmount: '500', expectedVersion: 0 })], 2);
     expect(updated).toEqual([{ subItemKey: 'NONE', version: 1 }]);
 
-    const history = await dataSource
-      .getRepository(PartnerCreditConfigHistoryEntity)
-      .find({ order: { id: 'ASC' } });
+    const history = await dataSource.getRepository(PartnerCreditConfigHistoryEntity).find({ order: { id: 'ASC' } });
     expect(history.map((h) => h.action)).toEqual(['CREATE', 'UPDATE']);
     expect(history[1].beforeInsuranceAmount).toBe('100');
     expect(history[1].afterInsuranceAmount).toBe('500');
@@ -200,28 +219,28 @@ describe('PartnerCreditConfigService — 여신 설정 DB 통합', () => {
 
   it('stale expectedVersion → 409', async () => {
     await service.putConfig(partnerId, [item()], 1); // version 0
-    await expect(
-      service.putConfig(partnerId, [item({ expectedVersion: 5 })], 1),
-    ).rejects.toMatchObject({ status: 409 });
+    await expect(service.putConfig(partnerId, [item({ expectedVersion: 5 })], 1)).rejects.toMatchObject({
+      status: 409,
+    });
   });
 
   it('expectedVersion=null 인데 이미 존재 → 409', async () => {
     await service.putConfig(partnerId, [item()], 1);
-    await expect(
-      service.putConfig(partnerId, [item({ expectedVersion: null })], 1),
-    ).rejects.toMatchObject({ status: 409 });
+    await expect(service.putConfig(partnerId, [item({ expectedVersion: null })], 1)).rejects.toMatchObject({
+      status: 409,
+    });
   });
 
   it('expectedVersion 지정인데 대상 없음 → 409', async () => {
-    await expect(
-      service.putConfig(partnerId, [item({ expectedVersion: 0 })], 1),
-    ).rejects.toMatchObject({ status: 409 });
+    await expect(service.putConfig(partnerId, [item({ expectedVersion: 0 })], 1)).rejects.toMatchObject({
+      status: 409,
+    });
   });
 
   it('음수 금액 문자열 → 400 (canonical 위반)', async () => {
-    await expect(
-      service.putConfig(partnerId, [item({ insuranceAmount: '-1' })], 1),
-    ).rejects.toMatchObject({ status: 400 });
+    await expect(service.putConfig(partnerId, [item({ insuranceAmount: '-1' })], 1)).rejects.toMatchObject({
+      status: 400,
+    });
   });
 
   it('all-or-nothing: 배치 중 한 item 이 stale 면 전체 rollback', async () => {
@@ -269,13 +288,29 @@ describe('PartnerCreditConfigService — 여신 설정 DB 통합', () => {
   });
 
   it('여신 표 비대상 type(GS_M_BIZ) 설정 PUT → 400 (GET 이 깨지기 전에 차단)', async () => {
-    await expect(
-      service.putConfig(nonTargetPartnerId, [item()], 1),
-    ).rejects.toMatchObject({ status: 400 });
+    await expect(service.putConfig(nonTargetPartnerId, [item()], 1)).rejects.toMatchObject({ status: 400 });
 
     const rows = await dataSource
       .getRepository(PartnerCreditConfigEntity)
       .find({ where: { partnerCompanyId: nonTargetPartnerId } });
     expect(rows).toHaveLength(0);
+  });
+
+  it('갤럭시아 config PUT은 확정 4키만 허용하고 미등록 키는 저장 전에 400으로 거부한다', async () => {
+    await expect(service.putConfig(galaxiaPartnerId, [item({ subItemKey: 'GALAXIA_TYPO' })], 1)).rejects.toMatchObject({
+      status: 400,
+    });
+
+    const rows = await dataSource
+      .getRepository(PartnerCreditConfigEntity)
+      .find({ where: { partnerCompanyId: galaxiaPartnerId } });
+    expect(rows).toHaveLength(0);
+
+    const result = await service.putConfig(
+      galaxiaPartnerId,
+      [item({ subItemKey: 'GALAXIA_MOBILE' }), item({ subItemKey: 'GALAXIA_HYUNDAI' })],
+      1,
+    );
+    expect(result.map((row) => row.subItemKey).sort()).toEqual(['GALAXIA_HYUNDAI', 'GALAXIA_MOBILE']);
   });
 });

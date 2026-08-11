@@ -20,6 +20,14 @@ export const GALAXIA_SUB_ITEM_KEY_BY_BRAND_CODE: Readonly<Record<string, string>
 
 export const GALAXIA_SUB_ITEM_KEY_MOBILE = 'GALAXIA_MOBILE';
 
+/** 갤럭시아 여신/config에서 허용하는 확정 4키. 순서는 여신 표 표시 순서와 동일. */
+export const GALAXIA_SUB_ITEM_KEYS = [
+  GALAXIA_SUB_ITEM_KEY_MOBILE,
+  'GALAXIA_LOTTE',
+  'GALAXIA_HYUNDAI',
+  'GALAXIA_GALLERIA',
+] as const;
+
 /** 한국문화진흥은 유효기간 일수로만 갈린다. `else → 5Y` 매핑은 미래 값을 오귀속하므로 금지. */
 export const CULTURE_SUB_ITEM_KEY_BY_EXPIRE_DAY: Readonly<Record<number, string>> = {
   60: 'CULTURE_60D',

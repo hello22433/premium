@@ -1,5 +1,5 @@
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
-import { SUB_ITEM_KEY_NONE } from './settle.sub.item.key';
+import { GALAXIA_SUB_ITEM_KEY_MOBILE, GALAXIA_SUB_ITEM_KEYS, SUB_ITEM_KEY_NONE } from './settle.sub.item.key';
 
 /**
  * 여신 표 행 축 (정본 §4.1 표시 순서 · 2026-07-29 A 최종 확정).
@@ -17,13 +17,8 @@ export type CreditRowSpec = {
   hiddenByDefault: boolean;
 };
 
-/** 갤럭시아 하위항목(subItemKey) — 표시 순서. */
-export const GALAXIA_SUB_ITEM_ORDER = [
-  'GALAXIA_MOBILE',
-  'GALAXIA_LOTTE',
-  'GALAXIA_HYUNDAI',
-  'GALAXIA_GALLERIA',
-] as const;
+/** 갤럭시아 하위항목(subItemKey) — 표시 순서. 쿠폰(모바일) + 백화점 브랜드 3종(각각 별도 선충전). */
+export const GALAXIA_SUB_ITEM_ORDER = GALAXIA_SUB_ITEM_KEYS;
 
 /** 한국문화진흥 하위항목 — 표시 순서(5년 → 60일). */
 export const CULTURE_SUB_ITEM_ORDER = ['CULTURE_5Y', 'CULTURE_60D'] as const;
@@ -43,17 +38,27 @@ export const CREDIT_ROW_AXIS: readonly CreditRowSpec[] = [
   ...CULTURE_SUB_ITEM_ORDER.map((key) => row(IPartnerCompanyType.CULTURELAND, key)),
 ];
 
-/** 발송가능잔액 산출 방식(정본 §4.3). */
-export type BalanceSourceKind = 'SSG_EVENT' | 'LIMIT_MINUS_UNSETTLED' | 'EXTERNAL_INQUIRY';
+/** config/조회에서 허용하는 (협력사 타입, 하위항목) 축인지 fail-closed 검증한다. */
+export function isValidCreditSubItemKey(partnerType: IPartnerCompanyType, subItemKey: string): boolean {
+  return CREDIT_ROW_AXIS.some((spec) => spec.partnerType === partnerType && spec.subItemKey === subItemKey);
+}
 
-/** 협력사 타입 → 발송가능잔액 산출 방식. */
-export function balanceSourceKind(partnerType: IPartnerCompanyType): BalanceSourceKind {
+/** 발송가능잔액 산출 방식(정본 §4.3). PREPAID_LEDGER = 갤럭시아 백화점 선충전(충전금액 − Σ정산액). */
+export type BalanceSourceKind = 'SSG_EVENT' | 'LIMIT_MINUS_UNSETTLED' | 'EXTERNAL_INQUIRY' | 'PREPAID_LEDGER';
+
+/** (협력사 타입, 하위항목) → 발송가능잔액 산출 방식. */
+export function balanceSourceKind(partnerType: IPartnerCompanyType, subItemKey: string): BalanceSourceKind {
   switch (partnerType) {
     case IPartnerCompanyType.SSG:
       return 'SSG_EVENT';
     case IPartnerCompanyType.GIFT_SHOW:
-    case IPartnerCompanyType.GALAXIA:
       return 'EXTERNAL_INQUIRY';
+    case IPartnerCompanyType.GALAXIA:
+      if (!GALAXIA_SUB_ITEM_ORDER.includes(subItemKey as (typeof GALAXIA_SUB_ITEM_ORDER)[number])) {
+        throw new Error(`갤럭시아 여신 표 하위항목 미등록: ${subItemKey}`);
+      }
+      // 쿠폰(MOBILE)은 여신, 백화점 3브랜드(롯데·현대·갤러리아)는 각각 선충전.
+      return subItemKey === GALAXIA_SUB_ITEM_KEY_MOBILE ? 'LIMIT_MINUS_UNSETTLED' : 'PREPAID_LEDGER';
     case IPartnerCompanyType.DAOU:
     case IPartnerCompanyType.GIFTIEL:
     case IPartnerCompanyType.CULTURELAND:
