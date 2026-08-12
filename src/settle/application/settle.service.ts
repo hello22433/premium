@@ -2739,6 +2739,55 @@ export class SettleService {
    * - 동일 회사의 모든 계정이 한도를 공유함
    */
   async getRemainServiceAmountByUserId(userId: number): Promise<SettleGetRemainServiceAmountResDto> {
+    const { userEntity, overdueAmount, legacyResult } = await this.computeLegacyRemainServiceAmount(userId);
+
+    // Wallet Cutover Bundle — 잔여 한도 read 경로 mode 전환.
+    //  - LEGACY: legacy 그대로.
+    //  - SHADOW: legacy 반환 + wallet 계산 비교 로그 (wallet write 없으므로 MIRROR_LAG 예상).
+    //  - WALLET: wallet_account (SoT) 기준 반환. fail-closed (wallet 미존재 시 throw).
+    const mode = this.walletCutoverConfig.pr3SettleMode;
+    if (mode === WalletCutoverMode.LEGACY) {
+      return legacyResult;
+    }
+
+    if (mode === WalletCutoverMode.SHADOW) {
+      try {
+        const walletResult = await this.computeWalletRemainServiceAmount(userEntity, overdueAmount);
+        if (walletResult.remainServiceAmount !== legacyResult.remainServiceAmount) {
+          this.logger.warn(
+            `wallet_shadow_mismatch_remain userId=${userEntity.id} ` +
+              `wallet=${walletResult.remainServiceAmount} legacy=${legacyResult.remainServiceAmount} ` +
+              `delta=${walletResult.remainServiceAmount - legacyResult.remainServiceAmount}`,
+          );
+        }
+      } catch (err) {
+        // shadow 비교 실패는 legacy 응답을 막지 않음
+        this.logger.warn(
+          `wallet_shadow_remain_failed userId=${userEntity.id} err=${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      return legacyResult;
+    }
+
+    // WALLET mode: wallet_account 기준 (SoT 전환)
+    return this.computeWalletRemainServiceAmount(userEntity, overdueAmount);
+  }
+
+  /**
+   * cutover mode 와 무관하게 legacy(회사 한도/잔액/allSettleAmount) 기준 잔여 한도만 계산한다.
+   * wallet_account 조회와 Wallet resolver 를 전혀 타지 않으므로, 정산코드 미부여 계정처럼
+   * wallet SoT 자체가 없는 화면 표시 경로에서 fail-closed 없이 기존 값을 그대로 보여줄 때 쓴다.
+   */
+  async getLegacyRemainServiceAmountByUserId(userId: number): Promise<SettleGetRemainServiceAmountResDto> {
+    const { legacyResult } = await this.computeLegacyRemainServiceAmount(userId);
+    return legacyResult;
+  }
+
+  private async computeLegacyRemainServiceAmount(userId: number): Promise<{
+    userEntity: UserEntity;
+    overdueAmount: number;
+    legacyResult: SettleGetRemainServiceAmountResDto;
+  }> {
     // 사용자 정보 조회
     const userEntity = await this.userRepository.findOne({
       where: { id: userId },
@@ -2783,36 +2832,7 @@ export class SettleService {
       creditExcessAmount: Math.max(0, -remainServiceAmount),
     };
 
-    // Wallet Cutover Bundle — 잔여 한도 read 경로 mode 전환.
-    //  - LEGACY: legacy 그대로.
-    //  - SHADOW: legacy 반환 + wallet 계산 비교 로그 (wallet write 없으므로 MIRROR_LAG 예상).
-    //  - WALLET: wallet_account (SoT) 기준 반환. fail-closed (wallet 미존재 시 throw).
-    const mode = this.walletCutoverConfig.pr3SettleMode;
-    if (mode === WalletCutoverMode.LEGACY) {
-      return legacyResult;
-    }
-
-    if (mode === WalletCutoverMode.SHADOW) {
-      try {
-        const walletResult = await this.computeWalletRemainServiceAmount(userEntity, overdueAmount);
-        if (walletResult.remainServiceAmount !== legacyResult.remainServiceAmount) {
-          this.logger.warn(
-            `wallet_shadow_mismatch_remain userId=${userEntity.id} ` +
-              `wallet=${walletResult.remainServiceAmount} legacy=${legacyResult.remainServiceAmount} ` +
-              `delta=${walletResult.remainServiceAmount - legacyResult.remainServiceAmount}`,
-          );
-        }
-      } catch (err) {
-        // shadow 비교 실패는 legacy 응답을 막지 않음
-        this.logger.warn(
-          `wallet_shadow_remain_failed userId=${userEntity.id} err=${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-      return legacyResult;
-    }
-
-    // WALLET mode: wallet_account 기준 (SoT 전환)
-    return this.computeWalletRemainServiceAmount(userEntity, overdueAmount);
+    return { userEntity, overdueAmount, legacyResult };
   }
 
   /**

@@ -1,5 +1,6 @@
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, INestApplication, InternalServerErrorException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import request from 'supertest';
 import { AuthService } from '../../auth/application/auth.service';
 import { AuthUserAuthorizationGuard } from '../../auth/api/auth.user.authorization.guard';
 import { AuthUserSuperAdminGuard } from '../../auth/api/auth.user.super-admin.guard';
@@ -61,6 +62,62 @@ describe('UserManagementController', () => {
       await controller.getDetail(SUPER_ADMIN_USER, { id: 5 });
 
       expect(authService.authorityValidator).toHaveBeenCalledWith(SUPER_ADMIN_USER, UserAuthSubEnum.ACCOUNT);
+    });
+  });
+});
+
+// EP-P28: WALLET 모드 wallet 무결성 오류의 실제 HTTP body 계약
+describe('UserManagementController getDetail — WALLET_ACCOUNT_INTEGRITY_ERROR HTTP 응답', () => {
+  let app: INestApplication;
+
+  beforeAll(async () => {
+    const module = await Test.createTestingModule({
+      controllers: [UserManagementController],
+      providers: [
+        {
+          provide: UserManagementService,
+          useValue: {
+            getDetail: jest.fn().mockRejectedValue(
+              new InternalServerErrorException({
+                statusCode: 500,
+                code: 'WALLET_ACCOUNT_INTEGRITY_ERROR',
+                message: '정산코드 Wallet 정보를 찾을 수 없습니다.',
+              }),
+            ),
+          },
+        },
+        { provide: AuthService, useValue: { authorityValidator: jest.fn().mockResolvedValue(undefined) } },
+      ],
+    })
+      .overrideGuard(AuthUserAuthorizationGuard)
+      .useValue({
+        canActivate: (ctx: any) => {
+          ctx.switchToHttp().getRequest().user = { id: 15, email: 'super@test.com', authority: 'SUPER_ADMIN' };
+          return true;
+        },
+      })
+      .overrideGuard(AuthUserSuperAdminGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(AuthUserSuperAndOperationAdminGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
+
+    app = module.createNestApplication();
+    await app.init();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it('500 / WALLET_ACCOUNT_INTEGRITY_ERROR 를 확정된 JSON body 로 반환한다', async () => {
+    const res = await request(app.getHttpServer()).get('/user-management/detail/1');
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({
+      statusCode: 500,
+      code: 'WALLET_ACCOUNT_INTEGRITY_ERROR',
+      message: '정산코드 Wallet 정보를 찾을 수 없습니다.',
     });
   });
 });
