@@ -117,17 +117,30 @@ export class UserManagementGetDetailResDto {
   ip: string | null;
 
   @ApiProperty({
-    description: '정산 조건 ex) 선정산 : PRE_PAYMENT, 후정산: POST_PAYMENT',
+    description: '계정에 부여된 정산코드 (user.settlement_code = wallet_account.owner_id). 미부여 계정은 null.',
+    nullable: true,
+    example: 'company-30-1',
+  })
+  settlementCode: string | null;
+
+  @ApiProperty({
+    description:
+      '정산 조건 ex) 선정산 : PRE_PAYMENT, 후정산: POST_PAYMENT. ' +
+      'WALLET 모드 + 정산코드 있음: wallet_account.settle_condition, 그 외: user.settle_condition.',
   })
   settleCondition: IUserSettleCondition;
 
   @ApiProperty({
-    description: '정산 방법 ex) 카드: CARD, 현금: CASH',
+    description:
+      '정산 방법 ex) 카드: CARD, 현금: CASH. ' +
+      'WALLET/SHADOW 모드는 wallet_account.settle_method 우선, LEGACY 는 user_company.settle_method.',
   })
   settleMethod: IUserSettleMethod;
 
   @ApiProperty({
-    description: '최대 서비스 한도 가격',
+    description:
+      '최대 서비스 한도 가격. ' +
+      'WALLET 모드 + 정산코드 있음: wallet_account.credit_limit, 그 외: user_company.maximum_limit.',
   })
   maximumLimit: number;
 
@@ -152,7 +165,9 @@ export class UserManagementGetDetailResDto {
   cardNumber: string;
 
   @ApiProperty({
-    description: '잔액',
+    description:
+      '잔액. WALLET 모드 + 정산코드 있음: wallet_account.deposit_balance, ' +
+      '그 외: balanceManagementType 에 따른 legacy 잔액(user_company.balance 또는 user.balance).',
   })
   balance: number;
 
@@ -246,20 +261,41 @@ export class UserManagementGetDetailResDto {
   loginVerifyMethod: LoginVerifyMethod;
 
   @ApiProperty({
-    description: '대상 계정 기준 잔여 발송 한도 (회사/wallet 과금 계정 기준)',
+    description:
+      '대상 계정 기준 잔여 발송 한도. ' +
+      'WALLET 모드 + 정산코드 있음: credit_limit + deposit_balance - credit_used_amount - credit_excess_amount, ' +
+      '그 외: legacy 산식(회사최대한도 + 잔액 - 회사 전체 allSettleAmount).',
   })
   remainServiceAmount: number;
 
   @ApiProperty({
-    description: '대상 계정 기준 신용초과금 (잔여 한도가 음수일 때의 초과액, 0 이상)',
+    description:
+      '대상 계정 기준 신용초과금. ' +
+      'WALLET 모드 + 정산코드 있음: 잔여한도 음수 파생값이 아닌 원장값 wallet_account.credit_excess_amount, ' +
+      '그 외: legacy 잔여한도 기반 max(0, -remainServiceAmount).',
   })
   creditExcessAmount: number;
 
   @ApiProperty({
     description:
-      '대상 계정 기준 현재 여신 사용액 (wallet_account.credit_used_amount, 원 단위 0 이상). 여신 이력의 사용액 누계 최신값과 정합. wallet 미부여 계정은 0.',
+      '대상 계정 기준 현재 여신 사용액 (wallet_account.credit_used_amount, 원 단위 0 이상). 여신 이력의 사용액 누계 최신값과 정합. 정산코드 미부여 계정은 0.',
   })
   creditUsedAmount: number;
+}
+
+/**
+ * WALLET 모드에서 정산코드는 있으나 wallet_account 행이 없을 때의 오류 응답.
+ * legacy 폴백 없이 fail-closed 하며, 클라이언트 분기는 code 기준으로 한다.
+ */
+export class WalletAccountIntegrityErrorResDto {
+  @ApiProperty({ description: 'HTTP 상태 코드', example: 500 })
+  statusCode: number;
+
+  @ApiProperty({ description: '오류 코드', example: 'WALLET_ACCOUNT_INTEGRITY_ERROR' })
+  code: string;
+
+  @ApiProperty({ description: '운영자 안내 메시지', example: '정산코드 Wallet 정보를 찾을 수 없습니다.' })
+  message: string;
 }
 
 export class UserDepartmentInfoDto {

@@ -6,6 +6,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  InternalServerErrorException,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
@@ -424,18 +425,28 @@ export class UserManagementService {
       where: { userId: id },
     });
 
-    // 대상 계정 기준 잔여 발송 한도/신용초과금 (로그인 본인이 아니라 조회 대상 기준)
-    const remain = await this.settleService.getRemainServiceAmountByUserId(id);
-
-    // 현재 여신 사용액 — wallet_account.credit_used_amount (여신 이력 사용액 누계의 최신값 SoT).
-    // getWalletHistory 와 동일하게 settlement_code 로 wallet 을 조회해 이력 요약과 정합을 보장한다.
-    // settlement_code 미부여(PENDING 등) 계정은 wallet 이 없으므로 0.
-    const walletAccount = user.settlementCode
+    // 정산정보 표시값 (정산코드 wallet snapshot 또는 legacy 계약)
+    const settlementCode = user.settlementCode || null;
+    // 정산코드 wallet 은 여기서 최대 1회만 조회한다. 미부여 계정은 조회하지 않는다.
+    // getWalletHistory 와 동일 기준(settlement_code)이라 이력 요약과 정합이 보장된다.
+    const walletAccount = settlementCode
       ? await this.walletAccountRepository.findOne({
-          where: { ownerType: 'SETTLEMENT_CODE', ownerId: user.settlementCode },
+          where: { ownerType: 'SETTLEMENT_CODE', ownerId: settlementCode },
         })
       : null;
-    const creditUsedAmount = walletAccount?.creditUsedAmount ?? 0;
+
+    // WALLET 모드에서 정산코드는 있는데 wallet 행이 없으면 legacy 폴백 없이 fail-closed.
+    // 오표시된 정산값이 공유 정산코드 계정으로 퍼지는 것을 막는다.
+    const isWalletSettleMode = this.walletCutoverConfig.pr3SettleMode === WalletCutoverMode.WALLET;
+    if (isWalletSettleMode && settlementCode && !walletAccount) {
+      throw new InternalServerErrorException({
+        statusCode: 500,
+        code: 'WALLET_ACCOUNT_INTEGRITY_ERROR',
+        message: '정산코드 Wallet 정보를 찾을 수 없습니다.',
+      });
+    }
+
+    const settlement = await this.resolveSettlementDisplay(id, user, company, isWalletSettleMode, walletAccount);
 
     // settleMethod 표시값은 정산 SoT(WALLET=wallet_account, LEGACY=company)를 우선한다.
     // deprecated user.settleMethod 만 반환하면 공유 정산코드(SHARE_ONE) 계정에서 실제
@@ -463,15 +474,16 @@ export class UserManagementService {
       businessAddress: company?.businessAddress ?? '',
       businessPhoneNumber: company?.businessPhoneNumber ?? '',
       ip: user.ip,
-      settleCondition: user.settleCondition,
+      settlementCode,
+      settleCondition: settlement.settleCondition,
       settleMethod: effectiveSettleMethod,
-      maximumLimit: company?.maximumLimit ?? 0,
+      maximumLimit: settlement.maximumLimit,
 
       bankName: user.bankName,
       bankNumber: this.cryptoCipher.safeDecryptAccountNumber(user.bankNumber) ?? user.bankNumber,
       cardName: user.cardName,
       cardNumber: this.cryptoCipher.safeDecryptAccountNumber(user.cardNumber) ?? user.cardNumber,
-      balance: this.getCurrentBalance(user, company),
+      balance: settlement.balance,
       fromPhoneNumber:
         process.env.FROM_PHONE_SOT_ENFORCE === 'true'
           ? await this.orderFromService.resolveApprovedDefaultPhone(user.id)
@@ -516,9 +528,60 @@ export class UserManagementService {
         ? user.allowedSendMethods.split(',').map((m) => (m === 'SMS' ? 'MMS' : m))
         : ['ALIM_TALK', 'MMS', 'EMAIL'],
       loginVerifyMethod: user.loginVerifyMethod,
-      remainServiceAmount: remain.remainServiceAmount,
+      remainServiceAmount: settlement.remainServiceAmount,
+      creditExcessAmount: settlement.creditExcessAmount,
+      creditUsedAmount: settlement.creditUsedAmount,
+    };
+  }
+
+  /**
+   * 계정 상세의 정산정보 표시값 해석.
+   * - WALLET + 정산코드 有: getDetail 이 1회 조회한 wallet snapshot 만으로 구성한다.
+   *   settleService.getRemainServiceAmountByUserId() 를 호출하지 않아 resolver 를 통한 2차 wallet 조회가 없다.
+   * - WALLET + 정산코드 미부여: wallet/resolver 를 전혀 타지 않는 legacy 전용 계산으로 기존 편집값을 보존한다.
+   * - LEGACY/SHADOW: 기존 getRemainServiceAmountByUserId() 계약(SHADOW 비교 로그 포함)을 그대로 유지하고,
+   *   조회한 wallet 은 creditUsedAmount 해석에만 쓴다.
+   */
+  private async resolveSettlementDisplay(
+    userId: number,
+    user: UserEntity,
+    company: UserCompanyEntity | null,
+    isWalletSettleMode: boolean,
+    walletAccount: WalletAccountEntity | null,
+  ): Promise<{
+    settleCondition: IUserSettleCondition;
+    maximumLimit: number;
+    balance: number;
+    creditUsedAmount: number;
+    creditExcessAmount: number;
+    remainServiceAmount: number;
+  }> {
+    if (isWalletSettleMode && walletAccount) {
+      return {
+        settleCondition: walletAccount.settleCondition as IUserSettleCondition,
+        maximumLimit: walletAccount.creditLimit,
+        balance: walletAccount.depositBalance,
+        creditUsedAmount: walletAccount.creditUsedAmount,
+        creditExcessAmount: walletAccount.creditExcessAmount,
+        remainServiceAmount:
+          walletAccount.creditLimit +
+          walletAccount.depositBalance -
+          walletAccount.creditUsedAmount -
+          walletAccount.creditExcessAmount,
+      };
+    }
+
+    const remain = isWalletSettleMode
+      ? await this.settleService.getLegacyRemainServiceAmountByUserId(userId)
+      : await this.settleService.getRemainServiceAmountByUserId(userId);
+
+    return {
+      settleCondition: user.settleCondition,
+      maximumLimit: company?.maximumLimit ?? 0,
+      balance: this.getCurrentBalance(user, company),
+      creditUsedAmount: walletAccount?.creditUsedAmount ?? 0,
       creditExcessAmount: remain.creditExcessAmount,
-      creditUsedAmount,
+      remainServiceAmount: remain.remainServiceAmount,
     };
   }
 
@@ -795,7 +858,7 @@ export class UserManagementService {
    * 실제 정산(getOrderSettle)이 쓰는 값과 정확히 일치하도록 한다.
    * - LEGACY: company.settleMethod (없으면 user.settleMethod 폴백)
    * - settlement_code 미부여(PENDING): wallet SoT 자체가 없음 → SHADOW=company, WALLET=user 폴백
-   * - WALLET: wallet_account.settleMethod. 조회 실패는 폴백하지 않고 fail-closed(throw).
+   * - WALLET: wallet_account.settleMethod. 조회 실패는 폴백하지 않고 getDetail 이 500 무결성 오류로 fail-closed 한다.
    *   (오표시된 값이 폼 저장 시 공유 wallet 을 오염시키는 것을 방지 — resolveSettlePolicy 와 동일)
    * - SHADOW: wallet 우선, 조회 실패 시 company.settleMethod 폴백
    * @param walletAccount getDetail 이 settlement_code 로 1회 조회한 wallet (미부여/미존재 시 null).
@@ -816,7 +879,7 @@ export class UserManagementService {
     }
 
     // wallet SoT 부재(settlement_code 미부여) 또는 SHADOW 조회 실패 시 공통 폴백값.
-    // SHADOW=company 우선, WALLET=user (WALLET 은 조회 실패를 폴백하지 않고 fail-closed).
+    // SHADOW=company 우선, WALLET=user (WALLET 은 정산코드 미부여일 때만 이 폴백을 쓴다).
     const nonWalletFallback = mode === WalletCutoverMode.SHADOW ? (companyMethod ?? userMethod) : userMethod;
 
     // settlement_code 미부여(PENDING 등)는 wallet 이 존재하지 않는 정상 상태.
@@ -829,12 +892,9 @@ export class UserManagementService {
       return (walletAccount.settleMethod as IUserSettleMethod) ?? userMethod;
     }
 
-    // wallet 미존재: SHADOW 는 company 폴백, WALLET 은 fail-closed(throw).
-    // 오표시된 정산방법이 폼 저장 시 공유 wallet 을 오염시키는 것을 방지 (resolveSettlePolicy 와 동일).
-    if (mode === WalletCutoverMode.SHADOW) {
-      return nonWalletFallback;
-    }
-    throw new NotFoundException(`wallet_account not found for settlement_code=${user.settlementCode}`);
+    // wallet 미존재: SHADOW 만 여기 도달한다(company 폴백).
+    // WALLET + 정산코드 有 + wallet 미존재는 getDetail 이 이미 500 무결성 오류로 fail-closed 했다.
+    return nonWalletFallback;
   }
 
   /**

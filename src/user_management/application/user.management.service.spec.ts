@@ -1061,6 +1061,20 @@ describe('UserManagementModifyBalanceReqDto 검증 테스트', () => {
   });
 });
 
+// legacy 잔여한도 응답 stub (SettleGetRemainServiceAmountResDto 형태)
+function legacyRemainStub(overrides: Record<string, number> = {}) {
+  return {
+    maximumLimit: 500_000,
+    balance: 100_000,
+    serviceAmount: 0,
+    overdueAmount: 0,
+    allSettleAmount: 0,
+    remainServiceAmount: 600_000,
+    creditExcessAmount: 0,
+    ...overrides,
+  };
+}
+
 // settleMethod SoT 동기화 — 메인 describe 와 동일한 NestJS Testing Module 재사용
 describe('settleMethod SoT 동기화 테스트', () => {
   let sut: UserManagementService;
@@ -1069,6 +1083,7 @@ describe('settleMethod SoT 동기화 테스트', () => {
   let walletAccountRepository: any;
   let walletResolver: any;
   let walletCutoverConfig: any;
+  let settleService: any;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -1132,7 +1147,13 @@ describe('settleMethod SoT 동기화 테스트', () => {
           provide: AccountStatusTransitionService,
           useValue: { logAccountCreate: jest.fn(), adminSetStatus: jest.fn(), touchLastActivity: jest.fn() },
         },
-        { provide: SettleService, useValue: { getRemainServiceAmountByUserId: jest.fn().mockResolvedValue(0) } },
+        {
+          provide: SettleService,
+          useValue: {
+            getRemainServiceAmountByUserId: jest.fn().mockResolvedValue(legacyRemainStub()),
+            getLegacyRemainServiceAmountByUserId: jest.fn().mockResolvedValue(legacyRemainStub()),
+          },
+        },
         {
           provide: OrderFromService,
           useValue: {
@@ -1150,6 +1171,7 @@ describe('settleMethod SoT 동기화 테스트', () => {
     walletAccountRepository = module.get(getRepositoryToken(WalletAccountEntity));
     walletResolver = module.get(WalletAccountResolverService);
     walletCutoverConfig = module.get(WalletCutoverConfig);
+    settleService = module.get(SettleService);
   });
 
   const baseUpdateBody = {
@@ -1341,7 +1363,7 @@ describe('settleMethod SoT 동기화 테스트', () => {
       });
     });
 
-    it('WALLET 모드: settlement_code 有 + wallet 조회 실패 → fail-closed(throw), user 폴백 금지', async () => {
+    it('WALLET 모드: settlement_code 有 + wallet 조회 실패 → fail-closed(500 무결성 오류), legacy 폴백 금지', async () => {
       walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
       walletAccountRepository.findOne.mockResolvedValue(null);
       userRepository.findOne.mockResolvedValue({
@@ -1353,7 +1375,14 @@ describe('settleMethod SoT 동기화 테스트', () => {
         companyId: 10,
       });
 
-      await expect(sut.getDetail({ id: 1 } as any)).rejects.toThrow('wallet_account not found');
+      const err = await sut.getDetail({ id: 1 } as any).catch((e) => e);
+
+      expect(err.getStatus()).toBe(500);
+      expect(err.getResponse()).toEqual({
+        statusCode: 500,
+        code: 'WALLET_ACCOUNT_INTEGRITY_ERROR',
+        message: '정산코드 Wallet 정보를 찾을 수 없습니다.',
+      });
     });
 
     it('WALLET 모드: settlement_code 미부여(PENDING) → user.settleMethod 폴백, wallet 미호출', async () => {
@@ -1462,6 +1491,159 @@ describe('settleMethod SoT 동기화 테스트', () => {
 
       expect(result.creditUsedAmount).toBe(0);
       expect(walletAccountRepository.findOne).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getDetail — 정산정보 Wallet SoT 표시 (EP-P28)', () => {
+    // 레거시 값과 전부 다른 wallet 값 — 필드별 출처를 구분하기 위해 서로 다른 숫자를 쓴다.
+    const wallet = {
+      id: 'wallet-1',
+      settleCondition: 'POST_PAYMENT',
+      settleMethod: 'CARD',
+      creditLimit: 1_000_000,
+      depositBalance: 250_000,
+      creditUsedAmount: 400_000,
+      creditExcessAmount: 30_000,
+    };
+    const company = {
+      id: 10,
+      businessNumber: '1234567890',
+      settleMethod: 'CASH',
+      maximumLimit: 777,
+      balance: 888,
+      balanceManagementType: 'COMPANY',
+    };
+    const legacyUser = () => ({
+      ...UserEntityTest(),
+      id: 1,
+      settlementCode: 'company-30-1',
+      settleCondition: IUserSettleCondition.PRE_PAYMENT,
+      settleMethod: IUserSettleMethod.CASH,
+      balance: 999,
+      company,
+      companyId: 10,
+    });
+
+    it('WALLET + 정산코드 有: 모든 Wallet 소유 필드가 단일 wallet snapshot 에서 나온다', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
+      walletAccountRepository.findOne.mockResolvedValue(wallet);
+      userRepository.findOne.mockResolvedValue(legacyUser());
+
+      const result = await sut.getDetail({ id: 1 } as any);
+
+      expect(result.settlementCode).toBe('company-30-1');
+      expect(result.settleCondition).toBe('POST_PAYMENT');
+      expect(result.settleMethod).toBe('CARD');
+      expect(result.maximumLimit).toBe(1_000_000);
+      expect(result.balance).toBe(250_000);
+      expect(result.creditUsedAmount).toBe(400_000);
+      expect(result.creditExcessAmount).toBe(30_000);
+      // 1,000,000 + 250,000 - 400,000 - 30,000
+      expect(result.remainServiceAmount).toBe(820_000);
+    });
+
+    it('WALLET + 정산코드 有: wallet 조회 1회, remain 서비스/resolver 미호출', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
+      walletAccountRepository.findOne.mockResolvedValue(wallet);
+      userRepository.findOne.mockResolvedValue(legacyUser());
+
+      await sut.getDetail({ id: 1 } as any);
+
+      expect(walletAccountRepository.findOne).toHaveBeenCalledTimes(1);
+      expect(settleService.getRemainServiceAmountByUserId).not.toHaveBeenCalled();
+      expect(settleService.getLegacyRemainServiceAmountByUserId).not.toHaveBeenCalled();
+      expect(walletResolver.resolveByUserId).not.toHaveBeenCalled();
+    });
+
+    it('동일 정산코드를 공유하는 두 계정은 같은 정산조건/한도/잔액을 반환한다', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
+      walletAccountRepository.findOne.mockResolvedValue(wallet);
+
+      userRepository.findOne.mockResolvedValue(legacyUser());
+      const first = await sut.getDetail({ id: 1 } as any);
+      userRepository.findOne.mockResolvedValue({
+        ...legacyUser(),
+        id: 2,
+        balance: 1,
+        settleCondition: IUserSettleCondition.PRE_PAYMENT,
+      });
+      const second = await sut.getDetail({ id: 2 } as any);
+
+      expect({
+        settleCondition: second.settleCondition,
+        settleMethod: second.settleMethod,
+        maximumLimit: second.maximumLimit,
+        balance: second.balance,
+        creditUsedAmount: second.creditUsedAmount,
+        creditExcessAmount: second.creditExcessAmount,
+        remainServiceAmount: second.remainServiceAmount,
+      }).toEqual({
+        settleCondition: first.settleCondition,
+        settleMethod: first.settleMethod,
+        maximumLimit: first.maximumLimit,
+        balance: first.balance,
+        creditUsedAmount: first.creditUsedAmount,
+        creditExcessAmount: first.creditExcessAmount,
+        remainServiceAmount: first.remainServiceAmount,
+      });
+    });
+
+    it('WALLET + 정산코드 미부여: wallet/resolver/remain 미호출 + 기존 legacy 편집값 보존', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
+      settleService.getLegacyRemainServiceAmountByUserId.mockResolvedValue(
+        legacyRemainStub({ remainServiceAmount: 123_000, creditExcessAmount: 0 }),
+      );
+      userRepository.findOne.mockResolvedValue({ ...legacyUser(), settlementCode: '' });
+
+      const result = await sut.getDetail({ id: 1 } as any);
+
+      expect(result.settlementCode).toBeNull();
+      expect(result.settleCondition).toBe(IUserSettleCondition.PRE_PAYMENT);
+      expect(result.maximumLimit).toBe(777);
+      expect(result.balance).toBe(888); // balanceManagementType=COMPANY → company.balance
+      expect(result.creditUsedAmount).toBe(0);
+      expect(result.remainServiceAmount).toBe(123_000);
+      expect(result.creditExcessAmount).toBe(0);
+      expect(walletAccountRepository.findOne).not.toHaveBeenCalled();
+      expect(walletResolver.resolveByUserId).not.toHaveBeenCalled();
+      expect(settleService.getRemainServiceAmountByUserId).not.toHaveBeenCalled();
+    });
+
+    it('LEGACY: wallet 값이 달라도 settleMethod 외 레거시 표시 필드를 덮지 않는다', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.LEGACY;
+      walletAccountRepository.findOne.mockResolvedValue(wallet);
+      settleService.getRemainServiceAmountByUserId.mockResolvedValue(
+        legacyRemainStub({ remainServiceAmount: -5_000, creditExcessAmount: 5_000 }),
+      );
+      userRepository.findOne.mockResolvedValue(legacyUser());
+
+      const result = await sut.getDetail({ id: 1 } as any);
+
+      expect(result.settleCondition).toBe(IUserSettleCondition.PRE_PAYMENT);
+      expect(result.settleMethod).toBe('CASH'); // company SoT
+      expect(result.maximumLimit).toBe(777);
+      expect(result.balance).toBe(888);
+      expect(result.creditUsedAmount).toBe(400_000); // 기존 계약: 조회된 wallet 값
+      expect(result.remainServiceAmount).toBe(-5_000);
+      expect(result.creditExcessAmount).toBe(5_000);
+    });
+
+    it('SHADOW: wallet 누락이어도 상세 응답을 막지 않고 legacy 표시값을 반환한다', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.SHADOW;
+      walletAccountRepository.findOne.mockResolvedValue(null);
+      settleService.getRemainServiceAmountByUserId.mockResolvedValue(
+        legacyRemainStub({ remainServiceAmount: 600_000 }),
+      );
+      userRepository.findOne.mockResolvedValue(legacyUser());
+
+      const result = await sut.getDetail({ id: 1 } as any);
+
+      expect(result.settlementCode).toBe('company-30-1');
+      expect(result.settleMethod).toBe('CASH'); // company 폴백
+      expect(result.maximumLimit).toBe(777);
+      expect(result.balance).toBe(888);
+      expect(result.creditUsedAmount).toBe(0);
+      expect(result.remainServiceAmount).toBe(600_000);
     });
   });
 });
