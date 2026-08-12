@@ -1591,8 +1591,7 @@ export class OrderService {
           //   (레거시 non-wallet 주문도 400 이지만 wallet 여부는 비동기 조회라 여기서 보지 않는다 —
           //    그 조합은 WAIT 예약건이 사실상 드물어 후속 항목으로 남긴다.)
           const perDelivery = evaluateDeliveryCancelable(orderDelivery, order.type, now);
-          const orderLevelBlock =
-            order.type === IOrderType.SSG ? DeliveryCancelBlockReason.UNSUPPORTED_ORDER : null;
+          const orderLevelBlock = order.type === IOrderType.SSG ? DeliveryCancelBlockReason.UNSUPPORTED_ORDER : null;
 
           orderDeliveryList.push({
             id: orderDelivery.id,
@@ -6123,8 +6122,7 @@ export class OrderService {
     // 부분취소는 발송확정 이후에만 성립한다. 그 전에는 발송건이 TEMP 라 막을 발송도, 되돌릴 돈도 없다.
     if (lockedOrder.status !== IOrderStatus.DELIVERY_CONFIRMED) {
       throw new BadRequestException(
-        '발송 대기 상태의 주문만 발송건별로 취소할 수 있습니다. ' +
-          'deliveryIds 없이 요청하면 주문 전체가 취소됩니다.',
+        '발송 대기 상태의 주문만 발송건별로 취소할 수 있습니다. ' + 'deliveryIds 없이 요청하면 주문 전체가 취소됩니다.',
       );
     }
 
@@ -6703,6 +6701,19 @@ export class OrderService {
     //   즉 0원에 호출해도 돈은 움직이지 않고 도장만 찍힌다.
     const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(order.id, externalManager);
 
+    // ★ 레거시 미러(회사 예치금 / 사용자 예치금·여신)에 **얼마를 움직였는지**만 모은다 (197-16 리뷰 P1).
+    //   종전에는 엔티티 필드를 메모리에서 증감한 뒤 save 로 통째 저장했다. 그러면 UPDATE 가
+    //   `balance = 60000` 같은 **절대값**이 되는데, 그 값은 트랜잭션 시작 전에 락 없이 읽은 것이다.
+    //   같은 고객사의 **서로 다른 주문** 두 건이 동시에 취소되면 둘 다 같은 옛 값을 읽고 각자
+    //   자기 델타를 더해 되쓰므로, 나중에 커밋한 쪽이 앞의 반영을 통째로 덮는다(lost update).
+    //   지갑 원장은 두 건 다 맞는데 화면·정산 잔액만 한 건분 모자란다 — 에러도 로그도 없다.
+    //   아래에서 `balance = balance + :delta` 로 넘기면 DB 가 행 락 안에서 현재값 기준으로
+    //   계산하므로 순서와 무관하게 정확해진다(부분취소가 이미 쓰는 방식과 통일).
+    //   ※ 메모리 증감은 그대로 둔다 — 취소 통지 등 뒤쪽 코드가 oneUser 를 그대로 쓴다.
+    let companyBalanceDelta = 0;
+    let userBalanceDelta = 0;
+    let allSettleDelta = 0;
+
     if (isWalletManaged) {
       const allocation = await externalManager.findOne(OrderPaymentAllocationEntity, {
         where: { orderId: order.id },
@@ -6726,8 +6737,10 @@ export class OrderService {
       // legacy mirror reverse (wallet path — user.balance 미기록).
       if (isCompanyBalanceMode && oneUser.company) {
         oneUser.company.balance += depositRefund;
+        companyBalanceDelta += depositRefund;
       }
       oneUser.allSettleAmount -= creditRefund + excessRefund;
+      allSettleDelta -= creditRefund + excessRefund;
       order.settleAmount = 0;
       order.isSettleBalance = false;
       order.isCreditExcess = false;
@@ -6735,8 +6748,10 @@ export class OrderService {
       if (order.isSettleBalance) {
         if (isCompanyBalanceMode && oneUser.company) {
           oneUser.company.balance += refundAmount;
+          companyBalanceDelta += refundAmount;
         } else {
           oneUser.balance += refundAmount;
+          userBalanceDelta += refundAmount;
         }
         order.isSettleBalance = false;
         // legacy deposit sync (!isWalletManaged 분기 전용 — wallet path 는 위 releaseConfirmation 이 예치금 복구).
@@ -6750,6 +6765,7 @@ export class OrderService {
         });
       } else {
         oneUser.allSettleAmount -= refundAmount;
+        allSettleDelta -= refundAmount;
         // legacy credit sync (여신복구 — allSettleAmount 감소를 여신 잔액에 반영).
         await this.legacyWalletCreditSyncService.syncCredit(externalManager, {
           billingUserId,
@@ -6821,15 +6837,39 @@ export class OrderService {
           '아무것도 취소되지 않았습니다. 발송 상태를 다시 조회해 주세요.',
       );
     }
-    if (isWalletManaged) {
-      // wallet path 는 user.balance 를 건드리지 않으므로 update 로 좁혀 stale overwrite 차단.
-      await this.userRepository.update({ id: oneUser.id }, { allSettleAmount: oneUser.allSettleAmount });
-    } else {
-      await this.userRepository.save(oneUser);
+    // ★ 레거시 미러는 **DB 증감식**으로 반영한다 (197-16 리뷰 P1 — 위 델타 주석 참조).
+    //   읽은 값 + 델타를 되쓰면 같은 고객사의 다른 주문이 그 사이에 반영한 몫이 통째로 사라진다.
+    //   `x = x + :delta` 로 넘기면 UPDATE 가 행 락 안에서 현재값 기준으로 계산해 유실이 없어진다.
+    //   ※ 델타가 0 이면 쿼리를 보내지 않는다 — 불필요한 행 락을 잡지 않기 위해서다.
+    //   ※ save(oneUser) 통짜 저장을 걷어낸 것이기도 하다. 그건 이 트랜잭션이 건드리지도 않은
+    //     다른 컬럼까지 락 없이 읽은 스냅샷 값으로 덮어쓸 수 있었다(wallet 경로가 이미 update 로
+    //     좁혀 둔 이유와 같다 — 이제 두 경로가 같은 방식이 된다).
+    if (allSettleDelta !== 0) {
+      await this.userRepository
+        .createQueryBuilder()
+        .update()
+        .set({ allSettleAmount: () => 'all_settle_amount + :allSettleDelta' })
+        .where('id = :id', { id: oneUser.id })
+        .setParameters({ allSettleDelta })
+        .execute();
     }
-    // 회사 레벨 balance 변경 시 company도 저장
-    if (isCompanyBalanceMode && oneUser.company) {
-      await this.userCompanyRepository.save(oneUser.company);
+    if (userBalanceDelta !== 0) {
+      await this.userRepository
+        .createQueryBuilder()
+        .update()
+        .set({ balance: () => 'balance + :userBalanceDelta' })
+        .where('id = :id', { id: oneUser.id })
+        .setParameters({ userBalanceDelta })
+        .execute();
+    }
+    if (companyBalanceDelta !== 0 && oneUser.company) {
+      await this.userCompanyRepository
+        .createQueryBuilder()
+        .update()
+        .set({ balance: () => 'balance + :companyBalanceDelta' })
+        .where('id = :id', { id: oneUser.company.id })
+        .setParameters({ companyBalanceDelta })
+        .execute();
     }
 
     // 고객사 직접주문(DIRECT) 취소 시 주문자 대표 이메일로 통지.

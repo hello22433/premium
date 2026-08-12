@@ -1,4 +1,3 @@
-import { IsNull, Not } from 'typeorm';
 import {
   addTransactionalDataSource,
   deleteDataSourceByName,
@@ -7,10 +6,22 @@ import {
 import { UserEntity } from '../../entity/user.entity';
 import { UserCompanyEntity } from '../../entity/user.company.entity';
 import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
-import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { IOrderStatus } from '../interface/order.status';
 import { IOrderType } from '../interface/order.type';
 import { OrderService } from './order.service';
+
+// 레거시 미러는 DB 증감식 UPDATE 다(197-16 리뷰 P1). 이 스펙의 관심사는 지갑/레거시 분기라
+// 체인만 이어 준다 — 증감식 형태 검증은 cancel-multiline-baseline.spec 소관.
+const mirrorBuilder = () => {
+  const mb: any = {
+    update: () => mb,
+    set: () => mb,
+    where: () => mb,
+    setParameters: () => mb,
+    execute: async () => ({ affected: 1 }),
+  };
+  return mb;
+};
 
 describe('OrderService.deliveryCancel — wallet-managed mirror', () => {
   beforeAll(() => {
@@ -85,6 +96,7 @@ describe('OrderService.deliveryCancel — wallet-managed mirror', () => {
     const userRepository = {
       findOneOrFail: jest.fn().mockResolvedValue(oneUser),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
+      createQueryBuilder: jest.fn(mirrorBuilder),
     };
     const orderDeliveryRepository: any = {
       update: jest.fn().mockResolvedValue({ affected: 1 }),
@@ -94,8 +106,13 @@ describe('OrderService.deliveryCancel — wallet-managed mirror', () => {
         const b: any = {
           innerJoin: () => b,
           select: () => b,
+          // 전체취소의 발송건 CANCEL 은 조건부 UPDATE(CAS)다 — 조건 검증은 다른 스펙 소관.
+          update: () => b,
+          set: () => b,
+          execute: async () => ({ affected: 3 }),
           where: () => b,
           andWhere: () => b,
+          // CAS 뒤 "취소 안 된 발송건이 남았나" 사후검사 — 이 스펙은 남는 것이 없는 상황이다.
           getCount: async () => 0,
           getRawMany: async () => (order.orderProductMappings ?? []).map((m: any) => ({ mappingId: m.id })),
         };
@@ -104,6 +121,7 @@ describe('OrderService.deliveryCancel — wallet-managed mirror', () => {
     };
     const userCompanyRepository = {
       save: jest.fn().mockResolvedValue(company),
+      createQueryBuilder: jest.fn(mirrorBuilder),
     };
     const sut: any = Object.create(OrderService.prototype);
     // 소유권(조회범위) 검증은 order.service.cancel-ownership.spec 에서 다룬다 — 여기선 통과시킨다.
@@ -131,11 +149,10 @@ describe('OrderService.deliveryCancel — wallet-managed mirror', () => {
       { orderId: 700, reason: 'order_cancel', failedDeliveryIds: null },
       externalManager,
     );
-    // 이미 CANCEL 인 건(부분취소 이력)과 soft-delete 된 건은 제외하고 덮는다.
-    expect(orderDeliveryRepository.update).toHaveBeenCalledWith(
-      { orderProductMappingId: expect.anything(), status: Not(IOrderDeliveryStatus.CANCEL), deletedAt: IsNull() },
-      { status: IOrderDeliveryStatus.CANCEL, canceledAt: expect.any(Date), cancelReason: expect.any(String) },
-    );
+    // ※ "이미 CANCEL 인 건·soft-delete 된 건을 제외하고 덮는다" 는 이제 조건부 UPDATE(CAS)의
+    //   WHERE 로 옮겨갔고, 그 조건 전량은 cancel-multiline-baseline.spec 이 문자열로 고정한다.
+    //   여기서 repository.update 로 확인하면 그 경로는 아무도 안 쓰므로 무엇을 해도 통과한다.
+    expect(orderDeliveryRepository.update).not.toHaveBeenCalled();
     // wallet-managed 는 releaseConfirmation 이 보상 → legacy sync 미호출(이중반영 금지).
     expect(sut.legacyWalletCreditSyncService.syncDeposit).not.toHaveBeenCalled();
     expect(sut.legacyWalletCreditSyncService.syncCredit).not.toHaveBeenCalled();
@@ -183,6 +200,7 @@ describe('OrderService.deliveryCancel — wallet-managed mirror', () => {
     const userRepository = {
       findOneOrFail: jest.fn().mockResolvedValue(oneUser),
       save: jest.fn().mockResolvedValue(oneUser),
+      createQueryBuilder: jest.fn(mirrorBuilder),
     };
     const orderDeliveryRepository: any = {
       update: jest.fn().mockResolvedValue({ affected: 1 }),
@@ -192,6 +210,10 @@ describe('OrderService.deliveryCancel — wallet-managed mirror', () => {
         const b: any = {
           innerJoin: () => b,
           select: () => b,
+          // 전체취소의 발송건 CANCEL 은 조건부 UPDATE(CAS)다 — 조건 검증은 다른 스펙 소관.
+          update: () => b,
+          set: () => b,
+          execute: async () => ({ affected: 3 }),
           where: () => b,
           andWhere: () => b,
           getCount: async () => 0,
@@ -200,7 +222,10 @@ describe('OrderService.deliveryCancel — wallet-managed mirror', () => {
         return b;
       },
     };
-    const userCompanyRepository = { save: jest.fn().mockResolvedValue(company) };
+    const userCompanyRepository = {
+      save: jest.fn().mockResolvedValue(company),
+      createQueryBuilder: jest.fn(mirrorBuilder),
+    };
     const sut: any = Object.create(OrderService.prototype);
     // 소유권(조회범위) 검증은 order.service.cancel-ownership.spec 에서 다룬다 — 여기선 통과시킨다.
     sut.assertOrderInViewScope = jest.fn().mockResolvedValue(undefined);
@@ -271,6 +296,7 @@ describe('OrderService.deliveryCancel — wallet-managed mirror', () => {
     const userRepository = {
       findOneOrFail: jest.fn().mockResolvedValue(oneUser),
       save: jest.fn().mockResolvedValue(oneUser),
+      createQueryBuilder: jest.fn(mirrorBuilder),
     };
     const orderDeliveryRepository: any = {
       update: jest.fn().mockResolvedValue({ affected: 1 }),
@@ -280,6 +306,10 @@ describe('OrderService.deliveryCancel — wallet-managed mirror', () => {
         const b: any = {
           innerJoin: () => b,
           select: () => b,
+          // 전체취소의 발송건 CANCEL 은 조건부 UPDATE(CAS)다 — 조건 검증은 다른 스펙 소관.
+          update: () => b,
+          set: () => b,
+          execute: async () => ({ affected: 3 }),
           where: () => b,
           andWhere: () => b,
           getCount: async () => 0,

@@ -86,12 +86,39 @@ describe('OrderService.deliveryCancel — 되돌릴 수 없는 발송건 가드'
       save: jest.fn(async () => order),
       manager: { findOne: jest.fn(async () => null) },
     };
+    // 레거시 미러는 이제 DB 증감식 UPDATE 다 — set 에 넘긴 SQL 조각과 파라미터를 캡처한다.
+    const mirrorUpdates: Array<{ set: Record<string, () => string>; params: unknown; where: unknown }> = [];
+    const makeMirrorBuilder = () => () => {
+      const captured = { set: {}, params: null, where: null } as any;
+      const mb: any = {
+        update: () => mb,
+        set: (v: any) => {
+          captured.set = v;
+          return mb;
+        },
+        where: (_c: string, p: unknown) => {
+          captured.where = p;
+          return mb;
+        },
+        setParameters: (p: unknown) => {
+          captured.params = p;
+          return mb;
+        },
+        execute: async () => {
+          mirrorUpdates.push(captured);
+          return { affected: 1 };
+        },
+      };
+      return mb;
+    };
     sut.userRepository = {
       findOneOrFail: jest.fn(async () => oneUser),
       save: jest.fn(async () => oneUser),
       update: jest.fn(async () => ({ affected: 1 })),
+      createQueryBuilder: jest.fn(makeMirrorBuilder()),
     };
-    sut.userCompanyRepository = { save: jest.fn() };
+    sut.userCompanyRepository = { save: jest.fn(), createQueryBuilder: jest.fn(makeMirrorBuilder()) };
+    sut.__mirrorUpdates = mirrorUpdates;
     // ★ 조건식을 캡처한다. getCount 만 스텁하면 판정 조건을 통째로 지워도 전부 통과해
     //   "되돌릴 수 없는 건" 의 정의가 아무것도 고정되지 않는다(뮤테이션으로 확인된 공백).
     const guardConditions: string[] = [];

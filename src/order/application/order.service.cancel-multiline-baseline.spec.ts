@@ -94,12 +94,39 @@ describe('OrderService.deliveryCancel — 다중 상품행 주문 현행 동작 
       save: jest.fn(async () => order),
       manager: externalManager,
     };
+    // 레거시 미러는 이제 DB 증감식 UPDATE 다 — set 에 넘긴 SQL 조각과 파라미터를 캡처한다.
+    const mirrorUpdates: Array<{ set: Record<string, () => string>; params: unknown; where: unknown }> = [];
+    const makeMirrorBuilder = () => () => {
+      const captured = { set: {}, params: null, where: null } as any;
+      const mb: any = {
+        update: () => mb,
+        set: (v: any) => {
+          captured.set = v;
+          return mb;
+        },
+        where: (_c: string, p: unknown) => {
+          captured.where = p;
+          return mb;
+        },
+        setParameters: (p: unknown) => {
+          captured.params = p;
+          return mb;
+        },
+        execute: async () => {
+          mirrorUpdates.push(captured);
+          return { affected: 1 };
+        },
+      };
+      return mb;
+    };
     sut.userRepository = {
       findOneOrFail: jest.fn(async () => oneUser),
       save: jest.fn(async () => oneUser),
       update: jest.fn(async () => ({ affected: 1 })),
+      createQueryBuilder: jest.fn(makeMirrorBuilder()),
     };
-    sut.userCompanyRepository = { save: jest.fn() };
+    sut.userCompanyRepository = { save: jest.fn(), createQueryBuilder: jest.fn(makeMirrorBuilder()) };
+    sut.__mirrorUpdates = mirrorUpdates;
     // 전체취소의 발송건 CANCEL 은 조건부 UPDATE(CAS)다 — 조건과 SET 을 캡처해 단언한다.
     const cancelUpdate = { conditions: [] as string[], set: {} as Record<string, unknown>, executed: 0 };
     sut.__cancelUpdate = cancelUpdate;
@@ -198,6 +225,45 @@ describe('OrderService.deliveryCancel — 다중 상품행 주문 현행 동작 
       cancelReason: expect.any(String),
       mutationClaimedAt: expect.any(Date),
     });
+  });
+
+  // ★ 레거시 미러(회사 예치금 / 사용자 예치금·여신)는 **DB 증감식**으로 반영해야 한다.
+  //   읽은 값 + 델타를 되쓰면(`balance = 60000`) 같은 고객사의 **다른 주문**이 동시에 취소될 때
+  //   둘 다 같은 옛 값을 읽고 각자 더해 되쓰므로 나중 커밋이 앞의 반영을 통째로 덮는다.
+  //   지갑 원장은 두 건 다 맞는데 화면·정산 잔액만 한 건분 모자란다 — 에러도 로그도 없는 사고다.
+  //   `x = x + :delta` 로 넘기면 UPDATE 가 행 락 안에서 현재값 기준으로 계산해 유실이 사라진다.
+  //   ※ 문구가 아니라 **형태**(SQL 조각 안에 컬럼명이 다시 등장하는가)를 본다 — 절대값으로
+  //     되돌리면 그 조건이 곧바로 깨진다.
+  it('레거시 미러는 절대값이 아니라 증감식으로 반영한다 (동시 취소 유실 차단)', async () => {
+    const { sut } = buildSut();
+
+    await sut.deliveryCancel({ id: 1 }, body);
+
+    const updates = sut.__mirrorUpdates as Array<{ set: Record<string, () => string>; params: any }>;
+    expect(updates.length).toBeGreaterThan(0);
+
+    for (const u of updates) {
+      const [column, expression] = Object.entries(u.set)[0];
+      // set 에 넘긴 값이 **함수**여야 SQL 조각으로 나간다. 값이면 절대값 저장이다.
+      expect(typeof expression).toBe('function');
+      const sql = (expression as () => string)();
+      // `all_settle_amount + :allSettleDelta` 처럼 자기 컬럼을 다시 읽는 형태여야 한다.
+      expect(sql).toMatch(/^(all_settle_amount|balance) [+-] :/);
+      expect(column).toMatch(/^(allSettleAmount|balance)$/);
+      // 델타는 파라미터로 넘어간다 — 값이 SQL 에 박히면 안 된다(바인딩 유지).
+      expect(u.params).toBeTruthy();
+    }
+  });
+
+  // ★ 통짜 save 로 되돌아가면 이 트랜잭션이 건드리지도 않은 컬럼까지 락 없이 읽은 스냅샷으로
+  //   덮어쓴다. 위 증감식 단언과 짝으로 둔다 — 형태만 보면 save 가 남아 있어도 통과하기 때문이다.
+  it('잔액 엔티티를 통째로 save 하지 않는다', async () => {
+    const { sut } = buildSut();
+
+    await sut.deliveryCancel({ id: 1 }, body);
+
+    expect(sut.userRepository.save).not.toHaveBeenCalled();
+    expect(sut.userCompanyRepository.save).not.toHaveBeenCalled();
   });
 
   // ★ 단일 라인 fixture 로는 이 차이가 드러나지 않는다.

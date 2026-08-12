@@ -47,10 +47,23 @@ describe('OrderService.deliveryCancel — 취소메일 after-commit 배선', () 
       save: jest.fn(async () => order),
       manager: {},
     };
+    // 레거시 미러는 DB 증감식 UPDATE 다. 이 스펙의 관심사는 통지 배선이라 체인만 이어 준다
+    // (증감식 형태 검증은 cancel-multiline-baseline.spec 소관).
+    const mirrorBuilder = () => {
+      const mb: any = {
+        update: () => mb,
+        set: () => mb,
+        where: () => mb,
+        setParameters: () => mb,
+        execute: async () => ({ affected: 1 }),
+      };
+      return mb;
+    };
     const userRepository: any = {
       findOneOrFail: async () => oneUser,
       save: jest.fn(async () => oneUser),
       update: jest.fn(async () => undefined),
+      createQueryBuilder: jest.fn(mirrorBuilder),
     };
     const orderDeliveryRepository: any = {
       update: jest.fn(async () => undefined),
@@ -74,7 +87,10 @@ describe('OrderService.deliveryCancel — 취소메일 after-commit 배선', () 
         return b;
       },
     };
-    const userCompanyRepository: any = { save: jest.fn(async () => company) };
+    const userCompanyRepository: any = {
+      save: jest.fn(async () => company),
+      createQueryBuilder: jest.fn(mirrorBuilder),
+    };
     const walletManagedPredicate: any = { isWalletManaged: async () => false };
     const ssgEventService: any = { restoreEventBalance: jest.fn(async () => undefined) };
     const orderCancelNotificationService: any = { notifyDirectOrderCancel: jest.fn(async () => undefined) };
