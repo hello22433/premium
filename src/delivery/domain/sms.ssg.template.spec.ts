@@ -1,16 +1,20 @@
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
-import { smsSsgTemplate } from './sms.ssg.template';
+import { smsSsgTemplate, SSG_NOTICE_FALLBACK } from './sms.ssg.template';
+
+function buildOrderDelivery(memo?: string | null): OrderDeliveryEntity {
+  return {
+    personalCode: '99999',
+    barCode: '88888',
+    expireAt: new Date(2026, 11, 31),
+    orderProductMapping: {
+      product: { name: '신세계 모바일 교환권 10,000원', memo },
+    },
+  } as OrderDeliveryEntity;
+}
 
 describe('smsSsgTemplate', () => {
-  it('신세계 발송 문구를 승인된 순서와 표현으로 생성한다', () => {
-    const orderDelivery = {
-      personalCode: '99999',
-      barCode: '88888',
-      expireAt: new Date(2026, 11, 31),
-      orderProductMapping: {
-        product: { name: '신세계 모바일 교환권 10,000원' },
-      },
-    } as OrderDeliveryEntity;
+  it('memo 가 비면 폴백 상수로 승인된 순서와 표현을 유지한다', () => {
+    const orderDelivery = buildOrderDelivery(null);
 
     expect(smsSsgTemplate(orderDelivery)).toBe(`
 
@@ -40,5 +44,66 @@ describe('smsSsgTemplate', () => {
 ▷고객센터 운영시간: 평일 9시~18시
 (점심시간 12시~13시 / 토, 일, 공휴일 휴무)
 `);
+  });
+
+  it('product.memo 가 있으면 그 문구를 정본으로 쓰고, 도입문장 뒤에 발송건별 정보를 끼워 넣는다', () => {
+    const orderDelivery = buildOrderDelivery('도입문장입니다\n\n▷교환처: 개정된 교환처\n▷유의사항\n- 개정된 유의사항');
+
+    expect(smsSsgTemplate(orderDelivery)).toBe(`
+
+도입문장입니다
+
+▷상품명: 신세계 모바일 교환권 10,000원
+▷쿠폰번호: 99999
+▷인증번호: 88888
+▷교환기간: 2026-12-31 까지
+▷교환처: 개정된 교환처
+▷유의사항
+- 개정된 유의사항
+`);
+  });
+
+  it('memo 에 빈 줄이 없으면 발송건별 정보를 앞에 두고 문구 전체를 뒤에 붙인다', () => {
+    const orderDelivery = buildOrderDelivery('빈 줄 없는 안내문구');
+
+    expect(smsSsgTemplate(orderDelivery)).toBe(`
+
+▷상품명: 신세계 모바일 교환권 10,000원
+▷쿠폰번호: 99999
+▷인증번호: 88888
+▷교환기간: 2026-12-31 까지
+빈 줄 없는 안내문구
+`);
+  });
+
+  it('빈 줄에 공백·탭이 섞여 있어도 도입문장을 분리한다', () => {
+    const orderDelivery = buildOrderDelivery('도입문장입니다\n \t \n▷교환처: 개정된 교환처');
+
+    expect(smsSsgTemplate(orderDelivery)).toBe(`
+
+도입문장입니다
+
+▷상품명: 신세계 모바일 교환권 10,000원
+▷쿠폰번호: 99999
+▷인증번호: 88888
+▷교환기간: 2026-12-31 까지
+▷교환처: 개정된 교환처
+`);
+  });
+
+  it('CRLF·단독 CR 줄바꿈을 정규화해 LF 입력과 같은 결과를 낸다', () => {
+    const lf = smsSsgTemplate(buildOrderDelivery('도입문장입니다\n\n▷교환처: 개정된 교환처'));
+
+    expect(smsSsgTemplate(buildOrderDelivery('도입문장입니다\r\n\r\n▷교환처: 개정된 교환처'))).toBe(lf);
+    expect(smsSsgTemplate(buildOrderDelivery('도입문장입니다\r\r▷교환처: 개정된 교환처'))).toBe(lf);
+  });
+
+  it('공백만 있는 memo 는 폴백과 같은 결과를 낸다', () => {
+    expect(smsSsgTemplate(buildOrderDelivery('   \n  '))).toBe(smsSsgTemplate(buildOrderDelivery(null)));
+  });
+
+  it('폴백 상수는 백필 SQL 과 같은 도입문장·빈 줄 구조를 갖는다', () => {
+    expect(SSG_NOTICE_FALLBACK.startsWith('본 교환권은 지류상품권으로')).toBe(true);
+    expect(SSG_NOTICE_FALLBACK.indexOf('\n\n')).toBeGreaterThan(0);
   });
 });
