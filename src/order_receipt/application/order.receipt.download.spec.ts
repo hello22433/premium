@@ -24,7 +24,8 @@ describe('OrderReceiptService.downloadFile', () => {
       downloadWithPath: jest.fn().mockResolvedValue('/tmp/x.xlsx'),
     };
     const autoOrderService: any = { run: jest.fn() };
-    return { sut: new OrderReceiptService(repo, fileService, autoOrderService), fileService };
+    const userRepository: any = {};
+    return { sut: new OrderReceiptService(repo, userRepository, fileService, autoOrderService), fileService };
   };
 
   const owner = { id: 10, authority: IUserAuthority.CORPORATE_ADMIN } as any;

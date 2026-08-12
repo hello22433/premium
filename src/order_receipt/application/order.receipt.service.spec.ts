@@ -70,8 +70,17 @@ describe('OrderReceiptService access and status policy', () => {
   const createService = (receipt: any) => {
     const repository = {
       findOne: jest.fn().mockResolvedValue(receipt),
+      insert: jest.fn(),
       save: jest.fn(async (entity) => entity),
       softDelete: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+    const userRepository = {
+      findOne: jest.fn().mockResolvedValue({ id: operationAdmin.id, personName: 'operation' }),
+      findOneOrFail: jest.fn().mockResolvedValue({
+        id: 20,
+        personName: 'owner',
+        company: { businessName: 'company' },
+      }),
     };
 
     // getDetail 이 첨부 원본명 조회에 사용 — 이 spec 은 접근/상태 정책만 검증하므로 단순 stub
@@ -88,8 +97,9 @@ describe('OrderReceiptService access and status policy', () => {
       getStoredResult: jest.fn().mockResolvedValue(null),
     };
     return {
-      service: new OrderReceiptService(repository as any, fileService as any, autoOrderService),
+      service: new OrderReceiptService(repository as any, userRepository as any, fileService as any, autoOrderService),
       repository,
+      userRepository,
       fileService,
       autoOrderService,
       receipt,
@@ -301,6 +311,43 @@ describe('OrderReceiptService access and status policy', () => {
     expect(detail.files).toHaveLength(12);
     expect(fileService.getOriginalName).toHaveBeenCalledTimes(OrderReceiptService.MAX_FILE_META_LOOKUP);
     expect(fileService.extractOriginalFileName).toHaveBeenCalledTimes(12 - OrderReceiptService.MAX_FILE_META_LOOKUP);
+  });
+
+  it('keeps a snapshotted null company instead of exposing a company assigned later', async () => {
+    const { service } = createService(
+      makeReceipt({
+        snapshotPersonName: 'original owner',
+        snapshotBusinessName: null,
+        user: { personName: 'current owner', company: { businessName: 'later company' } },
+      }),
+    );
+
+    await expect((service.getDetail as any)(operationAdmin, { id: 100 })).resolves.toMatchObject({
+      userName: 'original owner',
+      userCompanyName: null,
+    });
+  });
+
+  it('does not create a receipt when the author snapshot cannot be loaded', async () => {
+    const { service, repository, userRepository } = createService(makeReceipt());
+    userRepository.findOneOrFail.mockRejectedValueOnce(new Error('author not found'));
+
+    await expect(
+      service.create(corporateUser(20), {
+        title: 'receipt',
+        filePath: ['/files/a.pdf'],
+      } as any),
+    ).rejects.toThrow('author not found');
+    expect(repository.insert).not.toHaveBeenCalled();
+  });
+
+  it('does not save a status change when the processor snapshot cannot be loaded', async () => {
+    const { service, repository, userRepository } = createService(makeReceipt());
+    userRepository.findOneOrFail.mockRejectedValueOnce(new Error('processor not found'));
+
+    await expect(service.reject(operationAdmin, 100, { rejectReason: 'reason' })).rejects.toThrow('processor not found');
+
+    expect(repository.save).not.toHaveBeenCalled();
   });
 
   it('allows admins to read details and super admin to delete reviewing receipts', async () => {

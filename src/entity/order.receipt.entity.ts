@@ -51,6 +51,23 @@ export class OrderReceiptEntity extends BaseEntity {
   @Column({ nullable: true, comment: 'FK) user.id, 승인/반려 처리자 id' })
   processedUserId: number | null;
 
+  // ────────────────────────────────────────────────────────────
+  // 표시값 스냅샷 (접수/처리 시점 고정)
+  // 계정관리에서 담당자가 교체돼 person_name 이 바뀌면 과거 접수 이력의 담당자까지
+  // 소급으로 바뀜 보이는 것을 막는다(주문·QnA 와 동일 정책).
+  // snapshotPersonName 이 있으면 스냅샷 도입 후 행으로 보고 회사명 NULL 도 당시 값으로 유지한다.
+  // snapshotPersonName 이 NULL 인 레거시 행만 user FK join 값으로 fallback 한다.
+  // ────────────────────────────────────────────────────────────
+
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '[snapshot] 접수 등록 시점 담당자명' })
+  snapshotPersonName: string | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '[snapshot] 접수 등록 시점 회사명' })
+  snapshotBusinessName: string | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true, comment: '[snapshot] 승인/반려 처리 시점 처리자명' })
+  snapshotProcessedPersonName: string | null;
+
   @ManyToOne(() => UserEntity, { createForeignKeyConstraints: false })
   user: UserEntity;
 
