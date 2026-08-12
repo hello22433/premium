@@ -175,7 +175,11 @@ import { IProductType } from '../../product/interface/product.type';
 import { defaultOrderMidImagePath, defaultOrderTopImagePath } from '../../const';
 import { OrderStatusExcelMapping } from '../domain/order.excel.mapping';
 import { OrderFeeCalculator, applyCardSurcharge } from '../domain/order.fee.calculator';
-import { calculateOrderSettlementAmount, buildSettlementDisplayLines } from '../../util/settle-fee.util';
+import {
+  calculateOrderSettlementAmount,
+  buildSettlementDisplayLines,
+  notDiscardedReplacedOriginPredicate,
+} from '../../util/settle-fee.util';
 import { OrderCustomerViewDto } from '../api/dto/order.customer.view.dto';
 import { MaskingUtil } from '../../common/utils/masking.util';
 import { resolveExpireDays } from '../../common/utils/expire.util';
@@ -6279,11 +6283,19 @@ export class OrderService {
 
     // 남은 발송건이 없으면 주문도 취소로 내린다. 남아 있으면 DELIVERY_CONFIRMED 를 유지해야
     // 잔여분이 정상 발송되고, 전건 터미널이 됐을 때 배치가 완료·정산으로 넘긴다.
+    //
+    // ★ 취소 축(status)만 보면 안 된다 (197-16 리뷰 P1). 발송건의 생사는 **두 축**이다 —
+    //   status(취소됐나)와 coupon_status(폐기됐나). 폐기는 status 를 건드리지 않으므로,
+    //   폐기 후 재발행된 원본은 `status=COMPLETE / coupon_status=CANCEL` 로 남는다.
+    //   1건 주문을 재발행한 뒤 새 행을 부분취소하면 살아 있는 발송건은 0 인데 죽은 원본이
+    //   1 건으로 잡혀, 주문이 DELIVERY_CONFIRMED 로 남고 allocation 도 안 닫힌다(settleAmount 만 0).
+    //   정산 표시(buildSettlementDisplayLines)는 이미 그 원본을 빼고 있었다 — 술어를 공유해 맞춘다.
     const remaining = await this.orderDeliveryRepository
       .createQueryBuilder('od')
       .innerJoin('od.orderProductMapping', 'opm')
       .where('opm.orderId = :orderId', { orderId })
       .andWhere('od.status != :canceled', { canceled: IOrderDeliveryStatus.CANCEL })
+      .andWhere(notDiscardedReplacedOriginPredicate('od'))
       .getCount();
 
     // ★ 고객 메일에 쓸 "앞으로 나갈 건수" 는 위 remaining 과 **다른 숫자**다. 재활용하면 안 된다.
@@ -6292,11 +6304,14 @@ export class OrderService {
     //   그러나 메일은 "남은 건은 예정대로 발송됩니다" 라고 안내하므로 **아직 안 나간 것만** 세야 한다.
     //   이 티켓의 대표 시나리오가 "일부 발송완료 + 일부 대기" 라, 재활용하면 이미 받은 쿠폰·실패 건까지
     //   "앞으로 발송" 으로 안내하는 거짓 메일이 고객에게 나간다(발송완료 1 + 실패 1 + 대기 1 → "3건 발송 예정").
+    //   ★ 여기에도 같은 술어를 건다. 폐기 후 재발행은 원본이 WAIT 인 채로 남을 수 있는데(발송 전 폐기),
+    //     그러면 죽은 원본과 그 자리를 채운 새 행이 **둘 다** 세어져 "발송 예정 2건" 이라고 안내한다.
     const remainingWaiting = await this.orderDeliveryRepository
       .createQueryBuilder('od')
       .innerJoin('od.orderProductMapping', 'opm')
       .where('opm.orderId = :orderId', { orderId })
       .andWhere('od.status = :wait', { wait: IOrderDeliveryStatus.WAIT })
+      .andWhere(notDiscardedReplacedOriginPredicate('od'))
       .getCount();
 
     // ★ 주문의 정산금액을 "취소 반영 후 값" 으로 맞춘다.

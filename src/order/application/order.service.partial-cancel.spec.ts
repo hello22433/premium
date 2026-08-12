@@ -498,6 +498,25 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
         { canceled: IOrderDeliveryStatus.CANCEL },
       ]);
     });
+
+    // ★ 발송건의 생사는 **두 축**이다 — status(취소됐나)와 coupon_status(폐기됐나).
+    //   폐기는 status 를 건드리지 않으므로, 폐기 후 재발행된 원본은 status 축에서 "살아 있음" 으로
+    //   보인다. 그 원본까지 세면 실제 유효 발송건이 0 인데도 주문이 DELIVERY_CONFIRMED 로 남고
+    //   allocation 이 안 닫힌다. 메일 쪽은 죽은 원본과 새 행을 둘 다 세어 "발송 예정 2건" 이 된다.
+    //   정산 표시(buildSettlementDisplayLines)는 이미 같은 원본을 빼고 있었다 — 술어를 공유한다.
+    it('두 잔여 집계 모두 폐기 후 재발행으로 대체된 원본을 뺀다 (status 축만 보지 않는다)', async () => {
+      const { sut, remainingConditions } = buildSut();
+
+      await call(sut, CANCELABLE);
+
+      const excluded = remainingConditions.filter(
+        ([condition]) => condition.includes('replaced_from_id') && condition.includes('coupon_status'),
+      );
+      // 주문상태 판정용(status != CANCEL)과 메일용(status = WAIT) — **둘 다** 걸려 있어야 한다.
+      expect(excluded).toHaveLength(2);
+      // 되감긴 재발행(soft-delete 된 대체 행)은 원본을 되살리므로 제외 대상이 아니다.
+      expect(excluded[0][0]).toContain('deleted_at IS NULL');
+    });
   });
 
   // ★ 정산정보 입력/수정은 `difference = order.settleAmount - 재계산금액` 만큼 잔액을 조정한다.
