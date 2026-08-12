@@ -68,7 +68,7 @@ export class ProductEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 10, comment: '쿠폰번호 생성 방법' })
   couponMethod: string;
 
-  @Column({ type: 'varchar', length: 500, nullable: true, comment: '유의사항' })
+  @Column({ type: 'varchar', length: 4000, nullable: true, comment: '유의사항' })
   memo: string | null;
 
   @Column({ comment: '상품 사용 상태 ex) 사용: USE 미사용: UNUSED 영구 미사용: PERMANENTLY_UNUSED' })

@@ -19,6 +19,7 @@ import {
   ProductGetUpdateHistoryReqParamDto,
   ProductGetUpdateHistoryReqQueryDto,
   ProductSetLikeReqDto,
+  ProductSsgNoticeUpdateReqDto,
   ProductSsgReqQueryDto,
   ProductUpdatePartialReqDto,
 } from '../api/product.req.dto';
@@ -30,6 +31,7 @@ import {
   ClassificationGetSearchListResDto,
   ProductGetDetailResDto,
   ProductGetListResDto,
+  ProductGetSsgNoticeResDto,
   ProductGetSsgResDto,
   ProductGetUpdateHistoryResDto,
 } from '../api/product.res.dto';
@@ -78,6 +80,7 @@ import { IFileStorage } from '../../file/interface/file.storage';
 import { ProductSharedListFileEntity } from '../../entity/product.shared.list.file.entity';
 import { ProductChoiceMappingEntity } from '../../entity/product.choice.mapping.entity';
 import { isAutoUnusedByHistory, resolveChoiceUseStatus } from '../../product_choice/domain/choice.use.status';
+import { PRODUCT_MEMO_MAX_LENGTH, normalizeSsgNotice } from '../domain/ssg.notice';
 
 @Injectable()
 export class ProductService {
@@ -819,6 +822,108 @@ export class ProductService {
       couponMethod: product.couponMethod,
       memo: product.memo,
       useStatus: product.useStatus,
+    };
+  }
+
+  /**
+   * 신세계 상품 전체(권종별 행)를 찾는다. 상품관리 목록은 SSG 를 제외하므로 유의사항 전용 경로에서만 쓴다.
+   */
+  private ssgProductQuery() {
+    return this.productRepository
+      .createQueryBuilder('product')
+      .innerJoin('product.partnerCompany', 'partnerCompany')
+      .where('product.type = :productType', { productType: IProductType.SSG })
+      .andWhere('partnerCompany.type = :partnerCompanyType', { partnerCompanyType: IPartnerCompanyType.SSG })
+      .orderBy('product.id', 'ASC');
+  }
+
+  /**
+   * 신세계 유의사항 조회.
+   *
+   * 신세계 상품은 권종(가격)별로 행이 나뉜 뿐 유의사항은 전 권종이 같아야 한다.
+   * 혹시 과거 데이터가 갈라져 있으면 신규 권종 생성 시 템플릿이 되는 가장 오래된 행을 정본으로 보고,
+   * 화면이 경고할 수 있도록 distinctNoticeCount 를 함께 내려준다.
+   */
+  async getSsgNotice(): Promise<ProductGetSsgNoticeResDto> {
+    const products = await this.ssgProductQuery().getMany();
+    if (products.length === 0) {
+      throw new BadRequestException('신세계 상품이 존재하지 않습니다.');
+    }
+
+    return this.toSsgNoticeRes(products);
+  }
+
+  /**
+   * 신세계 유의사항을 모든 권종에 동일하게 저장한다.
+   *
+   * 문자도 쿠폰 페이지도 product.memo 를 정본으로 읽으므로 저장 즉시 두 경로에 함께 반영된다.
+   * 수정 전·후 문구는 상품별 수정 이력에 그대로 남기어 언제든 되돌릴 수 있게 한다.
+   */
+  @Transactional({ isolationLevel: IsolationLevel.READ_COMMITTED })
+  async updateSsgNotice(
+    user: ILoginUserInfo,
+    getBody: ProductSsgNoticeUpdateReqDto,
+  ): Promise<ProductGetSsgNoticeResDto> {
+    const notice = normalizeSsgNotice(getBody.notice);
+    if (notice.trim().length === 0) {
+      throw new BadRequestException('유의사항을 입력해 주세요.');
+    }
+    // MySQL varchar(4000) 은 코드포인트 단위다. JS string.length 는 UTF-16 코드유닛이라
+    // 이모지 등 surrogate pair 문자에서 2로 세어져 class-validator/MySQL 허용 범위와 어긋난다.
+    const codePointLength = [...notice].length;
+    if (codePointLength > PRODUCT_MEMO_MAX_LENGTH) {
+      throw new BadRequestException(`유의사항은 ${PRODUCT_MEMO_MAX_LENGTH}자를 넘을 수 없습니다.`);
+    }
+
+    // 동시 수정 시 beforeValue 가 실제 직전 값이어야 되돌릴 근거가 된다.
+    // id 오름차순 정렬 + pessimistic_write 로 직렬화하고, 데드락을 피한다.
+    const products = await this.ssgProductQuery()
+      .setLock('pessimistic_write')
+      .getMany();
+    if (products.length === 0) {
+      throw new BadRequestException('신세계 상품이 존재하지 않습니다.');
+    }
+
+    const changedProducts = products.filter((product) => (product.memo ?? '') !== notice);
+    if (changedProducts.length > 0) {
+      await this.productRepository.update(
+        { id: In(changedProducts.map((product) => product.id)) },
+        { memo: notice },
+      );
+
+      const histories = changedProducts.map((product) => {
+        const history = new ProductUpdateHistoryEntity();
+        history.productId = product.id;
+        history.userId = user.id;
+        history.key = 'memo';
+        history.keyName = ProductUpdateHistoryKeyName('memo');
+        history.beforeValue = product.memo ?? null;
+        history.afterValue = notice;
+        history.reason = getBody.reason ?? null;
+        return history;
+      });
+      await this.productUpdateHistoryRepository.insert(histories);
+    }
+
+    return this.toSsgNoticeRes(products.map((product) => ({ ...product, memo: notice }) as ProductEntity));
+  }
+
+  private async toSsgNoticeRes(products: ProductEntity[]): Promise<ProductGetSsgNoticeResDto> {
+    const notice = products[0].memo ?? '';
+
+    const lastHistory = await this.productUpdateHistoryRepository.findOne({
+      where: { productId: In(products.map((product) => product.id)), key: 'memo' },
+      order: { id: 'DESC' },
+      relations: ['user'],
+    });
+
+    return {
+      notice,
+      productCount: products.length,
+      distinctNoticeCount: new Set(products.map((product) => product.memo ?? '')).size,
+      noticeByteLength: Buffer.byteLength(notice, 'utf8'),
+      lastUpdatedAt: lastHistory ? format(lastHistory.createdAt, DateFormatStr) : null,
+      lastUpdatedUserName: lastHistory ? (lastHistory.user?.email ?? '삭제 회원') : null,
     };
   }
 

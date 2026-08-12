@@ -41,6 +41,7 @@ import {
   ProductGetUpdateHistoryReqQueryDto,
   ProductSetLikeReqDto,
   ProductSharedListUploadReqDto,
+  ProductSsgNoticeUpdateReqDto,
   ProductSsgReqQueryDto,
   ProductUpdatePartialReqDto,
 } from './product.req.dto';
@@ -50,6 +51,7 @@ import {
   ProductGetDetailResDto,
   ProductGetLinkAverageExpireDayResDto,
   ProductGetListResDto,
+  ProductGetSsgNoticeResDto,
   ProductGetSsgResDto,
   ProductSharedListFileResDto,
   ProductGetUpdateHistoryResDto,
@@ -137,6 +139,45 @@ export class ProductController {
   @Get('/product/ssg')
   getSsg(@Query() getQuery: ProductSsgReqQueryDto) {
     return this.productService.getSsg(getQuery);
+  }
+
+  @ApiOperation({
+    summary: '신세계 유의사항 조회 API',
+    description:
+      '신세계 상품 전체가 공유하는 유의사항 문구를 조회합니다. 이 문구는 발송 문자와 쿠폰 페이지에 함께 쓰입니다.',
+  })
+  @ApiOkResponse({
+    type: ProductGetSsgNoticeResDto,
+    description: '성공적으로 조회한 경우',
+  })
+  @ApiBadRequestResponse({
+    description: '신세계 상품이 하나도 없는 경우',
+  })
+  // =========================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @Get('/product/ssg/notice')
+  getSsgNotice() {
+    return this.productService.getSsgNotice();
+  }
+
+  @ApiOperation({
+    summary: '신세계 유의사항 수정 API',
+    description:
+      '입력한 문구를 신세계 상품 전 권종에 동일하게 저장합니다. 줄바꿈과 빈 줄은 입력한 모양 그대로 유지되며, ' +
+      '수정 전·후 문구는 상품별 수정 이력에 남습니다.',
+  })
+  @ApiOkResponse({
+    type: ProductGetSsgNoticeResDto,
+    description: '성공적으로 수정한 경우. 저장된 최신 문구를 다시 내려줍니다.',
+  })
+  @ApiBadRequestResponse({
+    description: '문구가 비어 있거나 길이 제한을 넘는 경우<br>신세계 상품이 하나도 없는 경우',
+  })
+  // =========================================
+  @UseGuards(AuthUserSuperAndOperationAdminGuard)
+  @Patch('/product/ssg/notice')
+  updateSsgNotice(@User() user: ILoginUserInfo, @Body() getBody: ProductSsgNoticeUpdateReqDto) {
+    return this.productService.updateSsgNotice(user, getBody);
   }
 
   @ApiOperation({
