@@ -35,6 +35,8 @@ describe('ProductController 인가 가드 (HTTP)', () => {
     getDetail: jest.fn().mockResolvedValue({}),
     getUpdateHistory: jest.fn().mockResolvedValue({}),
     getLinkAverageExpireDay: jest.fn().mockResolvedValue({ averageExpireDay: null }),
+    getSsgNotice: jest.fn().mockResolvedValue({}),
+    updateSsgNotice: jest.fn().mockResolvedValue({}),
   };
 
   const authService = {
@@ -81,6 +83,8 @@ describe('ProductController 인가 가드 (HTTP)', () => {
     ['get', '/product/detail/1'], // getDetail (#32)
     ['get', '/product/update-history/1'], // getUpdateHistory (#32)
     ['get', '/product/link/average-expire-day'], // getLinkAverageExpireDay (D3)
+    ['get', '/product/ssg/notice'], // getSsgNotice
+    ['patch', '/product/ssg/notice'], // updateSsgNotice
   ];
 
   describe('CORPORATE_ADMIN 은 403 으로 차단된다', () => {
@@ -149,6 +153,36 @@ describe('ProductController 인가 가드 (HTTP)', () => {
 
     it('토큰 없으면 401', async () => {
       await request(app.getHttpServer()).get('/product/link/average-expire-day?headPersonUserId=1').expect(401);
+    });
+  });
+
+  describe('신세계 유의사항 — 운영관리자 이상만 조회·수정한다', () => {
+    beforeEach(() => jest.clearAllMocks());
+
+    it('OPERATION_ADMIN: GET → 가드 통과', async () => {
+      await request(app.getHttpServer())
+        .get('/product/ssg/notice')
+        .set('Authorization', auth(IUserAuthority.OPERATION_ADMIN))
+        .expect(200);
+
+      expect(productService.getSsgNotice).toHaveBeenCalled();
+    });
+
+    it('OPERATION_ADMIN: PATCH → 가드 통과 후 로그인 유저와 본문이 서비스로 전달된다', async () => {
+      await request(app.getHttpServer())
+        .patch('/product/ssg/notice')
+        .set('Authorization', auth(IUserAuthority.OPERATION_ADMIN))
+        .send({ notice: '새 문구' })
+        .expect(200);
+
+      expect(productService.updateSsgNotice).toHaveBeenCalledWith(
+        expect.objectContaining({ authority: IUserAuthority.OPERATION_ADMIN }),
+        expect.objectContaining({ notice: '새 문구' }),
+      );
+    });
+
+    it('토큰 없으면 401', async () => {
+      await request(app.getHttpServer()).get('/product/ssg/notice').expect(401);
     });
   });
 

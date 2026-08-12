@@ -67,3 +67,38 @@ export class ProductSharedListFileResDto {
   })
   createdAt: string | null;
 }
+
+export class ProductGetSsgNoticeResDto {
+  @ApiProperty({
+    description: '신세계 상품 유의사항 전문. 줄바꿈은 LF 로 통일되어 저장된 그대로 내려갑니다.',
+  })
+  notice: string;
+
+  @ApiProperty({
+    description: '이 문구를 사용하는 신세계 상품(권종) 수',
+  })
+  productCount: number;
+
+  @ApiProperty({
+    description:
+      '권종별로 서로 다른 문구가 몇 종류인지. 정상 상태는 1 이며, 2 이상이면 과거 데이터가 갈라진 것이고 저장하면 전부 하나로 맞춰집니다.',
+  })
+  distinctNoticeCount: number;
+
+  @ApiProperty({
+    description: '유의사항 바이트 수(UTF-8). 문자 발송 분량을 가늘하는 참고값입니다.',
+  })
+  noticeByteLength: number;
+
+  @ApiPropertyOptional({
+    description: '마지막으로 유의사항을 수정한 일시. 수정 이력이 없으면 null',
+    nullable: true,
+  })
+  lastUpdatedAt: string | null;
+
+  @ApiPropertyOptional({
+    description: '마지막으로 유의사항을 수정한 관리자. 수정 이력이 없으면 null',
+    nullable: true,
+  })
+  lastUpdatedUserName: string | null;
+}
