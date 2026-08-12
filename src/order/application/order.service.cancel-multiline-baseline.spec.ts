@@ -100,16 +100,39 @@ describe('OrderService.deliveryCancel — 다중 상품행 주문 현행 동작 
       update: jest.fn(async () => ({ affected: 1 })),
     };
     sut.userCompanyRepository = { save: jest.fn() };
+    // 전체취소의 발송건 CANCEL 은 조건부 UPDATE(CAS)다 — 조건과 SET 을 캡처해 단언한다.
+    const cancelUpdate = { conditions: [] as string[], set: {} as Record<string, unknown>, executed: 0 };
+    sut.__cancelUpdate = cancelUpdate;
     sut.orderDeliveryRepository = {
       update: jest.fn(async () => ({ affected: 3 })),
       createQueryBuilder: () => {
         // select/getRawMany 는 findMappingIdsWithActiveDeliveries(취소된 상품행을 컷오프에서 제외) 용.
         // 이 스펙들은 취소된 행이 없는 상황이라 상품행 전부를 살아 있는 것으로 돌려준다.
+        let isUpdate = false;
         const b: any = {
           innerJoin: () => b,
           select: () => b,
-          where: () => b,
-          andWhere: () => b,
+          update: () => {
+            isUpdate = true;
+            return b;
+          },
+          set: (v: Record<string, unknown>) => {
+            cancelUpdate.set = v;
+            return b;
+          },
+          where: (cond: string) => {
+            if (isUpdate) cancelUpdate.conditions.push(cond);
+            return b;
+          },
+          andWhere: (cond: string) => {
+            if (isUpdate) cancelUpdate.conditions.push(cond);
+            return b;
+          },
+          execute: async () => {
+            cancelUpdate.executed += 1;
+            return { affected: 3 };
+          },
+          // CAS 뒤 "취소 안 된 발송건이 남았나" 사후검사 — 이 스펙은 남는 것이 없는 상황이다.
           getCount: async () => 0,
           getRawMany: async () => (order.orderProductMappings ?? []).map((m: any) => ({ mappingId: m.id })),
         };
@@ -151,16 +174,30 @@ describe('OrderService.deliveryCancel — 다중 상품행 주문 현행 동작 
 
     await sut.deliveryCancel({ id: 1 }, body);
 
-    expect(sut.orderDeliveryRepository.update).toHaveBeenCalledWith(
-      {
-        orderProductMappingId: In([MAPPING_A, MAPPING_B]),
-        status: Not(IOrderDeliveryStatus.CANCEL),
-        deletedAt: IsNull(),
-      },
-      // 발송건에도 취소 시각·사유를 남긴다(전체취소도 부분취소와 동일하게 채운다 —
-      // canceled_at IS NULL 이 "미취소" 와 "전체취소" 를 겸하지 않도록).
-      { status: IOrderDeliveryStatus.CANCEL, canceledAt: expect.any(Date), cancelReason: expect.any(String) },
-    );
+    const { conditions, set } = sut.__cancelUpdate;
+    expect(sut.__cancelUpdate.executed).toBe(1);
+
+    const sql = conditions.join(' | ');
+    expect(sql).toContain('orderProductMappingId IN (:...mappingIds)');
+    expect(sql).toContain('status != :canceled'); // 이미 취소된 건의 사유·시각을 덮지 않는다
+    expect(sql).toContain('deletedAt IS NULL'); // soft-delete 된 행은 건드리지 않는다
+    // ★ 사전 조회는 그 순간의 사진일 뿐이라, 갱신도 같은 신호를 다시 봐야 한다(197-16 리뷰 P1).
+    //   하나라도 빠지면 조회~갱신 사이에 발송 단계로 넘어간 건까지 덮고 전액 환불한다.
+    expect(sql).toContain('actualSendAt IS NOT NULL');
+    expect(sql).toContain('couponIssuedAt IS NOT NULL');
+    expect(sql).toContain('barCode IS NOT NULL');
+    expect(sql).toContain('claimedAt IS NOT NULL');
+    expect(sql).toContain('mutationClaimedAt < :mutationStale');
+
+    // 발송건에도 취소 시각·사유를 남긴다(전체취소도 부분취소와 동일하게 채운다 —
+    // canceled_at IS NULL 이 "미취소" 와 "전체취소" 를 겸하지 않도록).
+    // mutationClaimedAt 은 통과시킨 stale lease 를 탈취해 좀비의 뒤늦은 쓰기를 막는 값이다.
+    expect(set).toEqual({
+      status: IOrderDeliveryStatus.CANCEL,
+      canceledAt: expect.any(Date),
+      cancelReason: expect.any(String),
+      mutationClaimedAt: expect.any(Date),
+    });
   });
 
   // ★ 단일 라인 fixture 로는 이 차이가 드러나지 않는다.

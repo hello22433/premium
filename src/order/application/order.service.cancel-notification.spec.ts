@@ -60,8 +60,14 @@ describe('OrderService.deliveryCancel — 취소메일 after-commit 배선', () 
         const b: any = {
           innerJoin: () => b,
           select: () => b,
+          // 전체취소의 발송건 CANCEL 은 조건부 UPDATE(CAS)다. 이 스펙의 관심사는 통지 배선이라
+          // 조건은 보지 않고 체인만 이어 준다(조건 검증은 cancel-irreversible-guard.spec 소관).
+          update: () => b,
+          set: () => b,
+          execute: async () => ({ affected: 3 }),
           where: () => b,
           andWhere: () => b,
+          // CAS 뒤 "취소 안 된 발송건이 남았나" 사후검사 — 이 스펙은 남는 것이 없는 상황이다.
           getCount: async () => 0,
           getRawMany: async () => (order.orderProductMappings ?? []).map((m: any) => ({ mappingId: m.id })),
         };

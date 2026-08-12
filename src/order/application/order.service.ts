@@ -375,6 +375,43 @@ type ReportCounterColumns =
  */
 const NOT_CANCELABLE_IDS_IN_MESSAGE = 20;
 
+/**
+ * "되돌릴 수 없는 발송건" 판정 술어. **사전 조회와 실제 UPDATE 가 이 하나를 공유한다.**
+ *
+ * 나눠 쓰면 안 되는 이유: 사전 조회로 0 건을 확인해도 그건 그 순간의 사진일 뿐이다. 조회와 갱신
+ * 사이에 발송 배치가 WAIT 행을 집어 발급·발송을 시작할 수 있고, 갱신이 같은 조건을 다시 보지
+ * 않으면 이미 나간 건까지 CANCEL 로 덮고 전액 환불한다(197-16 리뷰 P1). 두 곳이 서로 다른
+ * 조건으로 갈리는 것을 막으려면 문장 자체를 하나만 둬야 한다.
+ *
+ * 하나라도 참이면 되돌릴 수 없다.
+ *  - actual_send_at   : 실제로 나갔다
+ *  - coupon_issued_at : 쿠폰이 발급됐다(초이스 선택 / 이메일 수령 경로)
+ *  - bar_code         : PIN 이 협력사에 발급됐다(일반 배치 경로 — coupon_issued_at 을 안 쓴다)
+ *  - claimed_at       : 발송 배치가 소유권을 잡았다. 곧 나가므로 덮으면 안 된다
+ *  - status 가 터미널 : COMPLETE / COMPLETE_SMS / FAIL / FAIL_SMS
+ *
+ * ※ 부정형(`NOT (...)`)으로 써도 안전하다 — 모든 항이 `IS NOT NULL` 이거나 NOT NULL 컬럼의
+ *   `IN` 이라 NULL 을 내지 않는다. 세 값 논리로 조건이 조용히 뒤집히지 않는다.
+ * ※ status = WAIT 은 **넣지 않는다.** 전체취소는 발송확정 전(발송건이 TEMP)에도 불리므로,
+ *   부분취소 CAS 의 조건을 그대로 베끼면 그 주문들이 통째로 취소 불가가 된다.
+ *
+ * @param prefix SelectQueryBuilder 는 별칭이 필요하고(`'od.'`), UpdateQueryBuilder 는 없다(`''`).
+ */
+const irreversibleDeliveryPredicate = (prefix = ''): string =>
+  `(${prefix}actualSendAt IS NOT NULL OR ${prefix}couponIssuedAt IS NOT NULL ` +
+  `OR ${prefix}barCode IS NOT NULL OR ${prefix}claimedAt IS NOT NULL ` +
+  `OR ${prefix}status IN (:...terminal))`;
+
+/** 위 술어가 쓰는 바인딩. 목록이 갈리면 두 곳의 판정이 달라지므로 같이 둔다. */
+const IRREVERSIBLE_TERMINAL_PARAMS = {
+  terminal: [
+    IOrderDeliveryStatus.COMPLETE,
+    IOrderDeliveryStatus.COMPLETE_SMS,
+    IOrderDeliveryStatus.FAIL,
+    IOrderDeliveryStatus.FAIL_SMS,
+  ],
+};
+
 @Injectable()
 export class OrderService {
   private logger = new Logger('OrderService');
@@ -6007,18 +6044,7 @@ export class OrderService {
       .createQueryBuilder('od')
       .innerJoin('od.orderProductMapping', 'opm')
       .where('opm.orderId = :orderId', { orderId })
-      .andWhere(
-        '(od.actualSendAt IS NOT NULL OR od.couponIssuedAt IS NOT NULL OR od.barCode IS NOT NULL ' +
-          'OR od.claimedAt IS NOT NULL OR od.status IN (:...terminal))',
-        {
-          terminal: [
-            IOrderDeliveryStatus.COMPLETE,
-            IOrderDeliveryStatus.COMPLETE_SMS,
-            IOrderDeliveryStatus.FAIL,
-            IOrderDeliveryStatus.FAIL_SMS,
-          ],
-        },
-      )
+      .andWhere(irreversibleDeliveryPredicate('od.'), IRREVERSIBLE_TERMINAL_PARAMS)
       .getCount();
   }
 
@@ -6749,14 +6775,52 @@ export class OrderService {
     //   사라진다. 발송건 단위 컬럼을 만든 이유(주문 단위 컬럼은 마지막 사유가 앞선 사유를
     //   덮어쓴다)가 그대로 재현되는 셈이다. 로컬 QA 에서 실제로 재현했다.
     //   soft-delete 된 행도 제외한다 — update() 는 deleted_at 필터를 자동 적용하지 않는다.
-    await this.orderDeliveryRepository.update(
-      {
-        orderProductMappingId: In(orderProductMappingIdList),
-        status: Not(IOrderDeliveryStatus.CANCEL),
-        deletedAt: IsNull(),
-      },
-      { status: IOrderDeliveryStatus.CANCEL, canceledAt: order.canceledAt, cancelReason },
-    );
+    //
+    // ★ 사전 조회(countIrreversibleDeliveries)는 **안전의 근거가 아니다** (197-16 리뷰 P1).
+    //   그건 그 순간의 사진이라, 0 건을 확인한 직후에도 발송 배치가 WAIT 행을 집어(claimed_at)
+    //   외부 발급·발송을 시작할 수 있다. 그래서 갱신이 같은 조건을 **다시** 본다(술어 공유).
+    //   ※ 조건이 늘었으므로 정상 취소가 막히지 않는지가 관건인데, 여기 걸리는 행은 사전 조회도
+    //     거부하는 행과 같다(같은 술어). 늘어난 건 "그 사이에 생긴 것" 뿐이다.
+    // ★ 변형 lease 도 함께 본다. 부분취소 CAS 와 같은 이유이며(그쪽 SET 주석 참조), 통과시킨
+    //   stale lease 는 SET 으로 탈취해 뒤늦게 돌아온 좀비의 쓰기를 affected=0 으로 만든다.
+    const mutationStale = new Date(Date.now() - MUTATION_CLAIM_STALE_MS);
+    await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({
+        status: IOrderDeliveryStatus.CANCEL,
+        canceledAt: order.canceledAt,
+        cancelReason,
+        mutationClaimedAt: order.canceledAt,
+      })
+      .where('orderProductMappingId IN (:...mappingIds)', { mappingIds: orderProductMappingIdList })
+      .andWhere('status != :canceled', { canceled: IOrderDeliveryStatus.CANCEL })
+      .andWhere('deletedAt IS NULL')
+      .andWhere(`NOT ${irreversibleDeliveryPredicate()}`, IRREVERSIBLE_TERMINAL_PARAMS)
+      .andWhere('(mutationClaimedAt IS NULL OR mutationClaimedAt < :mutationStale)', { mutationStale })
+      .execute();
+
+    // ★ 사후 검사 — 갱신 건수를 비교하지 않고 **결과 상태**로 묻는다.
+    //   부분취소는 "몇 건을 취소할지" 를 알고 시작하니 affected 와 요청 수를 맞대면 되지만,
+    //   전체취소는 그 수를 모른다. 대신 이 시점에 지켜야 할 것은 하나뿐이다 —
+    //   **취소 안 된 발송건이 0 건이어야 한다.** 위 조건에 걸려 빠진 행이 하나라도 있으면
+    //   그 주문은 "전체취소" 가 아니게 되는데, 환불은 전액으로 나간다. 던져서 되돌린다.
+    //   (soft-delete 된 행은 SelectQueryBuilder 가 자동으로 뺀다)
+    const notCanceled = await this.orderDeliveryRepository
+      .createQueryBuilder('od')
+      .where('od.orderProductMappingId IN (:...mappingIds)', { mappingIds: orderProductMappingIdList })
+      .andWhere('od.status != :canceled', { canceled: IOrderDeliveryStatus.CANCEL })
+      .getCount();
+    if (notCanceled > 0) {
+      this.logger.error(
+        `[ORDER_CANCEL_PARTIAL_UPDATE] orderId=${order.id} 취소되지 않은 발송건 ${notCanceled}건 남음 — ` +
+          `조회~갱신 사이에 발송 단계로 넘어갔거나 다른 작업이 점유 중. 전체취소 롤백`,
+      );
+      throw new ConflictException(
+        '취소 처리 중 일부 발송건이 발송 단계로 넘어갔거나 다른 작업이 진행 중입니다. ' +
+          '아무것도 취소되지 않았습니다. 발송 상태를 다시 조회해 주세요.',
+      );
+    }
     if (isWalletManaged) {
       // wallet path 는 user.balance 를 건드리지 않으므로 update 로 좁혀 stale overwrite 차단.
       await this.userRepository.update({ id: oneUser.id }, { allSettleAmount: oneUser.allSettleAmount });

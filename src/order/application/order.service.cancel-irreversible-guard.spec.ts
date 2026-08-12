@@ -31,11 +31,14 @@ describe('OrderService.deliveryCancel — 되돌릴 수 없는 발송건 가드'
     activeMappingIds = [501, 502],
     /** 예약 상품행(502)의 예약시각. 기본은 하루 뒤(게이트 통과). */
     reserveSendRequestAt = new Date(Date.now() + 24 * 3600_000),
+    /** CAS 뒤에도 취소되지 않고 남은 발송건 수(사후검사용). 기본 0 = 전부 취소됨. */
+    leftoverAfterCancel = 0,
   }: {
     status: IOrderStatus;
     irreversibleCount: number;
     activeMappingIds?: number[];
     reserveSendRequestAt?: Date;
+    leftoverAfterCancel?: number;
   }) => {
     const order = {
       id: 1001,
@@ -92,18 +95,49 @@ describe('OrderService.deliveryCancel — 되돌릴 수 없는 발송건 가드'
     // ★ 조건식을 캡처한다. getCount 만 스텁하면 판정 조건을 통째로 지워도 전부 통과해
     //   "되돌릴 수 없는 건" 의 정의가 아무것도 고정되지 않는다(뮤테이션으로 확인된 공백).
     const guardConditions: string[] = [];
+    // 전체취소의 발송건 CANCEL 은 이제 조건부 UPDATE(CAS)다 — 실행 여부를 여기서 센다.
+    // repository.update 는 더 이상 호출되지 않으므로 그것으로 "안 덮었다" 를 확인하면
+    // 무엇을 해도 통과한다(아무것도 안 지키는 단언이 된다).
+    const cancelExecutes: Array<{ conditions: string[]; set: Record<string, unknown> }> = [];
     sut.orderDeliveryRepository = {
       update: jest.fn(async () => ({ affected: 3 })),
       createQueryBuilder: jest.fn(() => {
+        let isUpdate = false;
+        // ★ getCount 를 쓰는 쿼리가 **두 종류**다 — 되돌릴 수 없는 건을 세는 가드(innerJoin 사용)와,
+        //   CAS 뒤 "취소 안 된 게 남았나" 를 묻는 사후검사(innerJoin 없음).
+        //   구분하지 않으면 "발송확정 전에는 가드를 안 본다" 가 사후검사 호출 때문에 깨진다 —
+        //   테스트가 잘못된 게 아니라 목이 두 쿼리를 같은 것으로 본 것이다.
+        let joined = false;
+        let setValues: Record<string, unknown> = {};
+        const own: string[] = [];
         const b: any = {
-          innerJoin: () => b,
-          select: () => b,
-          where: () => b,
-          andWhere: (cond: string) => {
-            guardConditions.push(cond);
+          innerJoin: () => {
+            joined = true;
             return b;
           },
-          getCount,
+          select: () => b,
+          update: () => {
+            isUpdate = true;
+            return b;
+          },
+          set: (v: Record<string, unknown>) => {
+            setValues = v;
+            return b;
+          },
+          where: (cond: string) => {
+            if (isUpdate) own.push(cond);
+            return b;
+          },
+          andWhere: (cond: string) => {
+            (isUpdate ? own : guardConditions).push(cond);
+            return b;
+          },
+          execute: async () => {
+            cancelExecutes.push({ conditions: own, set: setValues });
+            return { affected: 3 };
+          },
+          // 사후검사(innerJoin 없음)는 leftoverAfterCancel 을 돌려준다 = 취소 안 된 발송건 수.
+          getCount: async () => (joined ? getCount() : leftoverAfterCancel),
           // findMappingIdsWithActiveDeliveries 용 — "아직 취소 안 된 발송건이 있는 상품행" 목록
           getRawMany: async () => activeMappingIds.map((mappingId) => ({ mappingId })),
         };
@@ -111,6 +145,7 @@ describe('OrderService.deliveryCancel — 되돌릴 수 없는 발송건 가드'
       }),
     };
     sut.__guardConditions = guardConditions;
+    sut.__cancelExecutes = cancelExecutes;
     sut.ssgEventService = { restoreEventBalance: jest.fn() };
     sut.walletManagedPredicate = { isWalletManaged: jest.fn(async () => false) };
     sut.legacyWalletCreditSyncService = { syncCredit: jest.fn(), syncDeposit: jest.fn() };
@@ -135,9 +170,32 @@ describe('OrderService.deliveryCancel — 되돌릴 수 없는 발송건 가드'
 
     await expect(sut.deliveryCancel({ id: 1 }, body)).rejects.toBeInstanceOf(ConflictException);
 
-    expect(sut.orderDeliveryRepository.update).not.toHaveBeenCalled();
+    // ★ 조건부 UPDATE 자체가 실행되지 않아야 한다. repository.update 로 확인하면 그 경로는
+    //   이제 아무도 안 쓰므로 코드를 어떻게 망가뜨려도 통과한다.
+    expect(sut.__cancelExecutes).toHaveLength(0);
     expect(sut.userRepository.save).not.toHaveBeenCalled();
     expect(order.status).toBe(IOrderStatus.DELIVERY_CONFIRMED);
+  });
+
+  // ★ 사전 조회는 **그 순간의 사진**이다. 0 건을 확인한 직후에도 발송 배치가 WAIT 행을 집어
+  //   발급·발송을 시작할 수 있다. 그때 CAS 의 재검사 조건에 걸려 그 행만 안 바뀌는데, 환불은
+  //   주문 전액으로 나간다 — "전체취소" 가 아닌데 전액을 돌려주는 상태가 된다.
+  //   그래서 갱신 뒤에 **결과를 다시 묻는다**: 취소 안 된 발송건이 0 건이어야 한다.
+  //   (갱신 건수를 비교하지 않는 이유는 전체취소가 "몇 건을 취소할지" 를 모르기 때문이다)
+  it('갱신 뒤에도 취소 안 된 발송건이 남으면 던져서 되돌린다 (조회~갱신 사이 경합)', async () => {
+    const { sut, order } = buildSut({
+      status: IOrderStatus.DELIVERY_CONFIRMED,
+      irreversibleCount: 0, // 사전 조회 시점엔 깨끗했다
+      leftoverAfterCancel: 1, // 그 사이 1건이 발송 단계로 넘어가 CAS 에서 빠졌다
+    });
+
+    await expect(sut.deliveryCancel({ id: 1 }, body)).rejects.toBeInstanceOf(ConflictException);
+    expect(sut.logger.error).toHaveBeenCalledWith(expect.stringContaining('ORDER_CANCEL_PARTIAL_UPDATE'));
+    // ★ 사후검사는 잔액 복원 **앞**에 있어야 한다. 뒤에 있으면 이미 돈이 나간 뒤라 던져도 늦다.
+    //   (트랜잭션 롤백 자체는 @Transactional 소관이고 이 목에서는 관측할 수 없다 — order.status 는
+    //    메모리 객체라 되돌아오지 않으므로 그것으로 확인하면 안 된다)
+    expect(sut.userRepository.save).not.toHaveBeenCalled();
+    expect(sut.userCompanyRepository.save).not.toHaveBeenCalled();
   });
 
   it('거부 메시지에 몇 건이 걸렸는지 알려준다', async () => {
@@ -167,7 +225,7 @@ describe('OrderService.deliveryCancel — 되돌릴 수 없는 발송건 가드'
     await sut.deliveryCancel({ id: 1 }, body);
 
     expect(order.status).toBe(IOrderStatus.DELIVERY_CANCEL);
-    expect(sut.orderDeliveryRepository.update).toHaveBeenCalled();
+    expect(sut.__cancelExecutes).toHaveLength(1);
   });
 
   // 발송확정 전에는 발송건이 TEMP 라 나간 것이 있을 수 없고 잔액 차감도 없다.
