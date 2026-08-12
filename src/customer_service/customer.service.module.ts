@@ -9,7 +9,6 @@ import { OrderDeliveryEntity } from '../entity/order.delivery.entity';
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
 import { DeliveryModule } from '../delivery/delivery.module';
 import { OrderHistoryEntity } from 'src/entity/order.history.entity';
-import { GemteckMsgQueueEntity } from 'src/entity/gemtek/msg.queue.entity';
 import { SmsModule } from 'src/sms/sms.module';
 import { ActivityLogModule } from 'src/activity_log/activity.log.module';
 import { UserEntity } from 'src/entity/user.entity';
@@ -31,7 +30,6 @@ import { InventoryCouponModule } from '../inventory_coupon/inventory.coupon.modu
       OrderDeliveryEntity,
       OrderProductMappingEntity,
       OrderHistoryEntity,
-      GemteckMsgQueueEntity,
       UserEntity,
       UserCompanyEntity,
       UserTaskHistoryEntity,
