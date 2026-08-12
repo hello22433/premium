@@ -5932,8 +5932,13 @@ export class OrderService {
         //   탈취하면 그 쓰기가 affected=0 이 되어 [BATCH_FENCE_LOST] 로 시끄럽게 멈춘다.
         //   같은 규칙이 배치 선점에 이미 명시돼 있다 — delivery.batch.service.ts:696 주석 참조.
         //   ※ 값은 canceledAt 과 같게 둔다(형제와 동일 관례 — 소유자 식별이 일관된다).
-        //   ※ 해제하지 않는다: CANCEL 은 종단 상태라 이 행을 다시 가져갈 주인이 없고,
-        //     모든 획득 경로가 status=WAIT 를 요구하므로 남은 토큰이 무엇도 막지 않는다.
+        //   ※ 해제하지 않는다: 토큰 값이 canceledAt(= 그때의 now)이라 MUTATION_CLAIM_STALE_MS
+        //     뒤에는 stale 로 판정돼 **스스로 풀린다.** 그 사이 다른 변형 경로는 이 행에 대해
+        //     affected=0 을 받는데, CANCEL 은 종단 상태라 어차피 거부돼야 할 쓰기들이다.
+        //     ※ 처음에는 "모든 획득 경로가 status=WAIT 를 요구한다" 고 적어 뒀는데 **사실이 아니다**
+        //       (197-16 재리뷰 F5). CS 폐기(customer.service.service.ts:1340)·리포트 lease
+        //       (delivery.batch.service.ts:1243)·재발송(message-resend-executor.service.ts:351)
+        //       은 status 를 안 본다. 안 풀어도 되는 근거는 WAIT 조건이 아니라 위의 자동 만료다.
         mutationClaimedAt: canceledAt,
         cancelReason,
         canceledAt,
