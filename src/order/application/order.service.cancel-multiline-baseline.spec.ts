@@ -221,6 +221,11 @@ describe('OrderService.deliveryCancel — 다중 상품행 주문 현행 동작 
     //   ※ 같은 술어가 사전 조회(6046)에서는 **부정 없이** 쓰인다("되돌릴 수 없는 건을 센다").
     //     한쪽만 보고 베끼면 방향이 갈리므로 갱신 쪽은 여기서 못박는다.
     expect(sql).toContain('NOT (actualSendAt IS NOT NULL');
+    // ★ 컷오버 배제 술어 — 이 UPDATE 는 legacy claim CAS 라 §9 quiesce 계약상 반드시 실려야 한다
+    //   (197-16 재리뷰 F1). 빠지면 컷오버를 켜는 순간 신규 모델 점유건까지 취소·환불한다.
+    //   형제(부분취소 CAS)는 이미 싣고 있었고, 여기만 비어 있었다.
+    expect(sql).toContain('delivery_workflow dw');
+    expect(sql).toContain('cutover_draining_at IS NOT NULL OR dw.cutover_migrated_at IS NOT NULL');
 
     // 발송건에도 취소 시각·사유를 남긴다(전체취소도 부분취소와 동일하게 채운다 —
     // canceled_at IS NULL 이 "미취소" 와 "전체취소" 를 겸하지 않도록).

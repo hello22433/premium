@@ -6819,6 +6819,15 @@ export class OrderService {
       .andWhere('deletedAt IS NULL')
       .andWhere(`NOT ${irreversibleDeliveryPredicate()}`, IRREVERSIBLE_TERMINAL_PARAMS)
       .andWhere('(mutationClaimedAt IS NULL OR mutationClaimedAt < :mutationStale)', { mutationStale })
+      // ★ 컷오버 배제 술어 (197-16 재리뷰 F1). 이 UPDATE 가 조건부 CAS 가 되면서 부분취소와
+      //   **같은 성격**이 됐다 — WAIT 을 선점해 CANCEL 로 바꾸고 그것을 근거로 환불하는 legacy
+      //   claim CAS. §9 quiesce 계약(legacy.delivery.entry.point.ts)은 이 술어를 legacy claim CAS
+      //   에 반드시 함께 싣도록 규정한다. 없으면 컷오버를 켜는 순간 Level A 슬롯 모델이 잡고 있는
+      //   건을 legacy 전체취소가 함께 잡아 **중복 환불**이 뚫린다.
+      //   ※ 조건부 UPDATE 로 바뀌기 전(무조건 UPDATE)에는 이 술어를 실을 자리 자체가 없었다.
+      //     e3cf9868 이 CAS 로 바꾸면서 형제(부분취소 CAS)와 비대칭이 생겼고 여기서 메운다.
+      //   ※ 여기 걸려 빠진 행은 아래 사후검사가 잡아 409 로 되돌린다 — 조용히 새지 않는다.
+      .andWhere(NOT_CUTOVER_ORDER_DELIVERY)
       .execute();
 
     // ★ 사후 검사 — 갱신 건수를 비교하지 않고 **결과 상태**로 묻는다.
