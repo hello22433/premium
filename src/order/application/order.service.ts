@@ -6640,6 +6640,14 @@ export class OrderService {
       //
       // 발송확정 이후에만 검사하면 된다. 그 전(DELIVERY_REQUEST/REVIEW_COMPLETE)에는
       // 발송건이 아직 TEMP 라 나간 것이 있을 수 없고 잔액 차감도 없다.
+      //
+      // ※ 이 문장은 **일반 주문에서만 참이다** (197-16 재리뷰 F2 — 원래 있던 조건, 이번 범위 밖).
+      //   외부API 주문은 DELIVERY_REQUEST 로 생성되고(external.api.service.ts:978·2411) 발송건이
+      //   곧바로 COMPLETE + bar_code 가 되므로 이 분기를 아예 안 지난다. 종전에는 그 행까지
+      //   CANCEL 로 덮고 전액 환불했고(조용한 돈 사고), 지금은 아래 CAS 가 그 행을 건너뛰고
+      //   사후검사가 409 를 던진다 — 즉 **막히긴 하는데 이 API 로는 다시 취소되지 않는다.**
+      //   메시지도 일시적 경합처럼 읽혀 운영자가 재시도하게 된다. 고치려면 이 사전 조회를
+      //   status 분기 밖으로 빼야 하는데, 거부 문구·운영 흐름이 함께 바뀌므로 후속으로 분리한다.
       const irreversible = await this.countIrreversibleDeliveries(order.id);
       if (irreversible > 0) {
         this.logger.error(
