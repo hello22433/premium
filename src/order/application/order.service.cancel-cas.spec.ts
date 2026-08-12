@@ -120,11 +120,30 @@ describe('OrderService.cancelDeliveriesIfStillWaiting — 조건부 UPDATE 계�
 
     await sut.cancelDeliveriesIfStillWaiting(ORDER_ID, [9003], '고객 요청', AT);
 
+    // ※ mutationClaimedAt 이 추가된 이유는 아래 fencing 테스트 참조 (197-16 리뷰 P1).
+    //   여기 단언이 늘어난 것은 계약이 넓어진 것이지 이 테스트의 관심사가 바뀐 게 아니다.
     expect(getSetValues()).toEqual({
       status: IOrderDeliveryStatus.CANCEL,
       cancelReason: '고객 요청',
       canceledAt: AT,
+      mutationClaimedAt: AT,
     });
+  });
+
+  // ★ 지키는 것은 "토큰을 쓴다" 가 아니라 **좀비를 막는다** 이다.
+  //   WHERE 가 stale lease 를 통과시키는 순간(= 남의 소유권을 무시하기로 결정) SET 이 그 토큰을
+  //   갱신하지 않으면, 아직 살아 있는 원 소유자의 후속 쓰기가 `WHERE mutation_claimed_at = 자기토큰`
+  //   으로 여전히 일치해 성공한다. 그 쓰기는 status 를 다시 쓰므로 방금 CANCEL 한 행이 COMPLETE 로
+  //   되살아나고, 환불은 이미 끝난 뒤다. 두 단언을 함께 두어 **전제와 의무를 한 자리에서** 고정한다.
+  it('stale 변형 lease 를 통과시켰다면 SET 으로 탈취한다 (좀비 fencing)', async () => {
+    const { sut, calls, getSetValues } = setup();
+
+    await sut.cancelDeliveriesIfStillWaiting(ORDER_ID, [9003], '고객 요청', AT);
+
+    // 전제 — stale 을 통과시키는 조건이 실제로 있다. 없다면 탈취 의무도 없다.
+    expect(calls.some((c) => c.includes('mutationClaimedAt') && c.includes('mutationStale'))).toBe(true);
+    // 의무 — 그렇다면 반드시 토큰을 우리 값으로 덮어써야 한다.
+    expect(getSetValues()).toHaveProperty('mutationClaimedAt', AT);
   });
 
   it('요청 건수만큼 갱신되면 조용히 성공한다', async () => {

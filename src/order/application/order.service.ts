@@ -5882,6 +5882,19 @@ export class OrderService {
       .update(OrderDeliveryEntity)
       .set({
         status: IOrderDeliveryStatus.CANCEL,
+        // ★ 변형 lease 를 취소 소유로 **탈취**한다 (197-16 리뷰 P1).
+        //   아래 WHERE 는 stale(5분 초과) lease 를 통과시킨다 — 크래시 잔재가 발송건을 영구히
+        //   취소 불가로 만들지 않기 위해서다. 그런데 통과만 시키고 값을 그대로 두면, 아직 살아 있는
+        //   원 소유자(외부 통신이 길어진 CS 폐기·재발행)의 후속 쓰기가 `WHERE mutation_claimed_at =
+        //   자기토큰` 으로 여전히 일치해 affected=1 로 성공한다. 그 쓰기는 status 를 다시 쓰므로
+        //   (delivery.batch.service.ts:1965 updateDeliveryOwned) 방금 CANCEL 로 바꾼 행이
+        //   COMPLETE 로 되살아나고, 우리는 이미 환불까지 끝낸 뒤다.
+        //   탈취하면 그 쓰기가 affected=0 이 되어 [BATCH_FENCE_LOST] 로 시끄럽게 멈춘다.
+        //   같은 규칙이 배치 선점에 이미 명시돼 있다 — delivery.batch.service.ts:696 주석 참조.
+        //   ※ 값은 canceledAt 과 같게 둔다(형제와 동일 관례 — 소유자 식별이 일관된다).
+        //   ※ 해제하지 않는다: CANCEL 은 종단 상태라 이 행을 다시 가져갈 주인이 없고,
+        //     모든 획득 경로가 status=WAIT 를 요구하므로 남은 토큰이 무엇도 막지 않는다.
+        mutationClaimedAt: canceledAt,
         cancelReason,
         canceledAt,
       })
@@ -5943,6 +5956,13 @@ export class OrderService {
       //     ConflictException("다시 조회 후 재시도")으로 드러난다.
       .andWhere(NOT_CUTOVER_ORDER_DELIVERY)
       .andWhere('deletedAt IS NULL')
+      // ※ 형제(delivery.batch.service.ts claimWaitDeliveries)에 있는 조건 중 **여기 없는 것이 하나**
+      //   있다: 활성 pin_issue_command 배제(`NOT EXISTS … STARTED/RETRYING/…`). 의도적으로 뺐다.
+      //   그 행은 ssg-insert-state.service.ts 에서만 만들어지는 SSG 전용이고, 부분취소는 진입부에서
+      //   SSG 주문을 400 으로 거부하므로 지금은 도달 경로가 없다.
+      //   ⚠️ SSG 부분취소를 여는 후속 티켓(docs/followup-ssg-partial-cancel.md)에서는 **반드시 넣어야**
+      //     한다 — 발급 명령이 진행 중인 발송건을 취소하면 그 명령이 나중에 PIN 을 발급해
+      //     "환불된 죽은 핀" 이 고객에게 간다.
       .execute();
 
     const affected = result.affected ?? 0;
