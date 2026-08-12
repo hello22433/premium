@@ -1,4 +1,3 @@
-import { In, IsNull, Not } from 'typeorm';
 import {
   addTransactionalDataSource,
   deleteDataSourceByName,
@@ -7,7 +6,6 @@ import {
 import { OrderService } from './order.service';
 import { IOrderStatus } from '../interface/order.status';
 import { IOrderType } from '../interface/order.type';
-import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 
 /**
  * PR2-005 deliveryCancel wallet-managed branch.
@@ -16,6 +14,36 @@ import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.st
  *  - wallet-managed 주문 (allocation 존재) → OrderConfirmationReleaseService.releaseConfirmation 호출 + legacy mirror reverse + user.balance 미기록.
  *  - legacy 주문 (allocation 부재) → 기존 path (user.balance/allSettleAmount 직접 가감) 유지.
  */
+// 레거시 미러는 DB 증감식 UPDATE 다(197-16 리뷰 P1). 이 스펙의 관심사가 아니라 체인만 이어 준다
+// — 증감식 형태 검증은 cancel-multiline-baseline.spec 소관.
+/** 이 스펙이 관찰한 미러 증감 UPDATE. 각 setup 시작에서 비운다. */
+const mirrorUpdates: Array<{ column: string; sql: string; params: any; where: any }> = [];
+const mirrorBuilder = () => {
+  const captured: any = {};
+  const mb: any = {
+    update: () => mb,
+    set: (v: Record<string, () => string>) => {
+      const [column, expr] = Object.entries(v)[0];
+      captured.column = column;
+      captured.sql = typeof expr === 'function' ? (expr as () => string)() : String(expr);
+      return mb;
+    },
+    where: (_c: string, p: unknown) => {
+      captured.where = p;
+      return mb;
+    },
+    setParameters: (p: unknown) => {
+      captured.params = p;
+      return mb;
+    },
+    execute: async () => {
+      mirrorUpdates.push(captured);
+      return { affected: 1 };
+    },
+  };
+  return mb;
+};
+
 describe('OrderService deliveryCancel wallet PR2-005 branch', () => {
   beforeAll(() => {
     initializeTransactionalContext();
@@ -81,6 +109,7 @@ describe('OrderService deliveryCancel wallet PR2-005 branch', () => {
     allocation?: any;
     company?: { balance: number };
   }) => {
+    mirrorUpdates.length = 0;
     const service = Object.create(OrderService.prototype) as any;
     const order = createOrder({ isCompany: !!company });
 
@@ -119,10 +148,12 @@ describe('OrderService deliveryCancel wallet PR2-005 branch', () => {
       findOneOrFail: jest.fn().mockResolvedValue(billingUser),
       save: jest.fn().mockResolvedValue(billingUser),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
+      createQueryBuilder: jest.fn(mirrorBuilder),
     };
     service.userCompanyRepository = {
       save: jest.fn().mockResolvedValue(company),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
+      createQueryBuilder: jest.fn(mirrorBuilder),
     };
     service.orderDeliveryRepository = {
       update: jest.fn().mockResolvedValue({ affected: 1 }),
@@ -132,8 +163,13 @@ describe('OrderService deliveryCancel wallet PR2-005 branch', () => {
         const b: any = {
           innerJoin: () => b,
           select: () => b,
+          // 전체취소의 발송건 CANCEL 은 조건부 UPDATE(CAS)다 — 조건 검증은 다른 스펙 소관.
+          update: () => b,
+          set: () => b,
+          execute: async () => ({ affected: 3 }),
           where: () => b,
           andWhere: () => b,
+          // CAS 뒤 취소 안 된 발송건이 남았나 사후검사 — 남는 것이 없는 상황이다.
           getCount: async () => 0,
           getRawMany: async () => (order.orderProductMappings ?? []).map((m: any) => ({ mappingId: m.id })),
         };
@@ -189,20 +225,36 @@ describe('OrderService deliveryCancel wallet PR2-005 branch', () => {
     expect(order.isSettleBalance).toBe(false);
     expect(order.isCreditExcess).toBe(false);
 
-    // user.balance 미기록 — userRepository.update 만 호출, balance 필드 미포함
+    // ★ 미러는 DB 증감식으로 나간다 (197-16 리뷰 P1 — 동시 취소 lost update 차단).
+    //   읽은 값을 되쓰면 같은 고객사의 다른 주문이 반영한 몫이 통째로 사라진다.
+    //   user.balance 는 wallet path 에서 여전히 미기록 — 증감 대상이 아니다.
     expect(service.userRepository.save).not.toHaveBeenCalled();
-    expect(service.userRepository.update).toHaveBeenCalledWith(
-      { id: billingUser.id },
-      { allSettleAmount: billingUser.allSettleAmount },
+    expect(mirrorUpdates).toEqual(
+      expect.arrayContaining([
+        // 여신·신용초과 복구 → all_settle_amount 감소
+        expect.objectContaining({
+          column: 'allSettleAmount',
+          sql: 'all_settle_amount + :allSettleDelta',
+          params: { allSettleDelta: -(3000 + 1000) },
+          where: { id: billingUser.id },
+        }),
+        // 예치금 복구 → 회사 balance 증가
+        expect.objectContaining({
+          column: 'balance',
+          sql: 'balance + :companyBalanceDelta',
+          params: { companyBalanceDelta: 6000 },
+          where: { id: billingUser.company!.id },
+        }),
+      ]),
     );
+    expect(mirrorUpdates.some((u) => u.column === 'balance' && u.where?.id === billingUser.id)).toBe(false);
 
     // status flip + 배송 취소
     expect(order.status).toBe(IOrderStatus.DELIVERY_CANCEL);
-    // 이미 CANCEL 인 건(부분취소 이력)과 soft-delete 된 건은 제외하고 덮는다.
-    expect(service.orderDeliveryRepository.update).toHaveBeenCalledWith(
-      { orderProductMappingId: In([10]), status: Not(IOrderDeliveryStatus.CANCEL), deletedAt: IsNull() },
-      { status: IOrderDeliveryStatus.CANCEL, canceledAt: expect.any(Date), cancelReason: expect.any(String) },
-    );
+    // ※ "이미 CANCEL 인 건·soft-delete 된 건 제외" 는 이제 조건부 UPDATE(CAS)의 WHERE 로 옮겨갔고,
+    //   조건 전량은 cancel-multiline-baseline.spec 이 문자열로 고정한다. 여기서 repository.update 로
+    //   확인하면 그 경로는 아무도 안 쓰므로 무엇을 해도 통과한다(아무것도 안 지키는 단언).
+    expect(service.orderDeliveryRepository.update).not.toHaveBeenCalled();
   });
 
   it('legacy-managed (allocation 부재): 기존 path — user.balance 가감', async () => {
@@ -218,7 +270,16 @@ describe('OrderService deliveryCancel wallet PR2-005 branch', () => {
     // 기존 path: isSettleBalance=true → balance 환원
     expect(billingUser.balance).toBe(50000 + 10000); // refundAmount = settleAmount = 10000
     expect(order.isSettleBalance).toBe(false);
-    expect(service.userRepository.save).toHaveBeenCalled();
+    // ★ 통짜 save 가 아니라 증감식으로 나간다 (197-16 리뷰 P1).
+    expect(service.userRepository.save).not.toHaveBeenCalled();
+    expect(mirrorUpdates).toContainEqual(
+      expect.objectContaining({
+        column: 'balance',
+        sql: 'balance + :userBalanceDelta',
+        params: { userBalanceDelta: 10000 },
+        where: { id: billingUser.id },
+      }),
+    );
     // legacy 예치금 복구는 wallet 동기화(syncDeposit) 를 동반 (billingUserId=clientUserId=2).
     expect(service.legacyWalletCreditSyncService.syncDeposit).toHaveBeenCalledWith(
       service.orderRepository.manager,

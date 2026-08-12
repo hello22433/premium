@@ -13,6 +13,36 @@ import { OrderService } from './order.service';
  * 과거에는 totalPrice 계산에서 '상품 정보가 존재하지 않습니다.' 400을 던져 취소가 막혔다.
  * 이제 환불 단가는 주문 시점 스냅샷(snapshotProductPrice)을 사용한다.
  */
+// 레거시 미러는 DB 증감식 UPDATE 다(197-16 리뷰 P1). 이 스펙의 관심사가 아니라 체인만 이어 준다
+// — 증감식 형태 검증은 cancel-multiline-baseline.spec 소관.
+/** 이 스펙이 관찰한 미러 증감 UPDATE. 각 setup 시작에서 비운다. */
+const mirrorUpdates: Array<{ column: string; sql: string; params: any; where: any }> = [];
+const mirrorBuilder = () => {
+  const captured: any = {};
+  const mb: any = {
+    update: () => mb,
+    set: (v: Record<string, () => string>) => {
+      const [column, expr] = Object.entries(v)[0];
+      captured.column = column;
+      captured.sql = typeof expr === 'function' ? (expr as () => string)() : String(expr);
+      return mb;
+    },
+    where: (_c: string, p: unknown) => {
+      captured.where = p;
+      return mb;
+    },
+    setParameters: (p: unknown) => {
+      captured.params = p;
+      return mb;
+    },
+    execute: async () => {
+      mirrorUpdates.push(captured);
+      return { affected: 1 };
+    },
+  };
+  return mb;
+};
+
 describe('OrderService.deliveryCancel — 삭제된 상품 포함 주문', () => {
   beforeAll(() => {
     initializeTransactionalContext();
@@ -34,6 +64,7 @@ describe('OrderService.deliveryCancel — 삭제된 상품 포함 주문', () =>
   });
 
   const buildSut = (order: any, oneUser: any) => {
+    mirrorUpdates.length = 0;
     const orderRepository = {
       manager: {},
       createQueryBuilder: jest.fn(() => {
@@ -51,6 +82,7 @@ describe('OrderService.deliveryCancel — 삭제된 상품 포함 주문', () =>
       findOneOrFail: jest.fn().mockResolvedValue(oneUser),
       save: jest.fn().mockResolvedValue(oneUser),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
+      createQueryBuilder: jest.fn(mirrorBuilder),
     };
     const orderDeliveryRepository: any = {
       update: jest.fn().mockResolvedValue({ affected: 1 }),
@@ -60,15 +92,20 @@ describe('OrderService.deliveryCancel — 삭제된 상품 포함 주문', () =>
         const b: any = {
           innerJoin: () => b,
           select: () => b,
+          // 전체취소의 발송건 CANCEL 은 조건부 UPDATE(CAS)다 — 조건 검증은 다른 스펙 소관.
+          update: () => b,
+          set: () => b,
+          execute: async () => ({ affected: 3 }),
           where: () => b,
           andWhere: () => b,
+          // CAS 뒤 취소 안 된 발송건이 남았나 사후검사 — 남는 것이 없는 상황이다.
           getCount: async () => 0,
           getRawMany: async () => (order.orderProductMappings ?? []).map((m: any) => ({ mappingId: m.id })),
         };
         return b;
       },
     };
-    const userCompanyRepository = { save: jest.fn() };
+    const userCompanyRepository = { save: jest.fn(), createQueryBuilder: jest.fn(mirrorBuilder) };
 
     const sut: any = Object.create(OrderService.prototype);
     // 소유권(조회범위) 검증은 order.service.cancel-ownership.spec 에서 다룬다 — 여기선 통과시킨다.
@@ -119,6 +156,16 @@ describe('OrderService.deliveryCancel — 삭제된 상품 포함 주문', () =>
     // legacy 흐름 환불: allSettleAmount -= totalPrice(5000 * 2)
     expect(oneUser.allSettleAmount).toBe(0);
     expect(orderRepository.save).toHaveBeenCalled();
-    expect(userRepository.save).toHaveBeenCalled();
+    // ★ 미러는 통짜 save 가 아니라 DB 증감식으로 나간다 (197-16 리뷰 P1 — 동시 취소 lost update 차단).
+    //   여신 복구이므로 all_settle_amount 가 환불액(5000 × 2)만큼 줄어야 한다.
+    expect(userRepository.save).not.toHaveBeenCalled();
+    expect(mirrorUpdates).toContainEqual(
+      expect.objectContaining({
+        column: 'allSettleAmount',
+        sql: 'all_settle_amount + :allSettleDelta',
+        params: { allSettleDelta: -10000 },
+        where: { id: oneUser.id },
+      }),
+    );
   });
 });
