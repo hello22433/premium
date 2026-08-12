@@ -138,32 +138,6 @@ export type SettlementDisplayLine = {
  *     는 FAIL 도 빼고 이 함수는 남긴다(실패건은 재발송으로 성공시켜 청구하는 것이 정책).
  *     "정산확정과 맞춘다" 는 이유로 여기서 FAIL 을 빼면 안 된다.
  */
-/**
- * 위 필터의 **SQL 판(版)** — "폐기 후 재발행으로 대체된 원본" 을 같은 기준으로 뺀다.
- *
- * 왜 따로 필요한가: buildSettlementDisplayLines 는 `mapping.orderDeliveries` 를 메모리에 올려
- * 거르지만, 발송건 수를 세기만 하는 곳은 `getCount()` 로 DB 에서 끝낸다. 그때 이 술어가 없으면
- * **같은 발송건을 두 화면이 다르게 센다.**
- *
- * 실제로 그래서 났던 결함(197-16 리뷰 P1): 1건 주문을 폐기 후 재발행하면 원본은
- * `status=COMPLETE / coupon_status=CANCEL` 로 남고 새 행이 그 자리를 채운다. 새 행을 부분취소하면
- * 살아 있는 발송건은 0 인데, `status != CANCEL` 만 세면 죽은 원본이 1 건으로 잡혀 주문이
- * DELIVERY_CONFIRMED 로 남고 allocation 도 안 닫힌다.
- *
- * ⚠️ 위 in-memory 필터와 **한 쌍이다.** 한쪽만 고치지 마라 — 고치면 두 화면의 숫자가 갈린다.
- *
- * @param alias 조회에 쓰는 order_delivery 별칭 (예: `'od'`)
- */
-export function notDiscardedReplacedOriginPredicate(alias: string): string {
-  // 대체 행이 soft-delete 됐으면(재발행 되감기 unwindReissue) 원본은 다시 유효하다 —
-  // in-memory 쪽도 관계 로딩에서 soft-delete 를 제외하므로 같은 판정이 된다.
-  return (
-    `NOT (${alias}.coupon_status = '${OrderDeliveryCouponStatus.CANCEL}' AND EXISTS (` +
-    `SELECT 1 FROM order_delivery reissued ` +
-    `WHERE reissued.replaced_from_id = ${alias}.id AND reissued.deleted_at IS NULL))`
-  );
-}
-
 export function buildSettlementDisplayLines(mapping: OrderProductMappingEntity): SettlementDisplayLine[] {
   const allDeliveries = mapping.orderDeliveries ?? [];
   // bigint 컬럼(replacedFromId)은 런타임에 string 으로 hydrate 될 수 있어 Number 정규화 후 비교.
@@ -208,6 +182,32 @@ export function buildSettlementDisplayLines(mapping: OrderProductMappingEntity):
     unitPriceCounts.set(unitPrice, (unitPriceCounts.get(unitPrice) ?? 0) + 1);
   }
   return [...unitPriceCounts.entries()].map(([price, amount]) => ({ price, amount }));
+}
+
+/**
+ * 위 필터의 **SQL 판(版)** — "폐기 후 재발행으로 대체된 원본" 을 같은 기준으로 뺀다.
+ *
+ * 왜 따로 필요한가: buildSettlementDisplayLines 는 `mapping.orderDeliveries` 를 메모리에 올려
+ * 거르지만, 발송건 수를 세기만 하는 곳은 `getCount()` 로 DB 에서 끝낸다. 그때 이 술어가 없으면
+ * **같은 발송건을 두 화면이 다르게 센다.**
+ *
+ * 실제로 그래서 났던 결함(197-16 리뷰 P1): 1건 주문을 폐기 후 재발행하면 원본은
+ * `status=COMPLETE / coupon_status=CANCEL` 로 남고 새 행이 그 자리를 채운다. 새 행을 부분취소하면
+ * 살아 있는 발송건은 0 인데, `status != CANCEL` 만 세면 죽은 원본이 1 건으로 잡혀 주문이
+ * DELIVERY_CONFIRMED 로 남고 allocation 도 안 닫힌다.
+ *
+ * ⚠️ 위 in-memory 필터와 **한 쌍이다.** 한쪽만 고치지 마라 — 고치면 두 화면의 숫자가 갈린다.
+ *
+ * @param alias 조회에 쓰는 order_delivery 별칭 (예: `'od'`)
+ */
+export function notDiscardedReplacedOriginPredicate(alias: string): string {
+  // 대체 행이 soft-delete 됐으면(재발행 되감기 unwindReissue) 원본은 다시 유효하다 —
+  // in-memory 쪽도 관계 로딩에서 soft-delete 를 제외하므로 같은 판정이 된다.
+  return (
+    `NOT (${alias}.coupon_status = '${OrderDeliveryCouponStatus.CANCEL}' AND EXISTS (` +
+    `SELECT 1 FROM order_delivery reissued ` +
+    `WHERE reissued.replaced_from_id = ${alias}.id AND reissued.deleted_at IS NULL))`
+  );
 }
 
 /**
