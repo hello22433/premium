@@ -223,10 +223,14 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
       lockOrder.push('billingScope');
       return { user: {}, companyUsers: [] };
     });
-    // 실제 RefundPoolService 는 allocation 누적을 올리고, **이번 호출의 재원별 복구액**을
-    // restoredByResource 로 돌려준다(락 안에서 계산). 호출부는 그 값만 써야 하며 allocation 차액을
-    // 역산하면 안 된다 — 락 밖 구간에 끼어든 남의 환불이 섞이기 때문(관리자 리뷰 P1).
-    // 목도 같은 계약을 지킨다: 누적은 올리되, 반환하는 재원별 값은 이번 호출 몫만.
+    // 실제 RefundPoolService 는 allocation 누적을 올리고, **넘겨받은 원장 행의 합**을 재원별로
+    // 돌려준다(buildRefundResult). 호출부는 그 값만 써야 하며 allocation 차액을 역산하면 안 된다
+    // — 락 밖 구간에 끼어든 남의 환불이 섞이기 때문(관리자 리뷰 P1).
+    //
+    // ★ 멱등 hit 분기가 0 이 아니라 **실제 금액**인 것은 의도다.
+    //   실제 buildRefundResult 는 멱등 hit 일 때 **기존 원장 총액**을 실어 보낸다(이번 몫이 아니다).
+    //   여기를 0 으로 두면 호출부의 alreadyRefunded 가드를 지워도 미러에 0 이 더해져 테스트가
+    //   초록으로 통과한다 — 과다적립을 막는 유일한 장치가 검증되지 않는다.
     sut.refundPoolService = {
       // 원장은 라인당 1개 → 정상 흐름은 요청 건수만큼 반환(커버리지 가드 통과).
       refund: jest.fn(async (input: any) => {
@@ -236,8 +240,12 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
           return {
             alreadyRefunded: true,
             ledgerIds,
-            totalRefundedAmount: 0,
-            restoredByResource: { deposit: 0, creditUsed: 0, creditExcess: 0, point: 0 },
+            totalRefundedAmount: refundBreakdown.deposit + refundBreakdown.credit + refundBreakdown.excess,
+            refundedPointAmount: 0,
+            refundedDepositAmount: refundBreakdown.deposit,
+            refundedCreditUsedAmount: refundBreakdown.credit,
+            refundedCreditExcessAmount: refundBreakdown.excess,
+            pointSkippedExpiredAmount: 0,
           };
         }
         // ★ 동시성 재현: 같은 주문의 다른 발송건을 CS 폐기 등이 이 사이에 환불하면 allocation 누적이
@@ -249,12 +257,11 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
           alreadyRefunded: false,
           ledgerIds,
           totalRefundedAmount: refundBreakdown.deposit + refundBreakdown.credit + refundBreakdown.excess,
-          restoredByResource: {
-            deposit: refundBreakdown.deposit,
-            creditUsed: refundBreakdown.credit,
-            creditExcess: refundBreakdown.excess,
-            point: 0,
-          },
+          refundedPointAmount: 0,
+          refundedDepositAmount: refundBreakdown.deposit,
+          refundedCreditUsedAmount: refundBreakdown.credit,
+          refundedCreditExcessAmount: refundBreakdown.excess,
+          pointSkippedExpiredAmount: 0,
         };
       }),
     };
@@ -411,6 +418,24 @@ describe('OrderService.deliveryCancel — 예약 발송건 부분취소', () => 
 
       await expect(call(sut, CANCELABLE)).rejects.toBeInstanceOf(ConflictException);
       expect(sut.logger.error).toHaveBeenCalledWith(expect.stringContaining('DELIVERY_CANCEL_REFUND_NOOP'));
+    });
+
+    // ★ 위 테스트와 나누는 이유: 저 테스트는 "던진다" 만 보고 미러는 안 본다. 그런데 이 가드가
+    //   막는 진짜 사고는 예외가 아니라 **레거시 미러 과다적립**이다.
+    //   refund 는 멱등 hit 일 때 기존 원장 총액(0 이 아니다)을 실어 보내므로, 가드가 풀리면
+    //   그 금액이 회사 예치금 / 사용자 여신에 한 번 더 얹힌다. 지갑은 멀쩡한데 화면 금액만
+    //   틀어지는, 아무 에러도 안 나는 사고다.
+    it('멱등 hit 이면 레거시 미러(회사 예치금·사용자 여신)를 건드리지 않는다', async () => {
+      const { sut, userUpdates, companyUpdates } = buildSut({ alreadyRefunded: true });
+
+      // ★ 던지는지는 **일부러 단언하지 않는다.** 그걸 걸면 가드가 풀렸을 때 "예외가 안 났다" 로
+      //   먼저 실패해 아래 미러 단언이 실행되지도 않는다 — 앞 테스트와 같은 것만 보는 셈이 된다.
+      //   여기서 지킬 보장은 "예외" 가 아니라 **미러가 안 움직인다** 이므로 결과와 무관하게 확인한다.
+      await call(sut, CANCELABLE).catch(() => undefined);
+
+      expect(companyUpdates).toHaveLength(0);
+      expect(userUpdates).toHaveLength(0);
+      expect(sut.userCompanyRepository.save).not.toHaveBeenCalled();
     });
 
     it('취소를 먼저 하고 환불한다 — 취소가 실패하면 환불하지 않는다', async () => {

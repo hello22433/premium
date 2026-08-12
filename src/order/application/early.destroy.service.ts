@@ -1,12 +1,13 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, Not, Repository } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
 import { EarlyDestroyRequestEntity, EarlyDestroyRequestStatus } from '../../entity/early.destroy.request.entity';
 import { EarlyDestroyRequestItemEntity } from '../../entity/early.destroy.request.item.entity';
 import { OrderEntity } from '../../entity/order.entity';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
+import { OrderManualEntryEntity } from '../../entity/order.manual.entry.entity';
 import { DESTROYED_AT_SOURCE, isDeliveryDestroyed } from '../domain/destroyed.at.source';
 import { OrderHistoryEntity } from '../../entity/order.history.entity';
 import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.delivery.refund.status.enum';
@@ -46,6 +47,8 @@ export class EarlyDestroyService {
     private orderProductMappingRepository: Repository<OrderProductMappingEntity>,
     @InjectRepository(OrderDeliveryEntity)
     private orderDeliveryRepository: Repository<OrderDeliveryEntity>,
+    @InjectRepository(OrderManualEntryEntity)
+    private orderManualEntryRepository: Repository<OrderManualEntryEntity>,
     @InjectRepository(OrderHistoryEntity)
     private orderHistoryRepository: Repository<OrderHistoryEntity>,
   ) {}
@@ -299,6 +302,7 @@ export class EarlyDestroyService {
       originalDeliveryTarget: DESTROY_VALUE,
       emailReceiverPhone: DESTROY_VALUE,
       bankAccount: DESTROY_VALUE,
+      memo: () => `CASE WHEN memo IS NULL THEN NULL ELSE '${DESTROY_VALUE}' END`,
       bankAccountOwner: DESTROY_VALUE,
     };
 
@@ -328,6 +332,24 @@ export class EarlyDestroyService {
         .update(OrderDeliveryEntity)
         .set(piiPayload)
         .where(`${column} IN (:...ids)`, { ids })
+        .execute();
+    }
+
+    const remainingMemoCount = await this.orderDeliveryRepository.count({
+      where: {
+        orderProductMapping: { orderId: request.orderId },
+        memo: Not(DESTROY_VALUE),
+      },
+      withDeleted: true,
+    });
+    if (remainingMemoCount === 0) {
+      await this.orderManualEntryRepository
+        .createQueryBuilder()
+        .update(OrderManualEntryEntity)
+        .set({
+          memo: () => `CASE WHEN memo IS NULL THEN NULL ELSE '${DESTROY_VALUE}' END`,
+        })
+        .where('orderId = :orderId', { orderId: request.orderId })
         .execute();
     }
 

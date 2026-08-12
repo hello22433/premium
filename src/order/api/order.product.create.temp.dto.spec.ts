@@ -43,3 +43,37 @@ describe('OrderProductCreateTempDto validation', () => {
     expect(errors.find((e) => e.property === 'amount')).toBeUndefined();
   });
 });
+
+describe('memo normalization', () => {
+  const build = (memo: unknown) =>
+    plainToInstance(OrderProductCreateTempDto, {
+      productId: 1,
+      amount: 1,
+      orderDeliveryList: [{ deliveryTarget: '01012345678', memo }],
+    });
+
+  it('trims before applying the 500 character limit', async () => {
+    const dto = build(`  ${'a'.repeat(500)}  `);
+
+    expect(dto.orderDeliveryList[0].memo).toHaveLength(500);
+    expect(await validate(dto)).toHaveLength(0);
+  });
+
+  it('normalizes blank input to null', async () => {
+    const dto = build('   ');
+
+    expect(dto.orderDeliveryList[0].memo).toBeNull();
+    expect(await validate(dto)).toHaveLength(0);
+  });
+
+  it('rejects 501 normalized characters', async () => {
+    const errors = await validate(build('a'.repeat(501)));
+    const nestedErrors = errors.find((error) => error.property === 'orderDeliveryList')?.children?.[0]?.children;
+
+    expect(nestedErrors?.find((error) => error.property === 'memo')).toBeDefined();
+  });
+
+  it.each(['line1\nline2', 'line1\rline2'])('rejects line breaks before trim: %j', (memo) => {
+    expect(() => build(memo)).toThrow('memo must be a single line');
+  });
+});

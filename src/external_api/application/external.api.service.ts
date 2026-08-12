@@ -119,7 +119,6 @@ import { CreditExcessApprovalRequiredError } from '../../wallet/application/cred
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
-import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
 import { OrderDeliveryAttemptEntity, OrderDeliveryAttemptType } from '../../entity/order.delivery.attempt.entity';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogActionType } from '../../activity_log/interface/activity.log.action.type';
@@ -485,15 +484,6 @@ export class ExternalApiService {
         );
       }
 
-      // R4 차감 mirror 역복원에 쓸 원 차감 총액. RefundPoolService 는 *RestoredAmount 카운터만 증가시키므로
-      // depositUsedAmount/creditUsedAmount/creditExcessAmount 는 원 차감값 그대로 보존된다.
-      const allocation = await manager.findOne(OrderPaymentAllocationEntity, {
-        where: { orderId: order.id },
-      });
-      if (!allocation) {
-        throw new Error(`wallet-managed order ${order.id} missing allocation — drift, aborting external refund`);
-      }
-
       const refundResult = await this.refundPoolService.refund(
         {
           orderId: order.id,
@@ -504,9 +494,7 @@ export class ExternalApiService {
         manager,
       );
 
-      // R4 legacy mirror 역복원 (차감의 정확한 역). RefundPoolService 는 legacy 컬럼 미터치 → 풀 기준 이중복원 없음.
-      // 단, 멱등 retry(alreadyRefunded) 면 refund 는 no-op 인데 mirror 는 무조건 전액 복원해 잔액이 이중 반영된다.
-      // → 신규 환불이 실제 적용된 경우(alreadyRefunded=false)에만 mirror 를 실행한다.
+      // 신규 환불이 실제 적용된 경우에만 이번 개별 환불의 재원별 결과로 legacy mirror를 복원한다.
       if (refundResult.alreadyRefunded) {
         this.logger.warn(
           `[EXTERNAL_REFUND] 멱등 retry — 풀 환불 no-op, legacy mirror skip (이중복원 방지). orderDelivery.id: ${orderDelivery.id}`,
@@ -515,17 +503,19 @@ export class ExternalApiService {
       }
 
       const isCompany = user.company?.balanceManagementType === 'COMPANY';
-      if (isCompany) {
+      if (isCompany && refundResult.refundedDepositAmount > 0) {
         await manager.query('UPDATE user_company SET balance = balance + ? WHERE id = ?', [
-          allocation.depositUsedAmount,
+          refundResult.refundedDepositAmount,
           user.companyId,
         ]);
       }
-      const allSettleDelta = allocation.creditUsedAmount + allocation.creditExcessAmount;
-      await manager.query('UPDATE user SET all_settle_amount = all_settle_amount - ? WHERE id = ?', [
-        allSettleDelta,
-        user.id,
-      ]);
+      const allSettleDelta = refundResult.refundedCreditUsedAmount + refundResult.refundedCreditExcessAmount;
+      if (allSettleDelta > 0) {
+        await manager.query('UPDATE user SET all_settle_amount = all_settle_amount - ? WHERE id = ?', [
+          allSettleDelta,
+          user.id,
+        ]);
+      }
     });
   }
 

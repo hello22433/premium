@@ -36,6 +36,8 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
   let reverseLedger: OrderPaymentRefundEventEntity | null;
   // H1 가드용 — billing user 현재 settlement_code.
   let billingUserCode: string;
+  let refundEventLockModes: string[];
+  let staleRefundEventSnapshot: OrderPaymentRefundEventEntity[] | null;
 
   const ds: any = {
     // transaction 은 isolationLevel 1st arg + callback 또는 callback 단독 둘 다 지원
@@ -47,11 +49,14 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
             return { findOne: async () => ({ id: 1, settlementCode: billingUserCode }) };
           }
           return {
-            createQueryBuilder: (_alias: string) => {
+            createQueryBuilder: () => {
               // where 조건을 캡처해서 prefix LIKE 분기 처리
               let wherePrefix: string | null = null;
               const builder: any = {
-                setLock: () => builder,
+                setLock: (mode: string) => {
+                  if (target === OrderPaymentRefundEventEntity) refundEventLockModes.push(mode);
+                  return builder;
+                },
                 where: (cond: string, params?: any) => {
                   if (typeof cond === 'string' && cond.includes('LIKE') && params?.prefix) {
                     wherePrefix = String(params.prefix).replace(/%$/, '');
@@ -73,10 +78,14 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
                 },
                 getMany: async () => {
                   if (target === OrderPaymentRefundEventEntity) {
+                    const visibleEvents =
+                      staleRefundEventSnapshot !== null && !refundEventLockModes.includes('pessimistic_read')
+                        ? staleRefundEventSnapshot
+                        : ledger;
                     if (wherePrefix) {
-                      return ledger.filter((l) => (l.idempotencyKey ?? '').startsWith(wherePrefix as string));
+                      return visibleEvents.filter((l) => (l.idempotencyKey ?? '').startsWith(wherePrefix as string));
                     }
-                    return ledger.filter((l) => l.reversedAt === null);
+                    return visibleEvents.filter((l) => l.reversedAt === null);
                   }
                   if (target === WalletTransactionEntity) return resendDeductTxs;
                   if (target === OrderPaymentAllocationLineEntity) return lines;
@@ -87,7 +96,7 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
             },
           };
         },
-        find: async (target: any, _where: any) => {
+        find: async (target: any) => {
           if (target === OrderPaymentRefundEventEntity) return ledger.filter((l) => l.reversedAt === null);
           if (target === OrderPointUsageEntity) return pointUsages;
           return [];
@@ -133,16 +142,19 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
           return obj;
         }),
         createQueryBuilder: () => ({
-          update: (_target: any) => ({
-            set: (_set: any) => ({
-              where: (_cond: string, params: any) => ({
-                execute: async () => {
-                  const grant = pointGrants[params.id];
-                  if (!grant || grant.active !== 1) return { affected: 0 };
-                  grant.remainingAmount += params.portion;
-                  return { affected: 1 };
-                },
-              }),
+          update: () => ({
+            set: () => ({
+              where: (...args: any[]) => {
+                const params = args[1];
+                return {
+                  execute: async () => {
+                    const grant = pointGrants[params.id];
+                    if (!grant || grant.active !== 1) return { affected: 0 };
+                    grant.remainingAmount += params.portion;
+                    return { affected: 1 };
+                  },
+                };
+              },
             }),
           }),
         }),
@@ -206,6 +218,8 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
     pointUsages = [];
     reverseLedger = null;
     billingUserCode = 'company-1';
+    refundEventLockModes = [];
+    staleRefundEventSnapshot = null;
     wallets = {
       '5': {
         id: '5',
@@ -249,6 +263,89 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
     expect(row.refundedPointAmount).toBe(0);
   });
 
+  it('정산확정 전 개별 폐기는 신용초과 → 예치금 → 여신 순으로 복구한다', async () => {
+    const result = await sut.refund({
+      orderId: 100,
+      eventType: OrderPaymentRefundEventType.DISCARD_REFUND,
+      targetDeliveryIds: [100],
+      idempotencyKeyPrefix: 'discard_refund:100:100:1',
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        totalRefundedAmount: 10000,
+        refundedPointAmount: 0,
+        refundedCreditExcessAmount: 5000,
+        refundedDepositAmount: 5000,
+        refundedCreditUsedAmount: 0,
+        pointSkippedExpiredAmount: 0,
+        alreadyRefunded: false,
+      }),
+    );
+    expect(ledger[0]).toEqual(
+      expect.objectContaining({
+        refundedCreditExcessAmount: 5000,
+        refundedDepositAmount: 5000,
+        refundedCreditUsedAmount: 0,
+      }),
+    );
+    expect(refundEventLockModes.filter((mode) => mode === 'pessimistic_read')).toHaveLength(2);
+  });
+
+  it.each([
+    ['credit excess', 'creditExcessRestoredAmount', 5001],
+    ['deposit', 'depositRestoredAmount', 10001],
+    ['credit', 'creditUsedRestoredAmount', 15001],
+  ] as const)('%s restored counter가 원 사용액을 초과하면 mutation 전에 실패한다', async (_label, field, value) => {
+    (allocations['1'] as any)[field] = value;
+
+    await expect(
+      sut.refund({
+        orderId: 100,
+        eventType: OrderPaymentRefundEventType.DISCARD_REFUND,
+        targetDeliveryIds: [100],
+        idempotencyKeyPrefix: `discard_refund:100:100:drift:${field}`,
+      }),
+    ).rejects.toThrow(/refund resource counter drift/);
+
+    expect(ledger).toHaveLength(0);
+    expect(walletTxs).toHaveLength(0);
+  });
+
+  it('lock 전 snapshot이 stale이어도 lock 후 current read로 동시 폐기 이벤트를 반영한다', async () => {
+    staleRefundEventSnapshot = [];
+    ledger.push({
+      id: 'concurrent-refund',
+      allocationId: '1',
+      orderId: 100,
+      eventType: OrderPaymentRefundEventType.DISCARD_REFUND,
+      affectedDeliveryIds: [999],
+      refundedGrossBase: 25000,
+      refundedPayableBase: 25000,
+      refundedCardSurchargeAmount: 0,
+      refundedPointAmount: 0,
+      refundedDepositAmount: 10000,
+      refundedCreditUsedAmount: 10000,
+      refundedCreditExcessAmount: 5000,
+      pointSkippedExpiredAmount: 0,
+      idempotencyKey: 'discard_refund:100:999:concurrent:line:99',
+      reversedAt: null,
+      reversedByWalletTransactionId: null,
+      createdAt: new Date(),
+    } as OrderPaymentRefundEventEntity);
+
+    await expect(
+      sut.refund({
+        orderId: 100,
+        eventType: OrderPaymentRefundEventType.DISCARD_REFUND,
+        targetDeliveryIds: [100],
+        idempotencyKeyPrefix: 'discard_refund:100:100:after-concurrent',
+      }),
+    ).rejects.toThrow(/over-refund detected/);
+
+    expect(refundEventLockModes.filter((mode) => mode === 'pessimistic_read')).toHaveLength(2);
+    expect(walletTxs).toHaveLength(0);
+  });
   it('H1: allocation wallet owner_id != billing user 현재 code → 환불 BLOCK', async () => {
     billingUserCode = 'company-2'; // 계정 이동됨.
     await expect(
@@ -321,6 +418,16 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
     });
     expect(r.ledgerIds).toEqual(['pre1']);
     expect(r.totalRefundedAmount).toBe(10000);
+    expect(r).toEqual(
+      expect.objectContaining({
+        refundedPointAmount: 0,
+        refundedDepositAmount: 0,
+        refundedCreditUsedAmount: 5000,
+        refundedCreditExcessAmount: 5000,
+        pointSkippedExpiredAmount: 0,
+        alreadyRefunded: true,
+      }),
+    );
   });
 
   it('정산확정 후 폐기 환불은 여신/신용초과를 다시 release하지 않고 예치금으로 환불한다', async () => {
@@ -780,9 +887,12 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
     ).resolves.toEqual({
       ledgerIds: ['1'],
       totalRefundedAmount: 0,
+      refundedPointAmount: 0,
+      refundedDepositAmount: 0,
+      refundedCreditUsedAmount: 0,
+      refundedCreditExcessAmount: 0,
+      pointSkippedExpiredAmount: 3000,
       alreadyRefunded: false,
-      // 만료 포인트는 skip 되므로 실제로 복구된 재원이 하나도 없다.
-      restoredByResource: { deposit: 0, creditUsed: 0, creditExcess: 0, point: 0 },
     });
 
     expect(pointGrants['pg-expired'].remainingAmount).toBe(0);
@@ -823,9 +933,12 @@ describe('RefundPoolService — §8 환불 알고리즘', () => {
     ).resolves.toEqual({
       ledgerIds: ['1'],
       totalRefundedAmount: 0,
+      refundedPointAmount: 0,
+      refundedDepositAmount: 0,
+      refundedCreditUsedAmount: 0,
+      refundedCreditExcessAmount: 0,
+      pointSkippedExpiredAmount: 3000,
       alreadyRefunded: true,
-      // 멱등 재시도는 "이번 호출이 복구한 몫" 이 0 이어야 한다 — 미러가 두 번 적립되면 안 되므로.
-      restoredByResource: { deposit: 0, creditUsed: 0, creditExcess: 0, point: 0 },
     });
   });
 

@@ -460,7 +460,7 @@ export class OrderController {
   // ====================================================
   @Post('/order/temp')
   createTemp(@User() user: ILoginUserInfo, @Body() getBody: OrderCreateTempReqDto) {
-    this.logger.log(`createTemp user: ${user.id}, body: ${JSON.stringify(getBody)}`);
+    this.logger.log(`createTemp user: ${user.id}, productCount: ${getBody.orderProductList?.length ?? 0}`);
     return this.orderService.createTemp(user, getBody);
   }
 

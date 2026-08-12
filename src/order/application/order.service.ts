@@ -877,6 +877,7 @@ export class OrderService {
       entity.replaceCharacter1 = entry.replaceCharacter1 ?? null;
       entity.replaceCharacter2 = entry.replaceCharacter2 ?? null;
       entity.replaceCharacter3 = entry.replaceCharacter3 ?? null;
+      entity.memo = entry.memo ?? null;
       return entity;
     });
   }
@@ -1558,6 +1559,7 @@ export class OrderService {
             replaceCharacter1: orderDelivery.replaceCharacter1,
             replaceCharacter2: orderDelivery.replaceCharacter2,
             replaceCharacter3: orderDelivery.replaceCharacter3,
+            memo: orderDelivery.memo,
             status: orderDelivery.status,
             isResent: orderDelivery.resendAt !== null,
             cancelable: orderLevelBlock === null && perDelivery.cancelable,
@@ -4306,6 +4308,7 @@ export class OrderService {
         oneOrderDelivery.replaceCharacter1 = orderDelivery.replaceCharacter1 ?? null;
         oneOrderDelivery.replaceCharacter2 = orderDelivery.replaceCharacter2 ?? null;
         oneOrderDelivery.replaceCharacter3 = orderDelivery.replaceCharacter3 ?? null;
+        oneOrderDelivery.memo = orderDelivery.memo ?? null;
         oneOrderDelivery.sendRequestAt = productSendAt;
         orderDeliveryCreateList.push(oneOrderDelivery);
       }
@@ -4560,6 +4563,7 @@ export class OrderService {
         oneOrderDelivery.replaceCharacter1 = orderDelivery.replaceCharacter1 ?? null;
         oneOrderDelivery.replaceCharacter2 = orderDelivery.replaceCharacter2 ?? null;
         oneOrderDelivery.replaceCharacter3 = orderDelivery.replaceCharacter3 ?? null;
+        oneOrderDelivery.memo = orderDelivery.memo ?? null;
         oneOrderDelivery.sendRequestAt = productSendAt;
         orderDeliveryCreateList.push(oneOrderDelivery);
       });
@@ -4683,6 +4687,7 @@ export class OrderService {
       replaceCharacter1: entry.replaceCharacter1,
       replaceCharacter2: entry.replaceCharacter2,
       replaceCharacter3: entry.replaceCharacter3,
+      memo: entry.memo,
     }));
   }
 
@@ -6203,13 +6208,21 @@ export class OrderService {
     // 않으므로 이중복원이 아니다. 이게 빠져 있으면 지갑 잔액은 맞는데 고객사 화면·정산 화면의
     // 예치금/여신이 취소 전 값에 멈춰 서로 어긋난다.
     //
-    // ★ 재원별 금액은 refund 가 **락 안에서 계산해 돌려준 이번 호출의 몫**을 그대로 쓴다.
-    //   종전에는 `allocation(after) - allocation(before)` 로 역산했는데, before 를 락 없이 읽은 뒤
-    //   refund 가 wallet/allocation 락을 잡기 때문에 그 사이 같은 주문의 **다른 발송건을 CS 폐기 등이
-    //   환불하면 그 몫까지 차액에 섞였다**. CS 쪽은 자기 몫을 이미 레거시 미러에 반영하므로,
-    //   부분취소가 남의 환불분을 한 번 더 회사 예치금/여신에 적립하는 과다적립이 났다(관리자 리뷰 P1).
-    const { deposit: depositRefunded, creditUsed: creditRefunded, creditExcess: excessRefunded } =
-      refundResult.restoredByResource;
+    // ★ 재원별 금액은 refund 가 돌려준 값을 그대로 쓴다. `allocation(after) - allocation(before)` 로
+    //   역산하면 안 된다 — before 를 락 없이 읽은 뒤 refund 가 wallet/allocation 락을 잡기 때문에,
+    //   그 사이 같은 주문의 **다른 발송건을 CS 폐기 등이 환불하면 그 몫까지 차액에 섞인다**.
+    //   CS 쪽은 자기 몫을 이미 레거시 미러에 반영하므로, 부분취소가 남의 환불분을 한 번 더
+    //   회사 예치금/여신에 적립하는 과다적립이 났다(관리자 리뷰 P1).
+    //
+    // ★ 이 값이 "이번 호출의 몫" 인 근거는 **바로 위 alreadyRefunded 가드**다.
+    //   RefundPoolService.buildRefundResult 는 넘겨받은 원장 행을 합해서 돌려주는데,
+    //   호출부 7곳이 `기존 원장 → alreadyRefunded=true` / `이번에 만든 원장 → false` 로
+    //   예외 없이 짝지어져 있다. 즉 alreadyRefunded=false 면 반환 금액은 반드시 이번 호출 몫이다.
+    //   멱등 hit(=기존 원장 총액이 실려 옴)은 위에서 던져 여기까지 오지 않는다.
+    //   ⚠️ 그 가드를 지우면 재시도가 미러에 과다적립된다 — partial-cancel.spec 이 이를 고정한다.
+    const depositRefunded = refundResult.refundedDepositAmount;
+    const creditRefunded = refundResult.refundedCreditUsedAmount;
+    const excessRefunded = refundResult.refundedCreditExcessAmount;
 
     const billingUserId = getBillingUserId(lockedOrder);
     const billingUser = await this.userRepository.findOneOrFail({
