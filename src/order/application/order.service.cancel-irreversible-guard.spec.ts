@@ -221,6 +221,10 @@ describe('OrderService.deliveryCancel — 되돌릴 수 없는 발송건 가드'
     // ★ 사후검사는 잔액 복원 **앞**에 있어야 한다. 뒤에 있으면 이미 돈이 나간 뒤라 던져도 늦다.
     //   (트랜잭션 롤백 자체는 @Transactional 소관이고 이 목에서는 관측할 수 없다 — order.status 는
     //    메모리 객체라 되돌아오지 않으므로 그것으로 확인하면 안 된다)
+    //   ※ `userRepository.save` 로 확인하면 **항상 참이라 아무것도 안 지킨다** (197-16 재리뷰 F4).
+    //     같은 커밋(2cf2ff0d)이 이 경로의 통짜 save 를 걷어내고 증감식 UPDATE 로 바꿨기 때문이다.
+    //     실제로 사후검사 블록을 미러 UPDATE 뒤로 옮겨도 초록이었다. 지금 나가는 것으로 확인한다.
+    expect(sut.__mirrorUpdates).toHaveLength(0);
     expect(sut.userRepository.save).not.toHaveBeenCalled();
     expect(sut.userCompanyRepository.save).not.toHaveBeenCalled();
   });

@@ -215,6 +215,12 @@ describe('OrderService.deliveryCancel — 다중 상품행 주문 현행 동작 
     expect(sql).toContain('barCode IS NOT NULL');
     expect(sql).toContain('claimedAt IS NOT NULL');
     expect(sql).toContain('mutationClaimedAt < :mutationStale');
+    // ★ 어휘만 보면 **방향이 뒤집혀도 통과한다** (197-16 재리뷰 F3).
+    //   `NOT` 이 빠지면 전체취소가 "이미 나간 건만" 취소하고 안전한 건은 남긴다 — 가드가 통째로
+    //   뒤집히는데 위 toContain 들은 전부 그대로 초록이다. 부정까지 묶어서 고정한다.
+    //   ※ 같은 술어가 사전 조회(6046)에서는 **부정 없이** 쓰인다("되돌릴 수 없는 건을 센다").
+    //     한쪽만 보고 베끼면 방향이 갈리므로 갱신 쪽은 여기서 못박는다.
+    expect(sql).toContain('NOT (actualSendAt IS NOT NULL');
 
     // 발송건에도 취소 시각·사유를 남긴다(전체취소도 부분취소와 동일하게 채운다 —
     // canceled_at IS NULL 이 "미취소" 와 "전체취소" 를 겸하지 않도록).
