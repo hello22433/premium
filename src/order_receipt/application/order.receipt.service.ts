@@ -8,6 +8,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
 import { OrderReceiptEntity } from '../../entity/order.receipt.entity';
+import { UserEntity } from '../../entity/user.entity';
 import { FileService } from '../../file/application/file.service';
 import {
   OrderReceiptCreateReqDto,
@@ -36,6 +37,8 @@ export class OrderReceiptService {
   constructor(
     @InjectRepository(OrderReceiptEntity)
     private orderReceiptRepository: Repository<OrderReceiptEntity>,
+    @InjectRepository(UserEntity)
+    private userRepository: Repository<UserEntity>,
     private fileService: FileService,
     private autoOrderService: AutoOrderService,
   ) {}
@@ -105,7 +108,7 @@ export class OrderReceiptService {
       return {
         id: receipt.id,
         userId: receipt.userId,
-        userName: receipt.user.personName,
+        userName: receipt.snapshotPersonName ?? receipt.user.personName,
         title: receipt.title,
         status: receipt.status,
         isFile,
@@ -149,8 +152,11 @@ export class OrderReceiptService {
     return {
       id: receipt.id,
       userId: receipt.userId,
-      userName: receipt.user.personName,
-      userCompanyName: receipt.user.company?.businessName ?? null,
+      userName: receipt.snapshotPersonName ?? receipt.user.personName,
+      userCompanyName:
+        receipt.snapshotPersonName != null
+          ? receipt.snapshotBusinessName
+          : (receipt.user.company?.businessName ?? null),
       title: receipt.title,
       status: receipt.status,
       filePathList: fileUrlList,
@@ -160,7 +166,7 @@ export class OrderReceiptService {
       confirmNote: receipt.confirmNote,
       registerAt: format(receipt.registerAt, DateFormatStr),
       processedAt: receipt.processedAt ? format(receipt.processedAt, DateFormatStr) : null,
-      processedUserName: receipt.processedUser?.personName ?? null,
+      processedUserName: receipt.snapshotProcessedPersonName ?? receipt.processedUser?.personName ?? null,
     };
   }
 
@@ -243,6 +249,11 @@ export class OrderReceiptService {
       throw new BadRequestException('첨부파일을 등록해주세요.');
     }
 
+    const author = await this.userRepository.findOneOrFail({
+      where: { id: user.id },
+      relations: ['company'],
+    });
+
     await this.orderReceiptRepository.insert({
       userId: user.id,
       title,
@@ -250,6 +261,8 @@ export class OrderReceiptService {
       filePath: filePath.join(','),
       requestNote: requestNote ?? null,
       registerAt: new Date(),
+      snapshotPersonName: author.personName,
+      snapshotBusinessName: author.company?.businessName ?? null,
     });
   }
 
@@ -267,7 +280,7 @@ export class OrderReceiptService {
       throw new BadRequestException('접수 상태인 건만 승인할 수 있습니다.');
     }
 
-    this.applyNonRejectedStatus(receipt, OrderReceiptStatus.APPROVED, user);
+    await this.applyNonRejectedStatus(receipt, OrderReceiptStatus.APPROVED, user);
     await this.orderReceiptRepository.save(receipt);
 
     // 승인의 길목에 자동주문 훅(COMMIT). 첨부가 없거나 처리할 게 없으면 무해하게 통과.
@@ -299,6 +312,7 @@ export class OrderReceiptService {
     receipt.rejectReason = getBody.rejectReason.trim();
     receipt.processedAt = new Date();
     receipt.processedUserId = user.id;
+    receipt.snapshotProcessedPersonName = await this.readPersonName(user.id);
     await this.orderReceiptRepository.save(receipt);
   }
 
@@ -391,7 +405,7 @@ export class OrderReceiptService {
 
     const receipt = await this.findReceiptOrThrow(id);
 
-    this.applyNonRejectedStatus(receipt, getBody.status, user);
+    await this.applyNonRejectedStatus(receipt, getBody.status, user);
 
     await this.orderReceiptRepository.save(receipt);
   }
@@ -421,9 +435,13 @@ export class OrderReceiptService {
     }
   }
 
-  private applyNonRejectedStatus(receipt: OrderReceiptEntity, status: OrderReceiptStatus, user: ILoginUserInfo) {
+  private async applyNonRejectedStatus(
+    receipt: OrderReceiptEntity,
+    status: OrderReceiptStatus,
+    user: ILoginUserInfo,
+  ): Promise<void> {
     if (status === OrderReceiptStatus.REJECTED) {
-      throw new BadRequestException('반려 처리는 반려 API를 사용해주세요.');
+      throw new BadRequestException('반려 처리는 반려 API 를 사용해주세요.');
     }
 
     receipt.status = status;
@@ -432,11 +450,22 @@ export class OrderReceiptService {
     if (status === OrderReceiptStatus.RECEIVED) {
       receipt.processedAt = null;
       receipt.processedUserId = null;
+      receipt.snapshotProcessedPersonName = null;
       return;
     }
 
     receipt.processedAt = new Date();
     receipt.processedUserId = user.id;
+    receipt.snapshotProcessedPersonName = await this.readPersonName(user.id);
+  }
+
+  /** 처리 이력의 표시명을 고정한다. 처리자 정보를 읽지 못하면 상태 전환도 저장하지 않는다. */
+  private async readPersonName(userId: number): Promise<string> {
+    const user = await this.userRepository.findOneOrFail({
+      where: { id: userId },
+      select: ['id', 'personName'],
+    });
+    return user.personName;
   }
 
   private async findReceiptOrThrow(id: number, opts?: { lock?: boolean }): Promise<OrderReceiptEntity> {
