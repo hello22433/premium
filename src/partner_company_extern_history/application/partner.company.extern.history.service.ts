@@ -85,6 +85,8 @@ const HAS_RESEND_ATTEMPT_PREDICATE =
  *     미결 업무 결정이다. 운영 확인 전까지 코드로 통일하지 말 것.
  *
  *   ⚠️ **전환을 시작하기 전에** 다시 확인할 것 — 지금 0 인 값들이라 시간이 지나면 거짓이 된다.
+ *     ⭐ 확인 쿼리와 판단 근거는 **docs/followup-list-date-axis.md §1-2** 에 있다.
+ *       (컷오버 담당자가 이 서비스 파일을 열 이유가 없으므로 문서로 뺐다)
  *     ① RESOLVED_MANUALLY_* 건수(현재 0). 생기면 **실제 실패 건인데** 날짜가 종결일로 밀린다.
  *     ② 위 60건 대조를 재실행해 FAILED_FINAL 불일치가 0 을 유지하는지.
  *     ③ OPS_REVIEW_REQUIRED 를 이 목록에 계속 둘지(운영 확인).
@@ -148,6 +150,7 @@ const HAS_RESEND_ATTEMPT_PREDICATE =
  *   이미 인덱스를 못 탔다 — 회귀가 아니다.
  *
  * ⚠️ 미검증 — 실 MySQL 에 대고 돌려보지 못했다(운영 RDS 는 로컬 직결 불가). MySQL 의 YEAR/MONTH/DAY
+ *   추적 문서: docs/followup-list-date-axis.md §6.
  *   가 제로·부분제로에서 0 을 준다는 문서상 동작에 기대고 있다. 배포 전 개발 DB 에서 한 번 확인할 것:
  *     SELECT YEAR('2026-00-00'), MONTH('2026-00-00'), DAY('2026-00-00');  -- 2026, 0, 0 이어야 한다
  */
@@ -183,6 +186,8 @@ const LIST_DATE_EXPR =
  *     처음 열렸다" 고 적었던 것은 **둘 다 틀렸다.**
  *
  * ⚠️ SQL 쪽 `NULLIF` 만으로는 부족하다. 그것은 정확히 `'0000-00-00 00:00:00'` 하나만 걷어내므로
+ *   같은 형태(truthy 가드만 있는 format 호출)가 다른 모듈 6곳에 남아 있다 —
+ *   추적: docs/followup-list-date-axis.md §3.
  *   `2026-00-00` 같은 **부분 제로날짜**는 통과시킨다(그것도 JS 에서 Invalid Date 다).
  *   그래서 최종 방어는 리터럴 비교가 아니라 **값이 유효한가**를 묻는 여기에 둔다.
  */
