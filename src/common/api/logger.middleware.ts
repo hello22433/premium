@@ -232,18 +232,31 @@ export class LoggerMiddleware implements NestMiddleware {
     const now = Date.now();
 
     res.on('finish', () => {
-      const {
-        statusCode,
-        locals: { errorCode },
-      } = res;
+      // ★ 이 콜백에서 던지면 ExceptionFilter 가 못 잡는다 — 응답이 이미 끝나 Node 의 emit() 위에서
+      //   터지므로 uncaughtException 이 되고, 저장소에 그 핸들러가 없어 프로세스(워커)가 죽는다.
+      //   요청자는 정상 응답을 받고, 죽는 건 그때 처리 중이던 '다른' 요청들이다.
+      //   실제 위험: 깊게 중첩된 요청 본문이 sanitizeBody 재귀에서 RangeError 를 낸다(본문 상한 50mb).
+      //   로그 실패로 서버를 내리지 않는다.
+      try {
+        const {
+          statusCode,
+          locals: { errorCode },
+        } = res;
 
-      const newBody = this.except(originalUrl) ? {} : this.sanitizeBody(body, originalUrl);
-      const loggedUrl = this.isProd() ? this.maskUrl(originalUrl) : originalUrl;
+        const newBody = this.except(originalUrl) ? {} : this.sanitizeBody(body, originalUrl);
+        const loggedUrl = this.isProd() ? this.maskUrl(originalUrl) : originalUrl;
 
-      let message = `${method} ${loggedUrl} ${ip} ${userAgent} ${statusCode} ${JSON.stringify(newBody)} ${Date.now() - now}ms`;
-      message = errorCode ? message + ` ${errorCode}` : message;
+        let message = `${method} ${loggedUrl} ${ip} ${userAgent} ${statusCode} ${JSON.stringify(newBody)} ${Date.now() - now}ms`;
+        message = errorCode ? message + ` ${errorCode}` : message;
 
-      this.logger.log(message);
+        this.logger.log(message);
+      } catch (error) {
+        this.logger.warn(
+          `접근 로그 생성 실패 (${method} ${originalUrl} ${res.statusCode}): ${
+            (error as Error)?.message ?? String(error)
+          }`,
+        );
+      }
     });
     next();
   }

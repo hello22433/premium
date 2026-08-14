@@ -268,6 +268,60 @@ describe('LoggerMiddleware 마스킹', () => {
 
   // ★ 쿼리만 가리면 다운로드 GET 만 닫힌다. 등록/수정 본문에도 같은 S3 URL 이 실려 오므로
   //   (private/{업로더id}/{uuid}-{원본명}) 본문 쪽도 같이 가려야 절반짜리 방어가 안 된다.
+  /**
+   * ★ res.on('finish') 안에서 던지면 ExceptionFilter 가 못 잡는다 — 응답이 이미 끝나 Node 의 emit()
+   *   위에서 터지므로 uncaughtException 이 되고, 저장소에 그 핸들러가 없어 워커가 죽는다.
+   *   요청자는 정상 응답을 받고, 죽는 건 그때 처리 중이던 '다른' 요청들이다.
+   */
+  describe('접근 로그 핸들러 방어', () => {
+    const makeRes = () => {
+      const handlers: Record<string, () => void> = {};
+      return {
+        res: {
+          on: (ev: string, cb: () => void) => {
+            handlers[ev] = cb;
+          },
+          statusCode: 200,
+          locals: {},
+        } as any,
+        finish: () => handlers['finish'](),
+      };
+    };
+    const req = (body: any) =>
+      ({ ip: '1.1.1.1', method: 'POST', originalUrl: '/user-drive', body, get: () => '' }) as any;
+
+    it('로그 생성이 던져도 예외가 밖으로 나가지 않는다 (프로세스 보호)', () => {
+      const { res, finish } = makeRes();
+      // 아주 깊은 중첩 body → sanitizeBody 재귀가 RangeError 를 낸다
+      let deep: any = {};
+      const root = deep;
+      for (let i = 0; i < 60000; i++) deep = deep.a = {};
+      mw.use(req(root), res, () => undefined);
+      expect(() => finish()).not.toThrow();
+    });
+
+    it('삼키되 조용하지 않다 — 경고를 남긴다', () => {
+      const warn = jest.spyOn((mw as any).logger, 'warn').mockImplementation(() => undefined);
+      const { res, finish } = makeRes();
+      let deep: any = {};
+      const root = deep;
+      for (let i = 0; i < 60000; i++) deep = deep.a = {};
+      mw.use(req(root), res, () => undefined);
+      finish();
+      expect(warn).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
+    });
+
+    it('정상 body 는 기존대로 로그된다', () => {
+      const log = jest.spyOn((mw as any).logger, 'log').mockImplementation(() => undefined);
+      const { res, finish } = makeRes();
+      mw.use(req({ title: 't' }), res, () => undefined);
+      finish();
+      expect(log).toHaveBeenCalledTimes(1);
+      log.mockRestore();
+    });
+  });
+
   describe('본문의 첨부 URL 마스킹', () => {
     const attach = 'https://b.s3.amazonaws.com/private/5/abc-해지신청서.pdf';
 
