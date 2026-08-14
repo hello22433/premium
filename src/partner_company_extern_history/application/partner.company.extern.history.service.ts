@@ -108,6 +108,22 @@ const LIST_DATE_EXPR =
   "NULLIF(`orderDelivery`.`send_request_at`, '0000-00-00 00:00:00'), " +
   '`orderDelivery`.`updated_at`)';
 
+/**
+ * `LIST_DATE_EXPR` 의 `NULLIF` 와 **짝**이다. SQL 이 걷어내는 값을 TS 도 같은 자리에서 걷어낸다.
+ *
+ * ⚠️ 왜 필요한가 — MySQL 의 제로날짜(`0000-00-00`)는 `NULL` 이 아니라 **값**이라 `NOT NULL` 컬럼에도
+ *   들어갈 수 있고, mysql2 는 그것을 `new Date(NaN)` 으로 돌려준다. 그 값은 null 이 아니므로
+ *   `??` 를 그대로 통과하고, 뒤이어 `format()`(date-fns v3)이 `RangeError` 를 던진다.
+ *   호출부가 `.map()` 안이라 **그 행 하나가 아니라 페이지 전체가 500** 이 된다.
+ *   종전 마지막 칸 `updated_at` 은 `datetime(6) NOT NULL` 이라 이 경로가 없었다 — ④ 를 넣으면서
+ *   처음 열렸다(리뷰 HIGH-1).
+ *
+ * ⚠️ SQL 쪽 `NULLIF` 만으로는 부족하다. 그것은 정확히 `'0000-00-00 00:00:00'` 하나만 걷어내므로
+ *   `2026-00-00` 같은 **부분 제로날짜**는 통과시킨다(그것도 JS 에서 Invalid Date 다).
+ *   그래서 최종 방어는 리터럴 비교가 아니라 **값이 유효한가**를 묻는 여기에 둔다.
+ */
+const validDate = (d: Date | null | undefined): Date | null => (d && !Number.isNaN(d.getTime()) ? d : null);
+
 // claim self-heal 임계(ms). 크래시로 finally 못 탄 stale claim 만 재claim 허용.
 // claim 게이트(재claim 조건)와 거부 사유 판정(처리중 여부)이 동일 경계를 쓰도록 공유한다.
 // 값은 "단일 oneSend 최악 소요시간"보다 커야 한다(아니면 진짜 처리 중인데 재claim → 중복 발송).
@@ -388,10 +404,13 @@ export class PartnerCompanyExternHistoryService {
 
     // ⚠️ LIST_DATE_EXPR(필터·정렬)의 칸 순서를 **그대로 복제**한 것이다. 근거와 ⑤ 를 남긴 이유는
     // 그 상수의 주석에 있다. 한쪽만 고치면 "필터에는 걸리는데 화면 날짜는 다른" 상태가 된다.
-    // SQL 쪽 ④ 의 NULLIF 는 여기서 재현하지 않는다 — 제로날짜는 Date 객체로 들어와 ?? 로 못 거르고,
-    // 필터·정렬은 SQL 이 담당하므로 영향이 표시 한 칸에 그친다(실측 0건, 위 상수 주석의 점검 쿼리).
+    // ⑤(updated_at)만 validDate 를 안 씌운다 — datetime(6) NOT NULL 이라 무효값이 될 수 없고,
+    // 여기서 null 로 만들면 날짜 칸이 빈 채로 나가 정렬·검색과 화면이 어긋난다.
     const legacyDisplayDate =
-      orderDelivery.actualSendAt ?? orderDelivery.failedAt ?? orderDelivery.sendRequestAt ?? orderDelivery.updatedAt;
+      validDate(orderDelivery.actualSendAt) ??
+      validDate(orderDelivery.failedAt) ??
+      validDate(orderDelivery.sendRequestAt) ??
+      orderDelivery.updatedAt;
 
     if (!sot) {
       return {

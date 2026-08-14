@@ -219,6 +219,31 @@ describe('실패내역 화면 SoT 렌더', () => {
       expect(at).not.toContain('2026-08-10');
     });
 
+    // ⭐ 실제로 **도달 가능한** 무효값. 제로날짜는 mysql2 가 Invalid Date 로 돌려주는데 그 값은
+    //   null 이 아니라 `??` 를 그대로 통과한다. 막지 않으면 format() 이 던져서 이 행 하나가 아니라
+    //   **페이지 전체가 500** 이 된다(리뷰 HIGH-1). 아래 ⑤ 테스트는 도달 불가 케이스라 이걸 못 대신한다.
+    it('④ 가 무효한 날짜면 건너뛴다 — 한 행 때문에 목록 전체가 죽지 않는다', async () => {
+      const at = await 표시일시({
+        actualSendAt: null,
+        failedAt: null,
+        sendRequestAt: new Date('0000-00-00T00:00:00'), // mysql2 가 제로날짜에 주는 값
+        updatedAt: new Date('2026-08-10T00:00:03'),
+      });
+      expect(at).toBe('2026-08-10T00:00:03');
+    });
+
+    // SQL 의 NULLIF 는 정확히 '0000-00-00 00:00:00' 하나만 걷어낸다. 부분 제로는 SQL 을 통과하므로
+    // TS 쪽 방어가 리터럴 비교가 아니라 **값 유효성**이어야 하는 근거다.
+    it('부분 제로날짜도 건너뛴다 — SQL 의 NULLIF 로는 못 걷어내는 값이다', async () => {
+      const at = await 표시일시({
+        actualSendAt: null,
+        failedAt: null,
+        sendRequestAt: new Date('2026-00-00T00:00:00'),
+        updatedAt: new Date('2026-08-10T00:00:03'),
+      });
+      expect(at).toBe('2026-08-10T00:00:03');
+    });
+
     // ⑤ 는 send_request_at 이 NOT NULL 이라 정상 경로에서 도달할 수 없다. 도달 자체가
     // "④ 를 못 채운 다른 버그"의 신호이므로, 날짜를 비우는 대신 값은 채운다는 결정을 고정한다.
     it('⑤ send_request_at 마저 없으면 updated_at 으로 떨어진다 (안전망, 정상 경로 도달 불가)', async () => {
