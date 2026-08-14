@@ -188,9 +188,15 @@ export class UserDriveService {
    * 상세조회에서 S3 HeadObject(원본명 조회) 를 걸어도 되는 첨부만 골라낸다.
    *
    * ★ 왜 좁히나 — HeadObject 는 '그 key 의 진짜 원본 파일명' 을 응답(files[].name)에 실어준다.
-   *   즉 다운로드를 안 해도 이름은 새어나간다. 그래서 판정 기준을 다운로드 허용 규칙
-   *   (assertDownloadable: 발신자 소유이거나 업로더가 SUPER)과 **같게** 맞춘다.
-   *   기준이 갈리면 "다운로드는 막히는데 이름은 보이는" 비대칭이 생긴다.
+   *   즉 다운로드를 안 해도 이름은 새어나간다. 그래서 객체 판정은 다운로드 허용 규칙
+   *   (assertDownloadable: 발신자 소유이거나 업로더가 SUPER)과 같은 기준을 쓴다.
+   *
+   * ⚠️ 단 한 가지는 일부러 다르다 — assertDownloadable 에는 "요청자가 관리자면 소유검사 생략" 이
+   *   있지만 여기엔 없다. 이름 노출은 관리자에게도 좁게 유지한다(이름은 다운로드보다 약한 행위라
+   *   더 넓힐 이유가 없고, 넓히면 과거 밀반입 첨부의 진짜 이름이 관리자 화면에서 다시 샌다).
+   *   그 대가로 관리자는 타인 소유 첨부를 sanitize 된 key 복원명(공백이 _)으로 보게 되는데,
+   *   다운로드하면 진짜 이름이 나오므로 기능 손실은 아니다.
+   *   ※ 이 비대칭을 없애려고 여기에 관리자 우회를 얹지 마라 — 위 이유로 의도된 차이다.
    *
    *   쓰기 시점 검증이 생긴 뒤로 타인 소유 key 가 새로 들어올 길은 막혔지만, 그 이전에 저장된 행은
    *   그대로 남아 있으므로 읽는 쪽에도 같은 판정을 둔다(이중 방어).
@@ -313,16 +319,6 @@ export class UserDriveService {
   }
 
   /**
-   * 넣을 때(쓰기) 검증 — 새로 추가되는 첨부만 대상. confused-deputy(운영자가 남의 private URL 을
-   * 문서에 심어 수신자에게 유출)를 소스에서 차단해, 읽기(assertDownloadable)와 이중방어를 이룬다.
-   *  - private/{ownerId}/ : ownerId 가 등록자 본인이어야 함(본인이 올린 것만 첨부 가능).
-   *  - image/·file/ : 공개(public-read) 레거시 → 심어도 유출이 아니고(이미 공개), FE 전환 전 현행
-   *    문서함이 /file/image(→ image/)로 올리므로 호환 위해 허용.
-   *  - 그 외 위치·외부 host : 차단.
-   * ※ 기존에 이미 문서에 있던 첨부는 재검증하지 않는다(SUPER 가 교차수정으로 남긴 타인 소유 첨부,
-   *   또는 발신자 소유 첨부를 SUPER 가 재저장할 때 보존하기 위함).
-   */
-  /**
    * 저장(join(',')) → 복원(parseFilePathList) 왕복이 입력 배열을 그대로 보존하는지 검증한다.
    *
    * 보존되지 않으면 "검증한 것"과 "저장되는 것"이 달라진다 — 배열 원소 하나에 `,https://...` 를 심으면
@@ -333,10 +329,11 @@ export class UserDriveService {
    *
    * 파일명에 정상적으로 콤마가 든 경우는 왕복이 보존되므로 이 검사에 걸리지 않는다.
    */
-  private assertFilePathListStorable(filePath: string[]): void {
+  private toStoredFilePath(filePath: string[]): string | null {
     if (!isFilePathListRoundTripSafe(filePath)) {
       throw new BadRequestException('첨부 경로 형식이 올바르지 않습니다.');
     }
+    return filePath.length === 0 ? null : filePath.join(',');
   }
 
   /** URL → S3 key. 파싱 실패(깨진 percent-encoding 등)는 예외 대신 null 로 돌려 호출부가 상태코드를 정한다. */
@@ -348,6 +345,16 @@ export class UserDriveService {
     }
   }
 
+  /**
+   * 넣을 때(쓰기) 검증 — 새로 추가되는 첨부만 대상. confused-deputy(운영자가 남의 private URL 을
+   * 문서에 심어 수신자에게 유출)를 소스에서 차단해, 읽기(assertDownloadable)와 이중방어를 이룬다.
+   *  - private/{ownerId}/ : ownerId 가 등록자 본인이어야 함(본인이 올린 것만 첨부 가능).
+   *  - image/·file/ : 공개(public-read) 레거시 → 심어도 유출이 아니고(이미 공개), FE 전환 전 현행
+   *    문서함이 /file/image(→ image/)로 올리므로 호환 위해 허용.
+   *  - 그 외 위치·외부 host : 차단.
+   * ※ 기존에 이미 문서에 있던 첨부는 재검증하지 않는다(SUPER 가 교차수정으로 남긴 타인 소유 첨부,
+   *   또는 발신자 소유 첨부를 SUPER 가 재저장할 때 보존하기 위함).
+   */
   private assertNewAttachmentsOwnedBySelf(newUrls: string[], user: ILoginUserInfo): void {
     for (const url of newUrls) {
       if (!this.fileService.isOwnStorageUrl(url)) {
@@ -390,8 +397,8 @@ export class UserDriveService {
     }
 
     // 생성 시 첨부는 전부 신규 → 전량 검증(본인 업로드 private 또는 공개 레거시만).
-    this.assertFilePathListStorable(filePath);
     this.assertNewAttachmentsOwnedBySelf(filePath, user);
+    const storedFilePath = this.toStoredFilePath(filePath);
 
     await this.userDriveRepository.insert({
       senderId: user.id,
@@ -400,7 +407,7 @@ export class UserDriveService {
       content,
       sendAt: new Date(),
       status: status ?? IUserDriveStatus.REGISTER,
-      filePath: filePath.length === 0 ? null : filePath.join(','),
+      filePath: storedFilePath,
     });
 
     return;
@@ -439,8 +446,6 @@ export class UserDriveService {
 
     // 새로 추가된 첨부만 검증(기존 목록에 없던 것). 기존 첨부는 보존 — SUPER 가 교차수정 시
     // 발신자/타관리자 소유 첨부를 되보내도 통과해야 하므로 델타만 본다.
-    // 왕복 검증은 저장될 배열 '전체' 에 건다 — 델타만 보면 기존 항목에 섞인 밀반입을 놓친다.
-    this.assertFilePathListStorable(filePath);
     const existingUrls = parseFilePathList(userDrive.filePath);
     const addedUrls = filePath.filter((url) => !existingUrls.includes(url));
     this.assertNewAttachmentsOwnedBySelf(addedUrls, user);
@@ -449,7 +454,7 @@ export class UserDriveService {
     userDrive.content = content;
     userDrive.receiverId = receiverId;
     userDrive.status = status;
-    userDrive.filePath = filePath.length === 0 ? null : filePath.join(',');
+    userDrive.filePath = this.toStoredFilePath(filePath);
     await this.userDriveRepository.save(userDrive);
 
     return;
