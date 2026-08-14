@@ -15,6 +15,14 @@ describe('UserDriveService 쓰기 검증 (create/update)', () => {
   const ownPrivate = (ownerId: number) => `https://b.s3.amazonaws.com/private/${ownerId}/0123456789abcdef-a.xlsx`;
   const legacyImage = 'https://b.s3.amazonaws.com/image/abc-legacy.png';
   const external = 'https://evil.example.com/private/10/x.xlsx';
+  // ★ 콤마 밀반입: 원소 1개지만 저장(join)·복원(parseFilePathList) 을 거치면 2개가 된다.
+  //   앞쪽 URL 의 owner 가 본인이라 소유 검증은 통과한다 — 왕복 검증만이 잡는다.
+  const smuggled = `${ownPrivate(10)}?x=,${ownPrivate(99)}`;
+  const smuggledNoQuery = `https://b.s3.amazonaws.com/private/10/a,${ownPrivate(99)}`;
+  // 파일명에 정상적으로 콤마가 든 첨부 — 왕복이 보존되므로 막히면 안 된다(과차단 회귀).
+  const commaInName = 'https://b.s3.amazonaws.com/private/10/0123456789abcdef-보고서,최종.xlsx';
+  // 깨진 percent-encoding — new URL 은 통과시키지만 decodeURIComponent 가 URIError 를 던진다.
+  const brokenEncoding = 'https://b.s3.amazonaws.com/private/10/%';
 
   const makeSut = (existingFilePath: string | null = null) => {
     const drive = {
@@ -32,7 +40,8 @@ describe('UserDriveService 쓰기 검증 (create/update)', () => {
     const userRepo: any = { findOne: jest.fn().mockResolvedValue({ id: 20 }) }; // 수신자 존재
     const fileService: any = {
       isOwnStorageUrl: jest.fn().mockReturnValue(true),
-      extractStorageKey: (url: string) => new URL(url).pathname.replace(/^\/+/, ''),
+      // 실제 구현과 동일하게 decodeURIComponent 까지 — 이게 빠지면 깨진 percent-encoding 케이스가 안 돈다.
+      extractStorageKey: (url: string) => decodeURIComponent(new URL(url).pathname.replace(/^\/+/, '')),
     };
     return { sut: new UserDriveService(driveRepo, userRepo, fileService), driveRepo, fileService };
   };
@@ -77,6 +86,41 @@ describe('UserDriveService 쓰기 검증 (create/update)', () => {
       await sut.create(op10, createBody([]));
       expect(driveRepo.insert).toHaveBeenCalledTimes(1);
     });
+
+    // ★ 소유 검증만으로는 못 잡는다 — 앞쪽 URL 의 owner 가 본인이라 통과해버린다.
+    //   저장 후 복원하면 owner 99 첨부가 별도로 생겨 검증을 안 거친 객체가 들어온다.
+    it('★`,https://` 를 심은 원소 → BadRequest, insert 안 함 (쿼리로 가린 형태)', async () => {
+      const { sut, driveRepo } = makeSut();
+      await expect(sut.create(op10, createBody([smuggled]))).rejects.toBeInstanceOf(BadRequestException);
+      expect(driveRepo.insert).not.toHaveBeenCalled();
+    });
+
+    it('★쿼리 없이 경로에 이어붙인 밀반입도 → BadRequest, insert 안 함', async () => {
+      const { sut, driveRepo } = makeSut();
+      await expect(sut.create(op10, createBody([smuggledNoQuery]))).rejects.toBeInstanceOf(BadRequestException);
+      expect(driveRepo.insert).not.toHaveBeenCalled();
+    });
+
+    it('★정상 첨부 사이에 밀반입 하나만 섞여도 → BadRequest, insert 안 함', async () => {
+      const { sut, driveRepo } = makeSut();
+      await expect(sut.create(op10, createBody([ownPrivate(10), smuggled]))).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(driveRepo.insert).not.toHaveBeenCalled();
+    });
+
+    // 과차단 회귀 — 왕복이 보존되는 정상 입력까지 막으면 이 검사는 쓸 수 없다.
+    it('파일명에 콤마가 든 정상 첨부 → 통과', async () => {
+      const { sut, driveRepo } = makeSut();
+      await sut.create(op10, createBody([commaInName]));
+      expect(driveRepo.insert).toHaveBeenCalledTimes(1);
+    });
+
+    it('깨진 percent-encoding key → BadRequest (500 아님), insert 안 함', async () => {
+      const { sut, driveRepo } = makeSut();
+      await expect(sut.create(op10, createBody([brokenEncoding]))).rejects.toBeInstanceOf(BadRequestException);
+      expect(driveRepo.insert).not.toHaveBeenCalled();
+    });
   });
 
   describe('update (델타만 검증)', () => {
@@ -112,6 +156,29 @@ describe('UserDriveService 쓰기 검증 (create/update)', () => {
       const { sut, driveRepo } = makeSut(ownPrivate(10));
       await sut.update(op10, updateBody([ownPrivate(10), legacyImage]));
       expect(driveRepo.save).toHaveBeenCalledTimes(1);
+    });
+
+    it('★`,https://` 를 심은 원소를 새로 추가 → BadRequest, save 안 함', async () => {
+      const { sut, driveRepo } = makeSut(ownPrivate(10));
+      await expect(sut.update(op10, updateBody([ownPrivate(10), smuggled]))).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(driveRepo.save).not.toHaveBeenCalled();
+    });
+
+    // ★ 왕복 검증은 '저장될 배열 전체' 에 걸어야 한다. 델타만 보면 기존 항목으로 위장한 밀반입을 놓친다.
+    it('★밀반입 원소가 기존 목록에 이미 있는 것처럼 와도 → BadRequest, save 안 함', async () => {
+      const { sut, driveRepo } = makeSut(smuggled); // 기존 filePath 자체가 밀반입 값인 상황
+      await expect(sut.update(op10, updateBody([smuggled]))).rejects.toBeInstanceOf(BadRequestException);
+      expect(driveRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('깨진 percent-encoding key 를 새로 추가 → BadRequest, save 안 함', async () => {
+      const { sut, driveRepo } = makeSut(ownPrivate(10));
+      await expect(sut.update(op10, updateBody([ownPrivate(10), brokenEncoding]))).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(driveRepo.save).not.toHaveBeenCalled();
     });
   });
 });

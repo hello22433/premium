@@ -11,7 +11,12 @@ import { IUserDriveStatus } from '../interface/user.drive.status';
 describe('UserDriveService.getDetail — files 조립', () => {
   const admin = { id: 99, authority: IUserAuthority.OPERATION_ADMIN } as any; // 관리자 → receiveAt save 경로 회피
 
-  const makeSut = (fileUrls: string[], fileServiceOverrides: Record<string, any> = {}) => {
+  const makeSut = (
+    fileUrls: string[],
+    fileServiceOverrides: Record<string, any> = {},
+    // 발신자(5) 소유가 아닌 첨부의 업로더 중 SUPER 인 id 목록. resolveHeadableUrls 의 1회 조회를 흉내낸다.
+    superAdminIds: number[] = [],
+  ) => {
     const drive = {
       id: 1,
       senderId: 5,
@@ -26,13 +31,21 @@ describe('UserDriveService.getDetail — files 조립', () => {
       receiver: { personName: '홍길동', email: 'a@b.com', personPhoneNumber: '010-0000-0000' },
     };
     const driveRepo: any = { findOne: jest.fn().mockResolvedValue(drive), save: jest.fn() };
+    const userRepo: any = { find: jest.fn().mockResolvedValue(superAdminIds.map((id) => ({ id }))) };
     const fileService: any = {
-      extractStorageKey: (u: string) => new URL(u).pathname.replace(/^\/+/, ''),
+      isOwnStorageUrl: jest.fn().mockReturnValue(true),
+      // 실제 구현과 동일하게 decodeURIComponent 까지 (깨진 percent-encoding 케이스를 태우기 위해).
+      extractStorageKey: (u: string) => decodeURIComponent(new URL(u).pathname.replace(/^\/+/, '')),
       getOriginalName: jest.fn(async (u: string) => `meta:${u.split('/').pop()}`),
-      extractOriginalFileName: jest.fn((u: string) => `key:${u.split('/').pop()}`),
+      // 실제 구현은 내부에서 extractStorageKey 를 거치므로 비URL 입력이면 던진다 — 목도 같게 둔다.
+      // (목이 안 던지면 fail-soft 폴백 경로가 테스트에서 아예 안 돌아 회귀를 못 잡는다.)
+      extractOriginalFileName: jest.fn((u: string) => {
+        const key = decodeURIComponent(new URL(u).pathname.replace(/^\/+/, ''));
+        return `key:${key.split('/').pop()}`;
+      }),
       ...fileServiceOverrides,
     };
-    return { sut: new UserDriveService(driveRepo, {} as any, fileService), fileService };
+    return { sut: new UserDriveService(driveRepo, userRepo, fileService), fileService, userRepo };
   };
 
   it('url/name 짝을 순서대로 조립한다 (메타데이터 우선)', async () => {
@@ -104,5 +117,63 @@ describe('UserDriveService.getDetail — files 조립', () => {
     const { sut } = makeSut([bad]);
     const res = await sut.getDetail(admin, { id: 1 });
     expect(res.files[0]).toEqual({ url: bad, name: '보고서.xlsx' });
+  });
+  /**
+   * ★ HeadObject 는 '그 key 의 진짜 원본 파일명' 을 응답에 실어준다 → 다운로드를 안 해도 이름이 샌다.
+   *   그래서 대상 판정을 다운로드 허용 규칙(발신자 소유 or 업로더가 SUPER)과 같게 맞춘다.
+   *   빠진 첨부는 차단이 아니라 key 복원 이름으로 표시된다.
+   */
+  describe('HeadObject 대상 좁히기 (다운로드 허용 규칙과 동일 기준)', () => {
+    const own = 'https://b/private/5/u1-a.xlsx'; // 발신자(5) 소유
+    const foreign = 'https://b/private/77/u2-secret.xlsx'; // 타인 소유
+
+    it('발신자 소유 private → HeadObject 로 진짜 원본명', async () => {
+      const { sut, fileService } = makeSut([own]);
+      const res: any = await sut.getDetail(admin, { id: 1 });
+      expect(res.files).toEqual([{ url: own, name: 'meta:u1-a.xlsx' }]);
+      expect(fileService.getOriginalName).toHaveBeenCalledTimes(1);
+    });
+
+    it('★타인 소유 private(비SUPER) → HeadObject 안 하고 key 복원명', async () => {
+      const { sut, fileService } = makeSut([foreign]);
+      const res: any = await sut.getDetail(admin, { id: 1 });
+      expect(res.files).toEqual([{ url: foreign, name: 'key:u2-secret.xlsx' }]);
+      expect(fileService.getOriginalName).not.toHaveBeenCalled();
+    });
+
+    it('타인 소유라도 업로더가 SUPER 면 → HeadObject (SUPER 교차수정 첨부 과차단 안 함)', async () => {
+      const { sut, fileService } = makeSut([foreign], {}, [77]);
+      const res: any = await sut.getDetail(admin, { id: 1 });
+      expect(res.files).toEqual([{ url: foreign, name: 'meta:u2-secret.xlsx' }]);
+      expect(fileService.getOriginalName).toHaveBeenCalledTimes(1);
+    });
+
+    it('★우리 버킷 URL 이 아니면 → HeadObject 안 함 (임의 host 로 객체 존재 탐지 차단)', async () => {
+      const { sut, fileService } = makeSut([own], { isOwnStorageUrl: jest.fn().mockReturnValue(false) });
+      const res: any = await sut.getDetail(admin, { id: 1 });
+      expect(res.files).toEqual([{ url: own, name: 'key:u1-a.xlsx' }]);
+      expect(fileService.getOriginalName).not.toHaveBeenCalled();
+    });
+
+    it('깨진 percent-encoding key → HeadObject 안 하고 폴백 (500 아님)', async () => {
+      const broken = 'https://b/private/5/%';
+      const { sut, fileService } = makeSut([broken]);
+      const res: any = await sut.getDetail(admin, { id: 1 });
+      expect(res.files).toHaveLength(1);
+      expect(fileService.getOriginalName).not.toHaveBeenCalled();
+    });
+
+    it('타인 소유가 여러 건이어도 업로더 권한 조회는 1회로 묶는다', async () => {
+      const f2 = 'https://b/private/88/u3-c.xlsx';
+      const { sut, userRepo } = makeSut([foreign, f2, foreign]);
+      await sut.getDetail(admin, { id: 1 });
+      expect(userRepo.find).toHaveBeenCalledTimes(1);
+    });
+
+    it('발신자 소유만 있으면 업로더 권한 조회를 아예 하지 않는다', async () => {
+      const { sut, userRepo } = makeSut([own]);
+      await sut.getDetail(admin, { id: 1 });
+      expect(userRepo.find).not.toHaveBeenCalled();
+    });
   });
 });

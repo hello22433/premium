@@ -45,7 +45,8 @@ describe('UserDriveService.downloadFile', () => {
       ),
     };
     const fileService: any = {
-      extractStorageKey: (url: string) => new URL(url).pathname.replace(/^\/+/, ''),
+      // 실제 구현과 동일하게 decodeURIComponent 까지 — 이게 빠지면 깨진 percent-encoding 케이스가 안 돈다.
+      extractStorageKey: (url: string) => decodeURIComponent(new URL(url).pathname.replace(/^\/+/, '')),
       isOwnStorageUrl: jest.fn().mockReturnValue(true),
       getOriginalName: jest.fn().mockResolvedValue('보고서.xlsx'),
       downloadWithPath: jest.fn().mockResolvedValue('/tmp/x.xlsx'),
@@ -183,6 +184,15 @@ describe('UserDriveService.downloadFile', () => {
     const { sut, fileService } = makeSut(ownUrl);
     const fragment = ownUrl.slice(0, ownUrl.length - 5);
     await expect(sut.downloadFile(receiver, 1, fragment)).rejects.toBeInstanceOf(BadRequestException);
+    expect(fileService.downloadWithPath).not.toHaveBeenCalled();
+  });
+
+  // ★ new URL 은 통과시키지만 decodeURIComponent 가 URIError 를 던지는 값. 감싸지 않으면 500 이 나가
+  //   "클라이언트 입력 문제" 가 "서버 고장" 신호로 둔갑한다(경보 오염). 읽기 경로라 비노출 4xx 로 막는다.
+  it('★차단: 깨진 percent-encoding key → Forbidden (500 아님)', async () => {
+    const broken = 'https://b.s3.amazonaws.com/private/5/%';
+    const { sut, fileService } = makeSut(broken);
+    await expect(sut.downloadFile(receiver, 1, broken)).rejects.toBeInstanceOf(ForbiddenException);
     expect(fileService.downloadWithPath).not.toHaveBeenCalled();
   });
 

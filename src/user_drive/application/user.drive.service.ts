@@ -3,10 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import fs from 'node:fs';
-import { parseFilePathList } from '../../util/file.util';
+import { isFilePathListRoundTripSafe, parseFilePathList } from '../../util/file.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import { UserDriveEntity } from '../../entity/user.drive.entity';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { FileService } from '../../file/application/file.service';
 import {
   UserDriveCreateReqDto,
@@ -104,15 +104,16 @@ export class UserDriveService {
     }
 
     const fileUrlList = parseFilePathList(userDrive.filePath);
+    // ★ HeadObject 대상은 '다운로드를 허용하는 것' 과 같은 기준으로 좁힌다(resolveHeadableUrls 참조).
+    const headableUrls = await this.resolveHeadableUrls(fileUrlList, userDrive.senderId);
     // 원본 파일명(메타데이터)까지 함께 — FE 가 화면 표시·다운로드명 모두 진짜 이름으로 일관되게.
     // S3 HeadObject 는 상한(MAX_FILE_META_LOOKUP)까지만 — 초과분은 key 복원 폴백(호출 폭주 방지).
     const files = await Promise.all(
       fileUrlList.map(async (url, index) => {
         try {
-          const key = this.fileService.extractStorageKey(url);
           // 원본명 메타데이터는 private 업로드에만 붙는다 → 레거시(image//file/)는 HeadObject 헛호출을
           // 건너뛰고 key 복원으로 바로 간다. private 도 상한(MAX_FILE_META_LOOKUP)까지만 HeadObject.
-          const useHead = key.startsWith('private/') && index < UserDriveService.MAX_FILE_META_LOOKUP;
+          const useHead = headableUrls.has(url) && index < UserDriveService.MAX_FILE_META_LOOKUP;
           const name = useHead
             ? await this.fileService.getOriginalName(url)
             : this.fileService.extractOriginalFileName(url);
@@ -183,6 +184,53 @@ export class UserDriveService {
     return { fileName, filePath };
   }
 
+  /**
+   * 상세조회에서 S3 HeadObject(원본명 조회) 를 걸어도 되는 첨부만 골라낸다.
+   *
+   * ★ 왜 좁히나 — HeadObject 는 '그 key 의 진짜 원본 파일명' 을 응답(files[].name)에 실어준다.
+   *   즉 다운로드를 안 해도 이름은 새어나간다. 그래서 판정 기준을 다운로드 허용 규칙
+   *   (assertDownloadable: 발신자 소유이거나 업로더가 SUPER)과 **같게** 맞춘다.
+   *   기준이 갈리면 "다운로드는 막히는데 이름은 보이는" 비대칭이 생긴다.
+   *
+   *   쓰기 시점 검증이 생긴 뒤로 타인 소유 key 가 새로 들어올 길은 막혔지만, 그 이전에 저장된 행은
+   *   그대로 남아 있으므로 읽는 쪽에도 같은 판정을 둔다(이중 방어).
+   *
+   * 우리 버킷이 아니거나 key 파싱이 실패하면 대상에서 뺀다 — 임의 host 의 pathname 을 우리 버킷 key 로
+   * 오인해 조회(객체 존재 여부 탐지)하는 통로가 되지 않게.
+   * 레거시 공개(image//file/) 는 애초에 메타데이터가 없어 대상이 아니다(헛호출 제거, 기존 동작 유지).
+   *
+   * 대상에서 빠진 첨부는 차단이 아니라 key 복원 이름으로 표시된다(sanitize 되어 공백이 _ 로 보일 수 있음).
+   */
+  private async resolveHeadableUrls(fileUrlList: string[], senderId: number): Promise<Set<string>> {
+    const candidates: { url: string; ownerId: number }[] = [];
+    for (const url of fileUrlList) {
+      if (!this.fileService.isOwnStorageUrl(url)) continue;
+      const key = this.tryExtractStorageKey(url);
+      if (key === null || !key.startsWith('private/')) continue;
+      const ownerSegment = key.split('/')[1] ?? '';
+      if (!/^[0-9]+$/.test(ownerSegment)) continue;
+      candidates.push({ url, ownerId: Number(ownerSegment) });
+    }
+
+    const headable = new Set(candidates.filter((c) => c.ownerId === senderId).map((c) => c.url));
+
+    // 발신자 소유가 아닌 것만 업로더 권한을 확인한다(SUPER 교차수정 첨부 허용). 조회는 1회로 묶는다.
+    const foreignOwnerIds = [...new Set(candidates.filter((c) => c.ownerId !== senderId).map((c) => c.ownerId))];
+    if (foreignOwnerIds.length === 0) {
+      return headable;
+    }
+
+    const superAdmins = await this.userRepository.find({
+      where: { id: In(foreignOwnerIds), authority: IUserAuthority.SUPER_ADMIN },
+      select: ['id'],
+    });
+    const superAdminIds = new Set(superAdmins.map((u) => u.id));
+    for (const c of candidates) {
+      if (c.ownerId !== senderId && superAdminIds.has(c.ownerId)) headable.add(c.url);
+    }
+    return headable;
+  }
+
   private isAdminAuthority(authority: IUserAuthority | string): boolean {
     return [IUserAuthority.SUPER_ADMIN, IUserAuthority.OPERATION_ADMIN].includes(authority as IUserAuthority);
   }
@@ -230,7 +278,12 @@ export class UserDriveService {
       throw new ForbiddenException('다운로드할 수 없는 파일입니다.');
     }
 
-    const key = this.fileService.extractStorageKey(fileUrl);
+    // key 파싱은 실패할 수 있다 — new URL 은 통과하지만 pathname 에 깨진 percent-encoding(예: `/private/5/%`)
+    // 이 있으면 decodeURIComponent 가 URIError 를 던진다. 감싸지 않으면 클라이언트 입력 문제가 500 으로 나간다.
+    const key = this.tryExtractStorageKey(fileUrl);
+    if (key === null) {
+      throw new ForbiddenException('다운로드할 수 없는 파일입니다.');
+    }
 
     if (key.startsWith('private/')) {
       const ownerSegment = key.split('/')[1] ?? '';
@@ -269,12 +322,41 @@ export class UserDriveService {
    * ※ 기존에 이미 문서에 있던 첨부는 재검증하지 않는다(SUPER 가 교차수정으로 남긴 타인 소유 첨부,
    *   또는 발신자 소유 첨부를 SUPER 가 재저장할 때 보존하기 위함).
    */
+  /**
+   * 저장(join(',')) → 복원(parseFilePathList) 왕복이 입력 배열을 그대로 보존하는지 검증한다.
+   *
+   * 보존되지 않으면 "검증한 것"과 "저장되는 것"이 달라진다 — 배열 원소 하나에 `,https://...` 를 심으면
+   * 소유 검증은 URL 1개(본인 소유)로 보고 통과시키지만, 저장 후에는 2개로 복원돼 검증을 거치지 않은
+   * 타인 소유 private 객체가 첨부로 들어온다(개수 상한도 함께 우회). 그 뒤 관리자 다운로드는
+   * assertDownloadable 에서 소유 검사를 건너뛰므로, 아는 key 를 백엔드 자격증명으로 받아갈 수 있다.
+   * 밀반입한 업로더가 SUPER 면 기업 수신자에게도 내려간다.
+   *
+   * 파일명에 정상적으로 콤마가 든 경우는 왕복이 보존되므로 이 검사에 걸리지 않는다.
+   */
+  private assertFilePathListStorable(filePath: string[]): void {
+    if (!isFilePathListRoundTripSafe(filePath)) {
+      throw new BadRequestException('첨부 경로 형식이 올바르지 않습니다.');
+    }
+  }
+
+  /** URL → S3 key. 파싱 실패(깨진 percent-encoding 등)는 예외 대신 null 로 돌려 호출부가 상태코드를 정한다. */
+  private tryExtractStorageKey(fileUrl: string): string | null {
+    try {
+      return this.fileService.extractStorageKey(fileUrl);
+    } catch {
+      return null;
+    }
+  }
+
   private assertNewAttachmentsOwnedBySelf(newUrls: string[], user: ILoginUserInfo): void {
     for (const url of newUrls) {
       if (!this.fileService.isOwnStorageUrl(url)) {
         throw new BadRequestException('허용되지 않은 파일 경로입니다.');
       }
-      const key = this.fileService.extractStorageKey(url);
+      const key = this.tryExtractStorageKey(url);
+      if (key === null) {
+        throw new BadRequestException('허용되지 않은 파일 경로입니다.');
+      }
 
       if (key.startsWith('private/')) {
         const ownerSegment = key.split('/')[1] ?? '';
@@ -308,6 +390,7 @@ export class UserDriveService {
     }
 
     // 생성 시 첨부는 전부 신규 → 전량 검증(본인 업로드 private 또는 공개 레거시만).
+    this.assertFilePathListStorable(filePath);
     this.assertNewAttachmentsOwnedBySelf(filePath, user);
 
     await this.userDriveRepository.insert({
@@ -356,6 +439,8 @@ export class UserDriveService {
 
     // 새로 추가된 첨부만 검증(기존 목록에 없던 것). 기존 첨부는 보존 — SUPER 가 교차수정 시
     // 발신자/타관리자 소유 첨부를 되보내도 통과해야 하므로 델타만 본다.
+    // 왕복 검증은 저장될 배열 '전체' 에 건다 — 델타만 보면 기존 항목에 섞인 밀반입을 놓친다.
+    this.assertFilePathListStorable(filePath);
     const existingUrls = parseFilePathList(userDrive.filePath);
     const addedUrls = filePath.filter((url) => !existingUrls.includes(url));
     this.assertNewAttachmentsOwnedBySelf(addedUrls, user);
