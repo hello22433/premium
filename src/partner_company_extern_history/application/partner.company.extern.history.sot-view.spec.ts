@@ -266,6 +266,12 @@ describe('실패내역 화면 SoT 렌더', () => {
 
       expect(qb.orderBy).toHaveBeenCalledWith('sortDate', 'DESC');
       expect(qb.addOrderBy).toHaveBeenCalledWith('orderDelivery.id', 'DESC');
+
+      // ⚠️ 순서까지 봐야 한다. TypeORM 의 orderBy() 는 기존 정렬을 **통째로 갈아치운다**
+      //   (SelectQueryBuilder: `this.expressionMap.orderBys = { [sort]: order }`).
+      //   그래서 addOrderBy 를 먼저 부르면 보조키가 조용히 사라지는데, 호출 여부만 보는
+      //   단언은 그걸 통과시킨다.
+      expect(qb.orderBy.mock.invocationCallOrder[0]).toBeLessThan(qb.addOrderBy.mock.invocationCallOrder[0]);
     });
 
     // ⚠️ 이 테스트는 **SQL 쪽만** 본다. 표시 쪽 순서는 위 ②③④ 가 동작으로 고정한다 — 이름이
