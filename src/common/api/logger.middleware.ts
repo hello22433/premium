@@ -39,6 +39,10 @@ export class LoggerMiddleware implements NestMiddleware {
   // fileurl: 첨부 다운로드 프록시(user-drive/order-receipt)가 S3 URL 을 쿼리로 받는다. key 에
   //   업로더 id 와 원본 파일명이 들어 있어(private/{ownerId}/{uuid}-{원본명}) 접근 로그에 그대로 쌓인다.
   private sensitiveQueryParams = new Set(['encryptkey', 'sendencryptkey', 'code', 'token', 'fileurl']);
+  // 첨부 S3 URL 을 담는 '본문' 키. 쿼리(sensitiveQueryParams)만 가리면 다운로드 GET 만 닫히고
+  // 등록/수정 POST·PUT 본문의 같은 URL 은 그대로 남는다. 값이 문자열 배열이라 maskByKey 로는
+  // 안 걸려서(배열은 재귀로 빠져 원소가 키 없이 통과) 컨테이너 단계에서 통째로 가린다.
+  private sensitiveUrlBodyKeys = new Set(['fileurl', 'filepath', 'filepathlist']);
 
   private except(originalUrl: string) {
     return this.blacklist.includes(originalUrl);
@@ -100,6 +104,12 @@ export class LoggerMiddleware implements NestMiddleware {
       // 일회용 인증코드: 해당 경로(authCodePaths)에서만 redact (productCode 등 비민감 code는 보존)
       if (maskCode && lower === 'code' && typeof value === 'string') {
         sanitized[key] = '***';
+        continue;
+      }
+
+      // 첨부 URL 키는 값 형태(문자열/배열)와 무관하게 통째로 가린다. 재귀보다 먼저 와야 한다.
+      if (this.sensitiveUrlBodyKeys.has(lower) && value != null) {
+        sanitized[key] = Array.isArray(value) ? value.map(() => '***') : '***';
         continue;
       }
 

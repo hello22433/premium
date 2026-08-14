@@ -266,6 +266,36 @@ describe('LoggerMiddleware 마스킹', () => {
     });
   });
 
+  // ★ 쿼리만 가리면 다운로드 GET 만 닫힌다. 등록/수정 본문에도 같은 S3 URL 이 실려 오므로
+  //   (private/{업로더id}/{uuid}-{원본명}) 본문 쪽도 같이 가려야 절반짜리 방어가 안 된다.
+  describe('본문의 첨부 URL 마스킹', () => {
+    const attach = 'https://b.s3.amazonaws.com/private/5/abc-해지신청서.pdf';
+
+    test('filePath 배열을 원소별로 redact 한다 (등록/수정 본문)', () => {
+      const out = sanitize({ title: 't', filePath: [attach, attach] }, '/user-drive');
+      expect(out.filePath).toEqual(['***', '***']);
+      expect(JSON.stringify(out)).not.toContain('private/5');
+      expect(JSON.stringify(out)).not.toContain('해지신청서');
+    });
+
+    test('문자열 하나여도 redact 한다', () => {
+      expect(sanitize({ fileUrl: attach }, '/user-drive').fileUrl).toBe('***');
+    });
+
+    test('키 대소문자 무관하게 redact 한다', () => {
+      expect(sanitize({ FilePath: [attach] }, '/user-drive').FilePath).toEqual(['***']);
+    });
+
+    test('빈 배열/ null 은 형태를 유지한다 (과잉 변형 방지)', () => {
+      expect(sanitize({ filePath: [] }, '/user-drive').filePath).toEqual([]);
+      expect(sanitize({ filePath: null }, '/user-drive').filePath).toBeNull();
+    });
+
+    test('첨부와 무관한 키는 그대로 둔다', () => {
+      expect(sanitize({ title: '제목', content: '내용' }, '/user-drive').title).toBe('제목');
+    });
+  });
+
   describe('maskUrl (쿼리스트링 민감 파라미터)', () => {
     const maskUrl = (url: string) => (mw as any).maskUrl(url);
 
