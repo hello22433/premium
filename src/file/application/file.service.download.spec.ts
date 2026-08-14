@@ -75,6 +75,19 @@ describe('FileService.downloadWithPath — 오류 처리', () => {
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 
+  // ★ 회귀 잠금: `e.name ?? e.Code` 로 하나만 고르면 JS Error 는 name 이 항상 있어(Error) Code 를
+  //   영영 안 읽는다. 그렇게 썼다가 이 케이스가 404 → 500 으로 바뀌었다.
+  it('★Code 에만 코드가 실린 Error → NotFound (name 이 있어도 Code 를 본다)', async () => {
+    const sut = makeSut(
+      jest
+        .fn()
+        .mockRejectedValue(Object.assign(new Error('boom'), { Code: 'NoSuchKey', $metadata: { httpStatusCode: 404 } })),
+    );
+    await expect(
+      sut.downloadWithPath('/tmp', 't', 'https://b.s3.amazonaws.com/private/5/a.xlsx'),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
   it('그 외 S3 실패(인증/네트워크) → InternalServerError (경로오류로 오도 안 함)', async () => {
     const sut = makeSut(
       jest.fn().mockRejectedValue(Object.assign(new Error('AccessDenied'), { name: 'AccessDenied' })),

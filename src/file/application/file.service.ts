@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { FileUploadResDto } from '../api/file.res.dto';
 import { IFileStorage } from '../interface/file.storage';
+import { maskStorageKeyForLog } from '../../util/file.util';
 
 @Injectable()
 export class FileService {
@@ -69,10 +70,19 @@ export class FileService {
    */
   private isNotFoundError(error: unknown): boolean {
     const e = error as { name?: string; Code?: string; $metadata?: { httpStatusCode?: number } };
-    const code = e?.name ?? e?.Code;
-    if (code) {
-      return code === 'NoSuchKey' || code === 'NotFound';
+    // ★ name 과 Code 를 '둘 다' 본다. `e.name ?? e.Code` 로 하나만 고르면, JS Error 는 name 이 항상
+    //   채워져 있어(new Error('x').name === 'Error') Code 분기가 영영 안 읽힌다. 실제로 그렇게 썼다가
+    //   Code 에만 코드가 실린 에러가 404 → 500 으로 바뀌는 회귀를 냈다(SDK 래핑·구버전 shape).
+    const NOT_FOUND_CODES = new Set(['NoSuchKey', 'NotFound']);
+    if (NOT_FOUND_CODES.has(e?.name ?? '') || NOT_FOUND_CODES.has(e?.Code ?? '')) {
+      return true;
     }
+    // 코드가 하나라도 있으면 그게 답이다. NoSuchBucket 도 HTTP 404 라 404 단독 판정은 금지.
+    if (e?.name || e?.Code) {
+      return false;
+    }
+    // 코드가 아예 없는 형태에서만 404 폴백.
+    // ※ HeadObject 계열('NotFound')은 아직 이 판정을 안 거친다(downloadWithPath = GetObject 전용). 선반영이다.
     return e?.$metadata?.httpStatusCode === 404;
   }
 
@@ -147,8 +157,19 @@ export class FileService {
       if (metaName) {
         return metaName;
       }
-    } catch {
-      // 메타데이터 조회 실패(레거시/누락) → key 기반 폴백
+    } catch (error) {
+      // 객체가 없는 것(NotFound/NoSuchKey)은 레거시 첨부의 정상 폴백이라 조용히 넘긴다.
+      // 그 외(권한·자격증명·버킷 오설정·네트워크)는 '원본명 기능이 통째로 꺼진' 상태인데 응답은 200 이라
+      // 아무 신호도 안 선다 → 반드시 남긴다. key 는 원본명이 새지 않게 마스킹해서 남긴다.
+      const e = error as { name?: string; Code?: string; message?: string };
+      const code = e?.name ?? e?.Code;
+      if (code !== 'NotFound' && code !== 'NoSuchKey') {
+        this.logger.warn(
+          `원본명 메타데이터 조회 실패 — key 복원으로 폴백 (key=${maskStorageKeyForLog(key)}, code=${code ?? 'unknown'}): ${
+            e?.message ?? String(error)
+          }`,
+        );
+      }
     }
     return this.extractOriginalFileNameFromKey(key);
   }
