@@ -36,7 +36,9 @@ export class LoggerMiddleware implements NestMiddleware {
   // 일회용 인증코드(body.code)를 쓰는 경로. 'code'는 productCode 등과 충돌하므로 이 경로에서만 redact.
   private authCodePaths = ['/user-find/reset-password/verify', '/user/login/email/verify', '/user/login/phone/verify'];
   // URL 쿼리스트링에서 값 redact할 민감 파라미터(소문자). encryptKey/code 등은 링크로 외부 전달되나 로그 집적 방지.
-  private sensitiveQueryParams = new Set(['encryptkey', 'sendencryptkey', 'code', 'token']);
+  // fileurl: 첨부 다운로드 프록시(user-drive/order-receipt)가 S3 URL 을 쿼리로 받는다. key 에
+  //   업로더 id 와 원본 파일명이 들어 있어(private/{ownerId}/{uuid}-{원본명}) 접근 로그에 그대로 쌓인다.
+  private sensitiveQueryParams = new Set(['encryptkey', 'sendencryptkey', 'code', 'token', 'fileurl']);
 
   private except(originalUrl: string) {
     return this.blacklist.includes(originalUrl);

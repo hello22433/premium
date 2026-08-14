@@ -292,6 +292,23 @@ describe('LoggerMiddleware 마스킹', () => {
       expect(maskUrl('/deposit/list?depositorRaw=한빛문구')).toBe('/deposit/list?depositorRaw=한***');
     });
 
+    // 첨부 다운로드 프록시(user-drive/order-receipt)는 S3 URL 을 쿼리로 받는다. key 가
+    // private/{업로더id}/{uuid}-{원본명} 이라 업로더와 원본 파일명이 접근 로그에 그대로 쌓인다.
+    // 파일은 private 라 key 를 안다고 받아지진 않지만, 로그 열람 권한이 파일 열람 권한보다 넓어
+    // "파일은 못 보는 사람이 누가 무슨 파일을 올렸는지는 다 보는" 상태가 된다.
+    test('fileUrl(첨부 S3 URL) 을 redact 한다 — 업로더 id·원본 파일명 노출 차단', () => {
+      const out = maskUrl(
+        '/user-drive/12/file/download?fileUrl=https://b.s3.amazonaws.com/private/5/abc-해지신청서.pdf',
+      );
+      expect(out).toBe('/user-drive/12/file/download?fileUrl=***');
+      expect(out).not.toContain('private/5');
+      expect(out).not.toContain('해지신청서');
+    });
+
+    test('fileUrl 도 키 대소문자 무관하게 redact 한다', () => {
+      expect(maskUrl('/x?FILEURL=https://b.s3.amazonaws.com/private/5/a.pdf')).toBe('/x?FILEURL=***');
+    });
+
     test('경로(path)는 보존한다', () => {
       expect(maskUrl('/order/receive/email?token=abc')).toContain('/order/receive/email?');
     });
