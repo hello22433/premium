@@ -1,4 +1,5 @@
 import { UserDriveService } from './user.drive.service';
+import { In } from 'typeorm';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IUserDriveStatus } from '../interface/user.drive.status';
 
@@ -45,7 +46,9 @@ describe('UserDriveService.getDetail — files 조립', () => {
       }),
       ...fileServiceOverrides,
     };
-    return { sut: new UserDriveService(driveRepo, userRepo, fileService), fileService, userRepo };
+    const sut = new UserDriveService(driveRepo, userRepo, fileService);
+    (sut as any).logger = { warn: jest.fn(), error: jest.fn(), log: jest.fn() };
+    return { sut, fileService, userRepo, logger: (sut as any).logger };
   };
 
   it('url/name 짝을 순서대로 조립한다 (메타데이터 우선)', async () => {
@@ -163,11 +166,49 @@ describe('UserDriveService.getDetail — files 조립', () => {
       expect(fileService.getOriginalName).not.toHaveBeenCalled();
     });
 
+    // ★ 목은 where 를 무시하고 넘긴 배열을 그대로 돌려준다. 그래서 where 에서
+    //   authority: SUPER_ADMIN 을 지워도 결과 단언만으로는 전부 초록이다(뮤테이션 생존 확인).
+    //   "타인 소유에 HeadObject 를 걸지 말지" 를 가르는 유일한 조건이므로 인자 자체를 고정한다.
+    it('업로더 권한 조회는 SUPER_ADMIN 조건으로만 한다 (조회 인자 고정)', async () => {
+      const { sut, userRepo } = makeSut(['https://b/private/77/u2-secret.xlsx']);
+      await sut.getDetail(admin, { id: 1 });
+      expect(userRepo.find).toHaveBeenCalledWith({
+        where: { id: In([77]), authority: IUserAuthority.SUPER_ADMIN },
+        select: ['id'],
+      });
+    });
+
+    // ★ 다운로드 쪽에는 같은 가드의 테스트가 있는데(download.spec 의 private// 케이스) 조회 쪽만 없었다.
+    //   지우면 Number('')=0 / Number('abc')=NaN 이 그대로 In([NaN]) 로 쿼리에 실린다.
+    it('ownerId 세그먼트가 숫자가 아니면 대상에서 빼고 조회도 안 한다', async () => {
+      const weird = 'https://b/private/abc/u1-a.xlsx';
+      const { sut, fileService, userRepo } = makeSut([weird]);
+      const res: any = await sut.getDetail(admin, { id: 1 });
+      expect(res.files).toEqual([{ url: weird, name: 'key:u1-a.xlsx' }]);
+      expect(fileService.getOriginalName).not.toHaveBeenCalled();
+      expect(userRepo.find).not.toHaveBeenCalled();
+    });
+
     it('타인 소유가 여러 건이어도 업로더 권한 조회는 1회로 묶는다', async () => {
       const f2 = 'https://b/private/88/u3-c.xlsx';
       const { sut, userRepo } = makeSut([foreign, f2, foreign]);
       await sut.getDetail(admin, { id: 1 });
       expect(userRepo.find).toHaveBeenCalledTimes(1);
+    });
+
+    // ★ 이 조회는 '이름을 예쁘게 보여줄지' 를 정하는 곁가지다. 던지게 두면 제목·본문·답변까지 못 보는
+    //   500 이 된다(나머지 이름 조회는 전부 fail-soft). 보안축은 fail-closed(대상에서 제외)로 유지한다.
+    it('★업로더 권한 조회가 실패해도 상세는 열린다 — 해당 첨부만 key 복원명 + 경고', async () => {
+      const foreign2 = 'https://b/private/77/u2-secret.xlsx';
+      const { sut, fileService, userRepo, logger } = makeSut([foreign2]);
+      userRepo.find.mockRejectedValue(new Error('pool timeout'));
+
+      const res: any = await sut.getDetail(admin, { id: 1 });
+
+      expect(res.title).toBe('t'); // 문서 자체는 정상 응답
+      expect(res.files).toEqual([{ url: foreign2, name: 'key:u2-secret.xlsx' }]);
+      expect(fileService.getOriginalName).not.toHaveBeenCalled(); // fail-closed
+      expect(logger.warn).toHaveBeenCalledTimes(1); // 조용히 열화되지 않는다
     });
 
     it('발신자 소유만 있으면 업로더 권한 조회를 아예 하지 않는다', async () => {

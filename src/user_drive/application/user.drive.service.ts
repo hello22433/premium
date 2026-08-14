@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,6 +27,8 @@ import { IUserAuthority } from '../../user/interface/user.authority';
 @Injectable()
 export class UserDriveService {
   /** 상세조회에서 원본명(HeadObject)을 조회하는 첨부 수 상한 — 초과분은 key 복원 폴백(S3 호출 폭주 방지) */
+  private readonly logger = new Logger(UserDriveService.name);
+
   static readonly MAX_FILE_META_LOOKUP = 10;
 
   constructor(
@@ -118,9 +120,16 @@ export class UserDriveService {
             ? await this.fileService.getOriginalName(url)
             : this.fileService.extractOriginalFileName(url);
           return { url, name };
-        } catch {
-          // 잘못된/레거시 항목(비URL·콤마분할 조각 등)의 이름 조회가 실패해도 상세 전체를 500 내지 않도록 폴백.
+        } catch (error) {
+          // 여기 오는 건 사실상 key 파싱 실패(비URL·콤마분할 조각)뿐이다 — S3 오류는 한 층 아래
+          // FileService.getOriginalName 이 이미 잡아 key 복원으로 폴백하므로 여기까지 올라오지 않는다.
+          // 상세 전체를 500 내지 않도록 폴백하되, 조용히 넘기지 않게 남긴다.
           // uuid 접두사를 벗겨(첫 '-' 뒤) extractOriginalFileName 과 표시 일관성을 맞춘다.
+          this.logger.warn(
+            `첨부 이름 조립 실패 — key 복원으로 폴백 (driveId=${userDrive.id}, index=${index}): ${
+              (error as Error)?.message ?? String(error)
+            }`,
+          );
           const base = url.split('/').pop() || url;
           return { url, name: base.includes('-') ? base.split('-').slice(1).join('-') : base };
         }
@@ -226,11 +235,25 @@ export class UserDriveService {
       return headable;
     }
 
-    const superAdmins = await this.userRepository.find({
-      where: { id: In(foreignOwnerIds), authority: IUserAuthority.SUPER_ADMIN },
-      select: ['id'],
-    });
-    const superAdminIds = new Set(superAdmins.map((u) => u.id));
+    // ★ 축을 나눠서 처리한다 — 보안축은 fail-closed(권한을 '확인 못 함' 은 '허용' 이 아니다 → 대상에서 뺀다),
+    //   가용성축은 fail-soft(문서 열람 자체는 막지 않는다). 이 조회는 '이름을 예쁘게 보여줄지' 를 정하는
+    //   곁가지인데, 던지게 두면 제목·본문·답변까지 못 보는 500 이 된다(나머지 이름 조회는 전부 fail-soft 다).
+    //   조용히 열화되면 아무도 모르므로 반드시 남긴다.
+    let superAdminIds: Set<number>;
+    try {
+      const superAdmins = await this.userRepository.find({
+        where: { id: In(foreignOwnerIds), authority: IUserAuthority.SUPER_ADMIN },
+        select: ['id'],
+      });
+      superAdminIds = new Set(superAdmins.map((u) => u.id));
+    } catch (error) {
+      this.logger.warn(
+        `첨부 업로더 권한 조회 실패 — 원본명 조회를 생략하고 key 복원으로 표시 (ownerIds=${foreignOwnerIds.join(
+          ',',
+        )}): ${(error as Error)?.message ?? String(error)}`,
+      );
+      return headable;
+    }
     for (const c of candidates) {
       if (c.ownerId !== senderId && superAdminIds.has(c.ownerId)) headable.add(c.url);
     }
