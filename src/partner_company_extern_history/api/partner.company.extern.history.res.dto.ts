@@ -121,6 +121,12 @@ export class GetPartnerCompanyExternHistoryListResDto {
 
   @ApiProperty({ description: '현재 페이지의 미러 불일치 건수 (§10 3단계 PASS 지표, 0이어야 정상)' })
   mirrorMismatchCount: number;
+
+  @ApiProperty({
+    description:
+      '현재 페이지에서 무효한 날짜(제로날짜 등)를 만난 횟수. 0 이 정상이며, 0 이 아니면 그 컬럼을 채운 경로를 찾을 것. 값 자체는 폴백으로 채우므로 화면은 깨지지 않는다.',
+  })
+  invalidDateCount: number;
 }
 
 export class GetPartnerCompanyTypesResDto {

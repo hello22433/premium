@@ -151,7 +151,20 @@ const LIST_DATE_EXPR =
  *   `2026-00-00` 같은 **부분 제로날짜**는 통과시킨다(그것도 JS 에서 Invalid Date 다).
  *   그래서 최종 방어는 리터럴 비교가 아니라 **값이 유효한가**를 묻는 여기에 둔다.
  */
-const validDate = (d: Date | null | undefined): Date | null => (d && !Number.isNaN(d.getTime()) ? d : null);
+const isValidDate = (d: Date | null | undefined): d is Date => {
+  // 형제 코드(delivery.batch.service.ts 의 formatAuditTimestamp)와 같은 형태다 — optional call 로
+  // Date 아닌 값이 와도 TypeError 대신 '무효' 로 떨어뜨린다.
+  const time = d?.getTime?.();
+  return typeof time === 'number' && !Number.isNaN(time);
+};
+
+/**
+ * 목록 렌더 **한 번(요청 하나)** 동안 무효 날짜를 몇 번 만났는지 담는 통.
+ *
+ * ⚠️ 서비스는 싱글턴이라 인스턴스 필드로 두면 동시에 들어온 요청끼리 숫자가 섞인다.
+ *   그래서 호출마다 새로 만들어 인자로 넘긴다.
+ */
+type ListDateGuardSink = { invalidCount: number };
 
 // claim self-heal 임계(ms). 크래시로 finally 못 탄 stale claim 만 재claim 허용.
 // claim 게이트(재claim 조건)와 거부 사유 판정(처리중 여부)이 동일 경계를 쓰도록 공유한다.
@@ -291,8 +304,9 @@ export class PartnerCompanyExternHistoryService {
         : [new Map<number, PartnerCompanyExternHistoryEntity>(), new Map<number, DeliveryFailureSotView>()];
 
     // DTO 변환 (배치로 가져온 history/SoT 전달)
+    const sink: ListDateGuardSink = { invalidCount: 0 };
     const list: PartnerCompanyExternHistoryViewDto[] = orderDeliveries.map((od) =>
-      this.parseOrderDeliveryView(od, latestHistoryMap.get(od.id) ?? null, sotMap.get(od.id) ?? null),
+      this.parseOrderDeliveryView(od, latestHistoryMap.get(od.id) ?? null, sotMap.get(od.id) ?? null, sink),
     );
 
     return {
@@ -301,6 +315,7 @@ export class PartnerCompanyExternHistoryService {
       totalPage: Math.ceil(totalCount / take),
       currentPage: page,
       mirrorMismatchCount: list.filter((row) => row.mirrorMismatch).length,
+      invalidDateCount: sink.invalidCount,
     };
   }
 
@@ -367,10 +382,54 @@ export class PartnerCompanyExternHistoryService {
    * `sot` 가 있으면(=컷오버 전환 건) 발송상태·실패코드·확정시각·버튼 활성화는 **workflow SoT 만**
    * 근거로 하고, legacy 값은 미러 불일치 지표 계산에만 쓴다(§8 화면 SoT 고정).
    */
+  /**
+   * 목록 날짜 칸의 **유일한 통로**. 이 파일에서 `format()` 을 직접 부르지 말 것.
+   *
+   * ⚠️ 왜 통로를 하나로 두나 — 종전에는 칸마다 `x ? format(x) : null` 을 따로 썼는데, 그 truthy
+   *   검사는 **Invalid Date 를 통과시킨다**(객체라 truthy 다). 그래서 한 칸을 막아도 옆 칸이 그대로
+   *   남았고, 실제로 이 파일에 그런 칸이 5개였다. 통로를 하나로 두면 새 날짜 칸이 생겨도 자동으로 막힌다.
+   *
+   * ⚠️ 조용히 폴백하지 않는다 — 무효 도달은 **로그 + 응답 카운터** 로 남긴다. 폴백만 하면 화면에
+   *   `updated_at`(파기 배치가 오늘로 찍어 둔 값)이 뜨는데, 그건 이 파일이 애초에 없애려던 착시다.
+   *   형제 코드(delivery.batch.service.ts 의 formatAuditTimestamp / summarizeRestampRows)도
+   *   "값이 없었다" 와 "값이 깨져 있었다" 를 구분해 세는 쪽을 택했다.
+   */
+  private pickListDate(
+    value: Date | null | undefined,
+    field: string,
+    orderDeliveryId: number,
+    sink: ListDateGuardSink,
+  ): Date | null {
+    if (value === null || value === undefined) {
+      return null;
+    }
+    if (!isValidDate(value)) {
+      sink.invalidCount += 1;
+      this.logger.warn(
+        `[LIST_DATE_INVALID] orderDeliveryId=${orderDeliveryId} field=${field} raw=${String(value)} — ` +
+          '무효 datetime(제로날짜 등)이라 다음 칸으로 폴백한다. 0 이 아니면 그 컬럼을 채운 경로를 찾을 것.',
+      );
+      return null;
+    }
+    return value;
+  }
+
+  /** 위 통로를 태운 뒤 화면 문자열로. 무효거나 없으면 null. */
+  private formatListDate(
+    value: Date | null | undefined,
+    field: string,
+    orderDeliveryId: number,
+    sink: ListDateGuardSink,
+  ): string | null {
+    const picked = this.pickListDate(value, field, orderDeliveryId, sink);
+    return picked ? format(picked, DateFormatStr) : null;
+  }
+
   private parseOrderDeliveryView(
     orderDelivery: OrderDeliveryEntity,
     latestHistory: PartnerCompanyExternHistoryEntity | null,
     sot: DeliveryFailureSotView | null,
+    sink: ListDateGuardSink,
   ): PartnerCompanyExternHistoryViewDto {
     // 협력사 타입
     const partnerCompanyType = orderDelivery.orderProductMapping?.product?.partnerCompany?.type || null;
@@ -443,10 +502,10 @@ export class PartnerCompanyExternHistoryService {
     // ⑤(updated_at)만 validDate 를 안 씌운다 — datetime(6) NOT NULL 이라 무효값이 될 수 없고,
     // 여기서 null 로 만들면 날짜 칸이 빈 채로 나가 정렬·검색과 화면이 어긋난다.
     const legacyDisplayDate =
-      validDate(orderDelivery.actualSendAt) ??
-      validDate(orderDelivery.failedAt) ??
-      validDate(orderDelivery.sendRequestAt) ??
-      orderDelivery.updatedAt;
+      this.pickListDate(orderDelivery.actualSendAt, 'actual_send_at', orderDelivery.id, sink) ??
+      this.pickListDate(orderDelivery.failedAt, 'failed_at', orderDelivery.id, sink) ??
+      this.pickListDate(orderDelivery.sendRequestAt, 'send_request_at', orderDelivery.id, sink) ??
+      this.pickListDate(orderDelivery.updatedAt, 'updated_at', orderDelivery.id, sink);
 
     if (!sot) {
       return {
@@ -465,7 +524,7 @@ export class PartnerCompanyExternHistoryService {
         eventName,
         deliveryTarget,
         pinIssued,
-        resendAt: orderDelivery.resendAt ? format(orderDelivery.resendAt, DateFormatStr) : null,
+        resendAt: this.formatListDate(orderDelivery.resendAt, 'resend_at', orderDelivery.id, sink),
         sotSource: 'LEGACY',
         workflowStatus: null,
         workflowStatusKo: null,
@@ -491,7 +550,8 @@ export class PartnerCompanyExternHistoryService {
         ? FailType.PIN_ISSUE_FAIL
         : FailType.SEND_FAIL;
     const sotFailTypeKo = sotResent ? '재발송완료' : sot.pinIssueFailed ? '핀발급실패' : '발송실패';
-    const sotDisplayDate = sot.lastResolvedAt ?? legacyDisplayDate;
+    const sotDisplayDate =
+      this.pickListDate(sot.lastResolvedAt, 'sot.lastResolvedAt', orderDelivery.id, sink) ?? legacyDisplayDate;
 
     // 미러 불일치(§10 3단계 지표): workflow 는 실패로 종결했는데 legacy 미러가 실패가 아니거나,
     // workflow 는 전달 완료인데 legacy 미러가 아직 실패로 남아 있는 경우.
@@ -515,7 +575,7 @@ export class PartnerCompanyExternHistoryService {
       eventName,
       deliveryTarget,
       pinIssued: sot.pinIssued,
-      resendAt: sot.deliveredAt ? format(sot.deliveredAt, DateFormatStr) : null,
+      resendAt: this.formatListDate(sot.deliveredAt, 'sot.deliveredAt', orderDelivery.id, sink),
       sotSource: 'WORKFLOW',
       workflowStatus: sot.workflowStatus,
       workflowStatusKo: sot.workflowStatusKo,
@@ -526,7 +586,7 @@ export class PartnerCompanyExternHistoryService {
       manualResendCount: sot.manualResendCount,
       failureCodeDescription: sot.failureCode?.description ?? null,
       opsAction: sot.failureCode?.opsAction ?? null,
-      lastResolvedAt: sot.lastResolvedAt ? format(sot.lastResolvedAt, DateFormatStr) : null,
+      lastResolvedAt: this.formatListDate(sot.lastResolvedAt, 'sot.lastResolvedAt', orderDelivery.id, sink),
       // 전환 건의 재발송은 이 화면의 legacy claim 경로가 아니라 MANUAL_RESEND 슬롯 경로 소관이다.
       resendable: false,
       resendBlockReason: '컷오버 전환 건은 운영 재발송(MANUAL_RESEND) 슬롯 경로로만 처리합니다.',

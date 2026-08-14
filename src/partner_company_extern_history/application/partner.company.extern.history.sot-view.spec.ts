@@ -272,6 +272,79 @@ describe('실패내역 화면 SoT 렌더', () => {
     //   "둘을 비교한다" 처럼 읽히면 한쪽만 보고도 안심하게 되므로 범위를 이름에 밝힌다.
     //   ⚠️ 하드코딩 5칸 배열이라 **칸 삽입**은 못 잡는다(순서만 본다). 새 칸을 넣을 때는
     //     이 배열과 legacyDisplayDate 를 **둘 다** 손댈 것.
+    // ── 무효 날짜가 닿는 칸은 하나가 아니다 ─────────────────────────────────────
+    // 종전에는 칸마다 `x ? format(x) : null` 을 따로 썼고 그 truthy 검사는 Invalid Date 를 통과시킨다.
+    // 그래서 한 칸만 막으면 옆 칸이 그대로 남았다. 아래 세 개가 그 비대칭을 고정한다.
+
+    it('앞 칸(actual_send_at)이 무효여도 목록이 죽지 않고 다음 칸을 쓴다', async () => {
+      const at = await 표시일시({
+        actualSendAt: new Date('0000-00-00T00:00:00'),
+        failedAt: new Date('2026-02-11T16:10:21'),
+        sendRequestAt: new Date('2026-02-11T15:38:00'),
+        updatedAt: new Date('2026-08-10T00:00:03'),
+      });
+      expect(at).toBe('2026-02-11T16:10:21');
+    });
+
+    it('실패일(failed_at)이 무효여도 목록이 죽지 않고 다음 칸을 쓴다', async () => {
+      const at = await 표시일시({
+        actualSendAt: null,
+        failedAt: new Date('0000-00-00T00:00:00'),
+        sendRequestAt: new Date('2026-02-11T15:38:00'),
+        updatedAt: new Date('2026-08-10T00:00:03'),
+      });
+      expect(at).toBe('2026-02-11T15:38:00');
+    });
+
+    // 재발송일시는 표시 전용 칸이라 폴백이 없다 — 무효면 그냥 비운다. 막지 않으면 이 한 칸 때문에
+    // 페이지 전체가 500 이 된다(리뷰 CRITICAL).
+    it('재발송일시가 무효면 그 칸만 비고 목록은 정상이다', async () => {
+      const { sut } = await buildSut(
+        [makeDelivery({ resendAt: new Date('0000-00-00T00:00:00') })],
+        new Map(),
+      );
+
+      const res = await sut.getHistoryList({ page: 1, take: 20 } as never);
+
+      expect(res.list[0].resendAt).toBeNull();
+      expect(res.list[0].createdAt).toBe('2026-08-01T10:00:00');
+    });
+
+    // 마지막 안전망까지 무효면 날짜 칸이 빈다. 보기엔 나쁘지만 대안이 페이지 전체 500 이다.
+    it('마지막 칸(updated_at)까지 무효면 날짜를 비우되 목록은 뜬다', async () => {
+      const at = await 표시일시({
+        actualSendAt: null,
+        failedAt: null,
+        sendRequestAt: new Date('0000-00-00T00:00:00'),
+        updatedAt: new Date('0000-00-00T00:00:00'),
+      });
+      expect(at).toBe('');
+    });
+
+    // 조용히 폴백만 하면 화면에 updated_at(파기 배치가 오늘로 찍은 값)이 떠서, 이 파일이 없애려던
+    // 착시로 되돌아간다. 그래서 도달을 센다.
+    it('무효 날짜 도달을 응답에 숫자로 남긴다', async () => {
+      const { sut } = await buildSut(
+        [
+          makeDelivery({ id: 100, actualSendAt: null, failedAt: null, sendRequestAt: new Date('0000-00-00T00:00:00') }),
+          makeDelivery({ id: 101 }),
+        ],
+        new Map(),
+      );
+
+      const res = await sut.getHistoryList({ page: 1, take: 20 } as never);
+
+      expect(res.invalidDateCount).toBe(1);
+    });
+
+    it('무효 날짜가 없으면 카운터는 0 이다', async () => {
+      const { sut } = await buildSut([makeDelivery()], new Map());
+
+      const res = await sut.getHistoryList({ page: 1, take: 20 } as never);
+
+      expect(res.invalidDateCount).toBe(0);
+    });
+
     it('필터·정렬용 SQL 의 칸 순서를 고정한다 (표시 쪽은 위 ②③④ 가 동작으로 고정)', async () => {
       const { sut, qb } = await buildSut([makeDelivery()], new Map());
 
