@@ -360,8 +360,18 @@ describe('실패내역 화면 SoT 렌더', () => {
       expect(칸순서.every((i) => i >= 0)).toBe(true);
       expect(칸순서).toEqual([...칸순서].sort((a, b) => a - b));
 
-      // 제로 날짜는 NULL 이 아니라 COALESCE 가 그대로 채택한다 — NULLIF 로 걷어내야 ⑤ 로 넘어간다.
-      expect(expr).toContain("NULLIF(`orderDelivery`.`send_request_at`, '0000-00-00 00:00:00')");
+      // SQL 과 TS 가 **같은 기준**을 쓰는지 고정한다. 리터럴 비교(NULLIF)로는 2026-00-00 같은
+      // 부분 제로날짜를 못 걷어내고, 그러면 필터는 그 값을 쓰고 화면은 다음 칸을 써서 갈라진다.
+      // 한 칸이라도 이 검사가 빠지면 그 칸에서 갈라지므로 다섯 칸 전부 본다.
+      for (const col of [
+        '`wf`.`state_entered_at`',
+        '`orderDelivery`.`actual_send_at`',
+        '`orderDelivery`.`failed_at`',
+        '`orderDelivery`.`send_request_at`',
+        '`orderDelivery`.`updated_at`',
+      ]) {
+        expect(expr).toContain(`YEAR(${col}) > 0 AND MONTH(${col}) > 0 AND DAY(${col}) > 0`);
+      }
     });
   });
 });

@@ -131,11 +131,44 @@ const HAS_RESEND_ATTEMPT_PREDICATE =
  *      이 실측이 아니라 `validDate`(아래) 로 둔다 — 측정값으로 방어를 생략하지 않는다.
  *      모드에 안 걸리는 대안: WHERE od.send_request_at < '1000-01-01'
  */
+/**
+ * SQL 쪽 무효 날짜 판정. TS 의 `isValidDate` 와 **같은 기준**이어야 한다.
+ *
+ * ⚠️ 왜 `NULLIF(col, '0000-00-00 00:00:00')` 이 아닌가 — 그것은 정확히 그 리터럴 하나만 걷어낸다.
+ *   `2026-00-00` 같은 **부분 제로날짜**는 통과하는데, JS 에서는 그것도 Invalid Date 다. 그러면
+ *   필터·정렬은 그 값을 쓰고 화면은 다음 칸을 써서 **화면 날짜로 검색해도 안 나오는** 상태가 된다.
+ *   이 파일이 맨 위에서 금지한 바로 그 상태다.
+ *
+ * ⚠️ 범위 비교(`col > '1000-01-01'`)로도 부족하다 — `2026-00-00` 은 연도가 2026 이라 그 비교를
+ *   통과한다. 그래서 연·월·일을 **각각** 본다. 셋 다 0 보다 커야 실재하는 날짜다.
+ *
+ * ⚠️ sql_mode 에 의존하지 않는다. 리터럴 비교가 아니라 값에서 뽑은 성분을 보기 때문이다.
+ *
+ * 성능: 컬럼에 함수를 씌우므로 인덱스를 못 탄다. 다만 이 식은 **PR 이전부터** COALESCE·CASE 라
+ *   이미 인덱스를 못 탔다 — 회귀가 아니다.
+ *
+ * ⚠️ 미검증 — 실 MySQL 에 대고 돌려보지 못했다(운영 RDS 는 로컬 직결 불가). MySQL 의 YEAR/MONTH/DAY
+ *   가 제로·부분제로에서 0 을 준다는 문서상 동작에 기대고 있다. 배포 전 개발 DB 에서 한 번 확인할 것:
+ *     SELECT YEAR('2026-00-00'), MONTH('2026-00-00'), DAY('2026-00-00');  -- 2026, 0, 0 이어야 한다
+ */
+const validDateSql = (column: string): string =>
+  `CASE WHEN YEAR(${column}) > 0 AND MONTH(${column}) > 0 AND DAY(${column}) > 0 THEN ${column} END`;
+
 const LIST_DATE_EXPR =
-  'COALESCE(CASE WHEN `wf`.`cutover_migrated_at` IS NOT NULL THEN `wf`.`state_entered_at` END, ' +
-  '`orderDelivery`.`actual_send_at`, `orderDelivery`.`failed_at`, ' +
-  "NULLIF(`orderDelivery`.`send_request_at`, '0000-00-00 00:00:00'), " +
-  '`orderDelivery`.`updated_at`)';
+  'COALESCE(' +
+  // (1) 컷오버 전환 건만. ELSE 가 없어 미전환 건은 NULL 로 떨어져 다음 칸으로 간다.
+  '(CASE WHEN `wf`.`cutover_migrated_at` IS NOT NULL THEN ' +
+  validDateSql('`wf`.`state_entered_at`') +
+  ' END), ' +
+  // (2) 실제 발송 → (3) 실패 → (4) 발송 요청 → (5) 안전망. TS 의 legacyDisplayDate 와 같은 순서다.
+  validDateSql('`orderDelivery`.`actual_send_at`') +
+  ', ' +
+  validDateSql('`orderDelivery`.`failed_at`') +
+  ', ' +
+  validDateSql('`orderDelivery`.`send_request_at`') +
+  ', ' +
+  validDateSql('`orderDelivery`.`updated_at`') +
+  ')';
 
 /**
  * `LIST_DATE_EXPR` 의 `NULLIF` 와 **짝**이다. SQL 이 걷어내는 값을 TS 도 같은 자리에서 걷어낸다.
