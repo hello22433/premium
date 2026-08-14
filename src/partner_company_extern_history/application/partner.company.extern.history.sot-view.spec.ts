@@ -268,7 +268,11 @@ describe('실패내역 화면 SoT 렌더', () => {
       expect(qb.addOrderBy).toHaveBeenCalledWith('orderDelivery.id', 'DESC');
     });
 
-    it('필터·정렬용 SQL 이 표시 로직과 같은 칸 순서를 쓴다', async () => {
+    // ⚠️ 이 테스트는 **SQL 쪽만** 본다. 표시 쪽 순서는 위 ②③④ 가 동작으로 고정한다 — 이름이
+    //   "둘을 비교한다" 처럼 읽히면 한쪽만 보고도 안심하게 되므로 범위를 이름에 밝힌다.
+    //   ⚠️ 하드코딩 5칸 배열이라 **칸 삽입**은 못 잡는다(순서만 본다). 새 칸을 넣을 때는
+    //     이 배열과 legacyDisplayDate 를 **둘 다** 손댈 것.
+    it('필터·정렬용 SQL 의 칸 순서를 고정한다 (표시 쪽은 위 ②③④ 가 동작으로 고정)', async () => {
       const { sut, qb } = await buildSut([makeDelivery()], new Map());
 
       await sut.getHistoryList({ page: 1, take: 20 } as never);

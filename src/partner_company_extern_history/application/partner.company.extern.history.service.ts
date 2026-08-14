@@ -64,9 +64,30 @@ const HAS_RESEND_ATTEMPT_PREDICATE =
 /**
  * 발송실패목록의 **기준 일시**. 전환 건은 workflow 상태 진입 시각, 미전환 건은 legacy 시각을 쓴다.
  *
- * ⚠️ 필터(startAt/endAt) · 정렬(sortDate) · 화면 표시(parseOrderDeliveryView) **세 곳이 같은 값**을
- * 써야 한다. 어긋나면 "2월로 검색했는데 8월 건이 나온다"가 된다. TS 표시 로직(parseOrderDeliveryView
- * 의 `legacyDisplayDate`)이 이 순서를 그대로 복제하고 있으므로 한쪽만 고치지 말 것.
+ * ⚠️ **미전환 건에서만** 필터(startAt/endAt) · 정렬(sortDate) · 화면 표시(parseOrderDeliveryView)
+ * 세 곳이 같은 값을 쓴다. 어긋나면 "2월로 검색했는데 8월 건이 나온다"가 된다. TS 표시 로직
+ * (parseOrderDeliveryView 의 `legacyDisplayDate`)이 이 순서를 그대로 복제하므로 한쪽만 고치지 말 것.
+ *
+ * ⚠️ **전환 건은 두 축이 다르다.** 필터·정렬은 여기 ① `wf.state_entered_at` 을 쓰는데, 화면은
+ *   `sot.lastResolvedAt`(parseOrderDeliveryView 의 sotDisplayDate)을 쓴다. `state_entered_at` 은
+ *   `RESOLVED_MANUALLY_*` 로 넘어갈 때 갱신되므로, 운영자가 나중에 수동 종결하면 화면 날짜로
+ *   검색해도 안 나온다 — 이 주석이 든 예시와 **같은 형태**다. 이 PR 은 그 축을 통일하지 않는다.
+ *
+ *   그리고 아래 ④⑤ 는 **전환 건에 닿지 않는다.** `sot.lastResolvedAt` 이 `stateEnteredAt`
+ *   (NOT NULL DEFAULT CURRENT_TIMESTAMP(6))으로 폴백해 절대 null 이 되지 않기 때문이다.
+ *   즉 이 상수를 고쳐도 전환 건 화면은 안 바뀐다.
+ *
+ *   ⭐ 2026-08-14 운영 실측 — 전환 0건 / shadow 19,137건 중 이 목록 대상 60건:
+ *     · FAILED_FINAL 45건        → 두 축이 **전부 일치**. 실제로 실패한 건은 문제가 없다.
+ *     · OPS_REVIEW_REQUIRED 15건 → 재료 있는 10건 중 9건 날짜 불일치. 단 이 상태는 **아직 실패한
+ *       것이 아니라** SLA 초과 승격이라, "실패 시각"이라는 값 자체가 없다(5건은 재료도 없다).
+ *     즉 축 불일치는 버그라기보다 **"아직 실패 안 한 건의 발생일시를 무엇으로 볼 것인가"** 라는
+ *     미결 업무 결정이다. 운영 확인 전까지 코드로 통일하지 말 것.
+ *
+ *   ⚠️ **전환을 시작하기 전에** 다시 확인할 것 — 지금 0 인 값들이라 시간이 지나면 거짓이 된다.
+ *     ① RESOLVED_MANUALLY_* 건수(현재 0). 생기면 **실제 실패 건인데** 날짜가 종결일로 밀린다.
+ *     ② 위 60건 대조를 재실행해 FAILED_FINAL 불일치가 0 을 유지하는지.
+ *     ③ OPS_REVIEW_REQUIRED 를 이 목록에 계속 둘지(운영 확인).
  *
  * 칸 순서와 근거
  *  ① wf.state_entered_at  컷오버 전환 건만. CASE 에 ELSE 가 없어 미전환 건은 NULL 로 떨어져 다음
@@ -95,12 +116,20 @@ const HAS_RESEND_ATTEMPT_PREDICATE =
  *    원인이 정확히 그 침묵이었으므로 점검 수단을 여기 같이 둔다. 결과가 0 이 아니면 **폴백을 더
  *    늘리지 말고** ④ 를 못 채운 경로를 찾을 것.
  *
+ *    (전환 건을 빼는 이유 — ① state_entered_at 이 NOT NULL 이라 ④⑤ 에 도달할 수 없고, 표시도
+ *     lastResolvedAt 이라 legacyDisplayDate 에 닿지 않는다. 즉 이 쿼리의 관심 밖이다.)
+ *
  *      SELECT COUNT(*) FROM order_delivery od
  *      LEFT JOIN delivery_workflow wf ON wf.order_delivery_id = od.id
  *      WHERE od.deleted_at IS NULL AND wf.cutover_migrated_at IS NULL
  *        AND od.actual_send_at IS NULL AND od.failed_at IS NULL
  *        AND (od.send_request_at IS NULL OR od.send_request_at = '0000-00-00 00:00:00');
  *      -- 2026-08-10 운영 실측: 0
+ *
+ *    ⚠️ 이 쿼리는 정확히 '0000-00-00 00:00:00' 만 센다. `2026-00-00` 같은 **부분 제로날짜**는
+ *      세지 못하고, sql_mode 에 따라 리터럴 비교 자체가 무력화될 수도 있다. 그래서 표시 쪽 방어는
+ *      이 실측이 아니라 `validDate`(아래) 로 둔다 — 측정값으로 방어를 생략하지 않는다.
+ *      모드에 안 걸리는 대안: WHERE od.send_request_at < '1000-01-01'
  */
 const LIST_DATE_EXPR =
   'COALESCE(CASE WHEN `wf`.`cutover_migrated_at` IS NOT NULL THEN `wf`.`state_entered_at` END, ' +
