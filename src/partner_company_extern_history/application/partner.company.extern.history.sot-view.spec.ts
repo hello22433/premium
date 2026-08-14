@@ -305,10 +305,7 @@ describe('실패내역 화면 SoT 렌더', () => {
     // 재발송일시는 표시 전용 칸이라 폴백이 없다 — 무효면 그냥 비운다. 막지 않으면 이 한 칸 때문에
     // 페이지 전체가 500 이 된다(리뷰 CRITICAL).
     it('재발송일시가 무효면 그 칸만 비고 목록은 정상이다', async () => {
-      const { sut } = await buildSut(
-        [makeDelivery({ resendAt: new Date('0000-00-00T00:00:00') })],
-        new Map(),
-      );
+      const { sut } = await buildSut([makeDelivery({ resendAt: new Date('0000-00-00T00:00:00') })], new Map());
 
       const res = await sut.getHistoryList({ page: 1, take: 20 } as never);
 
