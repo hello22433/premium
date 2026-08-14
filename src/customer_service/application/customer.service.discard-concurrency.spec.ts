@@ -2,6 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { CustomerServiceService } from './customer.service.service';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
 import { MUTATION_CLAIM_STALE_MS } from '../../delivery/interface/order.delivery.mutation.claim';
+import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 
 /**
  * 폐기 동시성/terminal 회귀 테스트 (리뷰 반영분 검증).
@@ -76,6 +77,25 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
         BadRequestException,
       );
 
+      expect(sut.restoreBalanceOnDiscard).not.toHaveBeenCalled();
+    });
+
+    // ★ 발송취소(부분취소, 197-16) 차단. status=CANCEL 이지만 couponStatus 는 NOT_USED 로 남아
+    //   couponStatus 기반 terminal 가드를 통과한다. status 가드가 없으면 외부 cancel/환불로 진입해
+    //   이미 환불된 건을 다시 환불한다.
+    it('status=CANCEL(발송취소)이면 외부 cancel/Tx 이전에 거부한다', async () => {
+      const delivery = {
+        id: 7001,
+        status: IOrderDeliveryStatus.CANCEL,
+        couponStatus: OrderDeliveryCouponStatus.NOT_USED, // 발송취소는 couponStatus 를 안 바꾼다
+        orderProductMapping: { product: { type: 'GENERAL' }, order: { cardSurchargeApplied: false } },
+      } as any;
+      const sut = makeSut(delivery);
+      sut.restoreBalanceOnDiscard = jest.fn();
+
+      await expect(sut.execDiscard(operator, 7001, OrderDeliveryCouponStatus.CANCEL)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
       expect(sut.restoreBalanceOnDiscard).not.toHaveBeenCalled();
     });
 
@@ -382,6 +402,27 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
         { id: 8001, reason: '해당 발송 건에 다른 처리가 진행 중입니다. 잠시 후 다시 시도해 주세요.' },
       ]);
       expect(sut.dataSource.createQueryRunner().startTransaction).not.toHaveBeenCalled();
+      expect(sut.restoreBalanceOnDiscard).not.toHaveBeenCalled();
+    });
+
+    // ★ 발송취소(부분취소, 197-16) 차단. status=CANCEL 이지만 couponStatus 는 NOT_USED 라
+    //   기존 couponStatus 가드를 통과한다. status 가드가 없으면 외부 cancel/환불로 진입해 이중환불.
+    it('status=CANCEL(발송취소)이면 failed 로 skip + 잔액복구 미호출', async () => {
+      const sut = makeBulkSut(1);
+      sut.orderDeliveryRepository = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 8001,
+          status: IOrderDeliveryStatus.CANCEL,
+          couponStatus: OrderDeliveryCouponStatus.NOT_USED,
+          orderProductMapping: { product: { type: 'GENERAL', partnerCompany: undefined }, order: {} },
+          choiceSelectProduct: undefined,
+        }),
+      };
+
+      const result = await sut.bulkDiscard(operator, [8001], '일괄폐기');
+
+      expect(result.success).toHaveLength(0);
+      expect(result.failed).toEqual([{ id: 8001, reason: '이미 취소된 발송건입니다.', syncedStatus: 'NOT_USED' }]);
       expect(sut.restoreBalanceOnDiscard).not.toHaveBeenCalled();
     });
 

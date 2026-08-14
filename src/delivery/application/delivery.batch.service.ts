@@ -203,6 +203,33 @@ const summarizeRestampRows = (rows: { destroyedAt: Date | null; destroyedAtSourc
   return `갱신 전 파기일 ${range}${unreadable > 0 ? ` (읽을 수 없는 값 ${unreadable}건)` : ''} / 출처 ${sources}`;
 };
 
+/**
+ * 주문 완료 판정에서 "더 이상 변하지 않는" 발송건 상태.
+ *
+ * 이 목록이 isOrderAllDeliveriesTerminal 과 reconcileSettlementDrift 두 곳에 각각
+ * 하드코딩돼 있었다. 둘은 같은 판정을 해야 하는데 한쪽만 고치면 sweep 이 후보를 안 뽑거나
+ * 반대로 뽑아놓고 전이하지 않는 어긋남이 생긴다. 한 곳에서 관리한다.
+ *
+ * ★ 비슷하게 생긴 다른 목록과 합치지 말 것. order.service.ts 의 countIrreversibleDeliveries
+ *   (취소를 되돌릴 수 있는가)와 customer.service.service.ts 의 재발송 대상 목록은 원소가
+ *   겹칠 뿐 판정 목적이 다르고, 특히 CANCEL 포함 여부가 서로 다른 이유로 결정된다.
+ */
+const ORDER_COMPLETION_TERMINAL_STATUSES: readonly IOrderDeliveryStatus[] = [
+  IOrderDeliveryStatus.COMPLETE,
+  IOrderDeliveryStatus.COMPLETE_SMS,
+  IOrderDeliveryStatus.FAIL,
+  IOrderDeliveryStatus.FAIL_SMS,
+  // 취소된 발송건도 "끝난 건" 이다. 빼면 부분취소한 주문이 잔여분을 전부 발송해도
+  // 전건 터미널이 되지 않아 DELIVERY_COMPLETE 로 전이되지 않고, 자동 선정산에서도 빠진다
+  // (영구 미완료·미정산). 취소분은 이미 환불됐으므로 정산 금액에도 들어가지 않는다 —
+  // getOrderSettlementSummary 가 COMPLETE/COMPLETE_SMS 만 더하는 화이트리스트다.
+  //
+  // 전체취소 주문이 이 때문에 완료로 전이되지는 않는다. transitionOrderToComplete 가
+  // order.status = DELIVERY_CONFIRMED 인 주문만 올리는데, 전체취소 주문은 이미
+  // DELIVERY_CANCEL 이라 조건에 걸리지 않는다(자연 제외).
+  IOrderDeliveryStatus.CANCEL,
+];
+
 @Injectable()
 export class DeliveryBatchService {
   constructor(
@@ -940,8 +967,9 @@ export class DeliveryBatchService {
   // ───────────── Phase 5: 주문 완료/정산 단일 헬퍼 (issueAndSend / reportSweep 공유) ─────────────
 
   /**
-   * order 의 모든 orderDelivery 가 터미널(COMPLETE/COMPLETE_SMS/FAIL/FAIL_SMS)인지.
-   * WAIT/TEMP/PENDING 또는 CANCEL 이 하나라도 있으면 false — 취소 포함 주문은 자동 완료/정산 대상 아님(CS 처리).
+   * order 의 모든 orderDelivery 가 터미널인지 (ORDER_COMPLETION_TERMINAL_STATUSES).
+   * WAIT/TEMP/PENDING 이 하나라도 있으면 false. 취소(CANCEL)는 터미널로 본다 —
+   * 부분취소한 주문도 잔여분을 다 발송하면 완료·정산으로 넘어가야 하기 때문이다.
    */
   private async isOrderAllDeliveriesTerminal(orderId: number): Promise<boolean> {
     const nonTerminal = await this.orderDeliveryRepository
@@ -949,12 +977,7 @@ export class DeliveryBatchService {
       .innerJoin('od.orderProductMapping', 'opm')
       .where('opm.orderId = :orderId', { orderId })
       .andWhere('od.status NOT IN (:...terminal)', {
-        terminal: [
-          IOrderDeliveryStatus.COMPLETE,
-          IOrderDeliveryStatus.COMPLETE_SMS,
-          IOrderDeliveryStatus.FAIL,
-          IOrderDeliveryStatus.FAIL_SMS,
-        ],
+        terminal: ORDER_COMPLETION_TERMINAL_STATUSES,
       })
       .getCount();
     return nonTerminal === 0;
@@ -1005,8 +1028,9 @@ export class DeliveryBatchService {
 
   /**
    * 완료/정산 drift 복구 (sweep 마다 수렴 → 영구 미완료·미정산 방지, HIGH: reconciliation).
-   * 1) completion drift: order=DELIVERY_CONFIRMED 이고 delivery 가 전건 터미널(COMPLETE/
-   *    COMPLETE_SMS/FAIL/FAIL_SMS, CANCEL 없음)인데 order 가 미완료로 남은 건 → 완료 전이 + 정산.
+   * 1) completion drift: order=DELIVERY_CONFIRMED 이고 delivery 가 전건 터미널
+   *    (ORDER_COMPLETION_TERMINAL_STATUSES — CANCEL 포함)인데 order 가 미완료로 남은 건
+   *    → 완료 전이 + 정산.
    *    정산조건/reportState 와 무관(동기 SMS·EMAIL=reportState NULL, POST_PAYMENT 포함).
    * 2) settlement drift: DELIVERY_COMPLETE 인데 미정산(SETTLE_COMPLETE 아님) PRE_PAYMENT 건 → 재정산.
    *    PRE_PAYMENT 직접 제한으로 POST_PAYMENT 미정산 건이 LIMIT 슬롯을 반복 점유하는 starvation 차단.
@@ -1020,14 +1044,10 @@ export class DeliveryBatchService {
       .select('o.id', 'id')
       .where('o.status = :confirmed', { confirmed: IOrderStatus.DELIVERY_CONFIRMED })
       .groupBy('o.id')
-      // 비터미널(WAIT/TEMP/PENDING/CANCEL 등) delivery 가 하나도 없을 때만 = 전건 터미널 & CANCEL 없음
+      // 비터미널(WAIT/TEMP/PENDING 등) delivery 가 하나도 없을 때만 = 전건 터미널
+      // (CANCEL 은 터미널에 포함 — 부분취소 주문도 잔여분 발송 후 완료로 넘어가야 한다)
       .having('SUM(CASE WHEN od.status NOT IN (:...terminal) THEN 1 ELSE 0 END) = 0', {
-        terminal: [
-          IOrderDeliveryStatus.COMPLETE,
-          IOrderDeliveryStatus.COMPLETE_SMS,
-          IOrderDeliveryStatus.FAIL,
-          IOrderDeliveryStatus.FAIL_SMS,
-        ],
+        terminal: ORDER_COMPLETION_TERMINAL_STATUSES,
       })
       .limit(REPORT_SWEEP_BATCH_LIMIT)
       .getRawMany<{ id: number }>();

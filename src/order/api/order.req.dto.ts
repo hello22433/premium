@@ -1,6 +1,8 @@
 import { IOrderStatus } from '../interface/order.status';
 import {
   ArrayMaxSize,
+  ArrayNotEmpty,
+  ArrayUnique,
   IsArray,
   IsBoolean,
   IsDefined,
@@ -466,6 +468,49 @@ export class OrderDeliveryCancelReqDto {
   @IsString()
   @MaxLength(1000)
   cancelReason: string;
+
+  @ApiPropertyOptional({
+    description:
+      '취소할 발송건(order_delivery) id 목록. 예약건 부분취소용. ' +
+      '주면 지목한 발송건만 취소되고 그 몫만 환불된다(발송확정 상태의 주문만 가능). ' +
+      '생략하면 종전과 같이 주문 전체가 취소된다 — 기존 연동은 그대로 두면 된다. ' +
+      '빈 배열은 400 이다(전체취소를 의도했다면 필드를 생략할 것). ' +
+      '요청한 id 중 하나라도 취소 불가면 아무것도 취소하지 않고 400 을 준다(전량 거부).',
+    type: [Number],
+    example: [9003, 9004, 9005],
+  })
+  // ==================================
+  // 선택값이지만 "주면 제대로 줘야 한다".
+  //
+  // ★ @ArrayUnique 가 특히 중요하다. 취소 실행은 조건부 UPDATE 의 affected 를 요청 건수와
+  //   비교해 발송배치와의 경합을 판정하는데, SQL 의 IN 은 집합이라 중복을 접는다.
+  //   [9003, 9003, 9004] 를 보내면 요청 3건 / affected 2건이 되어 아무 문제 없는 취소가
+  //   "경합" 으로 판정돼 롤백된다. 사용자는 "잠시 후 다시 시도" 안내를 받지만 재시도해도
+  //   결과가 같고(중복은 시간이 지나도 안 사라진다), 로그에는 경합으로 찍혀 진짜 경합과
+  //   구분되지 않는다. 실DB 로 재현 확인함.
+  //
+  // @IsInt/@Min(1) 은 -1, 0, 9003.7 같은 값이 매칭 0건이 되어 같은 가짜 경합을 만드는 것을 막는다.
+  //
+  // @ArrayMaxSize 는 초대형 IN 절과, 거부 시 id 를 전부 나열하는 400 메시지가 폭발하는 것을 막는다.
+  //   상한을 1000 으로 잡은 근거: 한 주문의 발송건 수 현실적 상한에 여유를 둔 값이다.
+  //   ※ 예전 값(10000)은 멱등키가 id 를 나열하던 시절 varchar(120) 상한(발송건 9건)과 정면으로
+  //     어긋나 있었다. 지금은 키가 해시라 길이가 고정이므로 이 상한은 키가 아니라 쿼리/응답 크기 문제다.
+  // ★ @IsOptional 이 아니라 @ValidateIf 다. 이 자리에서 둘은 같지 않다.
+  //   @IsOptional 은 undefined **와 null 둘 다** 를 "없음" 으로 보고 아래 검증을 전부 건너뛴다
+  //   (class-validator/IsOptional.js: `value !== null && value !== undefined`).
+  //   그러면 deliveryIds: null 이 검증을 통과하고, 서비스의 갈림길(`deliveryIds && length > 0`)에서
+  //   falsy 로 떨어져 **주문 전체 취소 + 전액 환불** 로 들어간다. 빈 배열은 400 인데 null 은
+  //   전액 환불이라 방향이 정반대다. 프론트가 "선택 없음" 을 null 로 직렬화하면 그대로 터진다.
+  //   이 필드의 계약은 "**생략하면** 전체취소" 이므로, 건너뛰는 조건도 undefined 하나여야 한다.
+  //   null 은 아래 @IsArray 가 잡아 400 이 된다.
+  @ValidateIf((o) => o.deliveryIds !== undefined)
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayUnique()
+  @ArrayMaxSize(1000)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  deliveryIds?: number[];
 }
 
 export class OrderUpdateOperationUserReqDto {

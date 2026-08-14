@@ -84,6 +84,7 @@ import {
   OrderGetPreviousContentResDto,
   OrderGetSettleGetListResDto,
   OrderGetReportHistoryResDto,
+  OrderPartialDeliveryCancelResDto,
 } from './order.res.dto';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { IOrderType } from '../interface/order.type';
@@ -603,10 +604,16 @@ export class OrderController {
 
   @ApiOperation({
     summary: '발송 취소 API',
-    description: '발송 관리에서 해당 주문 주문을 취소합니다.',
+    description:
+      '발송 관리에서 주문을 취소합니다.<br>' +
+      'deliveryIds 를 <b>생략</b>하면 종전과 동일하게 <b>주문 전체</b>가 취소되고 본문 없이 응답합니다.<br>' +
+      'deliveryIds 를 <b>주면</b> 지정한 발송건만 취소하고 그 몫만 환불하며, 취소 결과를 본문으로 돌려줍니다.',
   })
   @ApiCreatedResponse({
-    description: '성공적으로 주문 확정으로 변환한 경우',
+    description:
+      '취소 성공. deliveryIds 를 준 부분취소 요청은 취소된 발송건 id / 환불액 / 잔여 건수를 돌려준다. ' +
+      '전체취소(deliveryIds 생략)는 본문 없음.',
+    type: OrderPartialDeliveryCancelResDto,
   })
   @ApiBadRequestResponse({
     description: '해당 주문이 존재하지 않을 경우',

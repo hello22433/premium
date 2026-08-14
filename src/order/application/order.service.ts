@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   InternalServerErrorException,
@@ -57,10 +58,22 @@ import {
   OrderGetSettleGetListResDto,
   OrderAllocationPreviewResDto,
   OrderGetCustomerSettlementResDto,
+  OrderPartialDeliveryCancelResDto,
 } from '../api/order.res.dto';
 import { OrderEntity } from '../../entity/order.entity';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, In, IsNull, Not, ObjectLiteral, QueryRunner, Repository, SelectQueryBuilder } from 'typeorm';
+import {
+  EntityManager,
+  In,
+  IsNull,
+  LessThanOrEqual,
+  MoreThanOrEqual,
+  Not,
+  ObjectLiteral,
+  QueryRunner,
+  Repository,
+  SelectQueryBuilder,
+} from 'typeorm';
 import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
 import { QueryBuilderDateCondition } from '../../common/infra/query.builder.date.condition';
 import { CustomerSettlementViewDto, OrderViewDto } from '../api/dto/order.view.dto';
@@ -70,7 +83,7 @@ import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { IOrderStatus } from '../interface/order.status';
 import { IOrderSendMethod } from '../interface/order.send.method';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
-import { Propagation, Transactional, runOnTransactionCommit } from 'typeorm-transactional';
+import { IsolationLevel, Propagation, Transactional, runOnTransactionCommit } from 'typeorm-transactional';
 import { OrderCancelNotificationService } from './order.cancel.notification.service';
 import { isDirectCustomerCancelTarget } from '../domain/order.cancel.notification.policy';
 import {
@@ -96,8 +109,18 @@ import {
 } from '../domain/order.validation';
 import { OrderFromService } from '../../order_from/application/order.from.service';
 import { getBillingUserId } from '../domain/order.billing-user.helper';
+import {
+  DELIVERY_CANCEL_CUTOFF_MS,
+  DeliveryCancelBlockReason,
+  evaluateDeliveryCancelable,
+} from '../domain/delivery.cancelable';
 import { listToMap, listToMapValue } from '../../util/map.util';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
+import { NOT_CUTOVER_ORDER_DELIVERY } from '../../delivery/interface/legacy.delivery.entry.point';
+import {
+  MUTATION_CLAIM_STALE_MS,
+  UNSENDABLE_COUPON_STATUSES,
+} from '../../delivery/interface/order.delivery.mutation.claim';
 import { CreateTransactionId } from '../domain/create.transaction.id';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliveryCreateCouponImage } from '../../delivery/infra/delivery.create.coupon.image';
@@ -138,6 +161,7 @@ import {
 } from '../api/dto/order.detail.product.dto';
 import { normalizeDate } from '../../util/time.util';
 import * as process from 'node:process';
+import { createHash } from 'crypto';
 import * as ExcelJS from 'exceljs';
 import { OrderSettleViewDto } from '../api/dto/order.settle.view.dto';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
@@ -151,7 +175,11 @@ import { IProductType } from '../../product/interface/product.type';
 import { defaultOrderMidImagePath, defaultOrderTopImagePath } from '../../const';
 import { OrderStatusExcelMapping } from '../domain/order.excel.mapping';
 import { OrderFeeCalculator, applyCardSurcharge } from '../domain/order.fee.calculator';
-import { calculateOrderSettlementAmount, buildSettlementDisplayLines } from '../../util/settle-fee.util';
+import {
+  calculateOrderSettlementAmount,
+  buildSettlementDisplayLines,
+  notDiscardedReplacedOriginPredicate,
+} from '../../util/settle-fee.util';
 import { OrderCustomerViewDto } from '../api/dto/order.customer.view.dto';
 import { MaskingUtil } from '../../common/utils/masking.util';
 import { resolveExpireDays } from '../../common/utils/expire.util';
@@ -201,6 +229,8 @@ import { CreditExcessApprovalDriftError } from '../../wallet/application/credit-
 import { buildCreditExcessSnapshot, CreditExcessSnapshot, diffCreditExcessSnapshot } from './credit-excess-snapshot';
 import { CreditExcessApprovalExecutionContext } from './credit-excess-approval.context';
 import { OrderConfirmationReleaseService } from '../../wallet/application/order-confirmation-release.service';
+import { RefundPoolService } from '../../wallet/application/refund-pool.service';
+import { OrderPaymentRefundEventType } from '../../entity/order.payment.refund.event.entity';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 import { ShadowMismatchClassifierService } from '../../wallet/application/shadow-mismatch-classifier.service';
 import { BillingScopeLockService } from '../../wallet/application/billing-scope-lock.service';
@@ -266,6 +296,20 @@ function resolveSettleFee(
 }
 
 /**
+ * 발송완료리포트 행에 넣을 발송건인지 판정한다(197-16 예약건 부분취소).
+ *
+ * 취소(발송취소)된 건은 발송되지 않았고 그 몫은 이미 환불됐으므로 "발송완료 리포트" 의 행이 아니다.
+ * 실패(FAIL)건은 제외하지 않는다 — 재발송으로 되살아날 수 있고, 발급 후 발송만 실패한 경우에는
+ * 바코드가 살아 있어 고객이 확인해야 할 정보다(markSendFail 은 status/failedAt 만 바꾸고 barCode 유지).
+ *
+ * getDeliveryCompleteReport / getDeliveryCompleteReportMultiple 두 리포트 루프가 공유한다.
+ * (spec: order.service.report-cancel-exclusion.spec.ts 가 이 술어를 직접 검증한다.)
+ */
+export function isDeliveryInCompleteReport(delivery: Pick<OrderDeliveryEntity, 'status'>): boolean {
+  return delivery.status !== IOrderDeliveryStatus.CANCEL;
+}
+
+/**
  * 거래명세서(단건/다중 공통) 품목 행 구성.
  *
  * D3-49 리뷰 B안: 차등정산(SSG 중복할인) 매핑은 요율 적용 단가별로 행을 분리한다(상세 화면과 동일 구성).
@@ -320,6 +364,54 @@ type ReportCounterColumns =
   | { countColumn: 'deliveryCompleteReportCount'; sourceColumn: 'deliveryReportLastSource' }
   | { countColumn: 'orderCompleteReportCount'; sourceColumn: 'transactionStatementLastSource' };
 
+// 발송 취소 마감(DELIVERY_CANCEL_CUTOFF_MS)은 '../domain/delivery.cancelable' 로 이동했다.
+// SQL 게이트(findCancelableDeliveryIds)와 화면 표시 술어(evaluateDeliveryCancelable)가 같은 값을
+// 공유하기 위함. 배치 주기와의 관계 등 근거는 그 파일의 상수 주석 참고.
+
+/**
+ * 부분취소 거부 응답에 나열할 발송건 id 최대 개수.
+ * deliveryIds 상한이 1000 이라 전량을 이어붙이면 에러 메시지 하나가 7KB 를 넘고 화면에도 다 못 띄운다.
+ * 사용자에게는 앞부분 + "외 N건" 만 보이고, 전량은 거부 로그(DELIVERY_CANCEL_REJECT)에 남는다.
+ */
+const NOT_CANCELABLE_IDS_IN_MESSAGE = 20;
+
+/**
+ * "되돌릴 수 없는 발송건" 판정 술어. **사전 조회와 실제 UPDATE 가 이 하나를 공유한다.**
+ *
+ * 나눠 쓰면 안 되는 이유: 사전 조회로 0 건을 확인해도 그건 그 순간의 사진일 뿐이다. 조회와 갱신
+ * 사이에 발송 배치가 WAIT 행을 집어 발급·발송을 시작할 수 있고, 갱신이 같은 조건을 다시 보지
+ * 않으면 이미 나간 건까지 CANCEL 로 덮고 전액 환불한다(197-16 리뷰 P1). 두 곳이 서로 다른
+ * 조건으로 갈리는 것을 막으려면 문장 자체를 하나만 둬야 한다.
+ *
+ * 하나라도 참이면 되돌릴 수 없다.
+ *  - actual_send_at   : 실제로 나갔다
+ *  - coupon_issued_at : 쿠폰이 발급됐다(초이스 선택 / 이메일 수령 경로)
+ *  - bar_code         : PIN 이 협력사에 발급됐다(일반 배치 경로 — coupon_issued_at 을 안 쓴다)
+ *  - claimed_at       : 발송 배치가 소유권을 잡았다. 곧 나가므로 덮으면 안 된다
+ *  - status 가 터미널 : COMPLETE / COMPLETE_SMS / FAIL / FAIL_SMS
+ *
+ * ※ 부정형(`NOT (...)`)으로 써도 안전하다 — 모든 항이 `IS NOT NULL` 이거나 NOT NULL 컬럼의
+ *   `IN` 이라 NULL 을 내지 않는다. 세 값 논리로 조건이 조용히 뒤집히지 않는다.
+ * ※ status = WAIT 은 **넣지 않는다.** 전체취소는 발송확정 전(발송건이 TEMP)에도 불리므로,
+ *   부분취소 CAS 의 조건을 그대로 베끼면 그 주문들이 통째로 취소 불가가 된다.
+ *
+ * @param prefix SelectQueryBuilder 는 별칭이 필요하고(`'od.'`), UpdateQueryBuilder 는 없다(`''`).
+ */
+const irreversibleDeliveryPredicate = (prefix = ''): string =>
+  `(${prefix}actualSendAt IS NOT NULL OR ${prefix}couponIssuedAt IS NOT NULL ` +
+  `OR ${prefix}barCode IS NOT NULL OR ${prefix}claimedAt IS NOT NULL ` +
+  `OR ${prefix}status IN (:...terminal))`;
+
+/** 위 술어가 쓰는 바인딩. 목록이 갈리면 두 곳의 판정이 달라지므로 같이 둔다. */
+const IRREVERSIBLE_TERMINAL_PARAMS = {
+  terminal: [
+    IOrderDeliveryStatus.COMPLETE,
+    IOrderDeliveryStatus.COMPLETE_SMS,
+    IOrderDeliveryStatus.FAIL,
+    IOrderDeliveryStatus.FAIL_SMS,
+  ],
+};
+
 @Injectable()
 export class OrderService {
   private logger = new Logger('OrderService');
@@ -370,6 +462,7 @@ export class OrderService {
     private readonly paymentAllocationService: PaymentAllocationService,
     private readonly orderConfirmationWalletService: OrderConfirmationWalletService,
     private readonly orderConfirmationReleaseService: OrderConfirmationReleaseService,
+    private readonly refundPoolService: RefundPoolService,
     private readonly legacyWalletCreditSyncService: LegacyWalletCreditSyncService,
     private readonly shadowMismatchClassifierService: ShadowMismatchClassifierService,
     private readonly walletAllocationInputBuilder: WalletAllocationInputBuilder,
@@ -1469,6 +1562,9 @@ export class OrderService {
       }
     }
 
+    // 발송건별 부분취소 가능 여부 판정 기준 시각 — 루프 밖에서 1회 생성해 행마다 흔들리지 않게 한다.
+    const now = new Date();
+
     let topImagePath;
     let midImagePath;
 
@@ -1486,6 +1582,17 @@ export class OrderService {
           const targetToDecrypt = orderDelivery.originalDeliveryTarget || orderDelivery.deliveryTarget;
           const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(targetToDecrypt) ?? '';
 
+          // 부분취소 가능 여부(화면 표시용). 권위 게이트는 findCancelableDeliveryIds+CAS.
+          // ★ 발송건 술어(evaluateDeliveryCancelable)에 더해 주문 레벨 게이트를 함께 적용한다.
+          //   partialDeliveryCancel 은 발송건 조건을 보기 전에 SSG 주문을 400 으로 선차단하는데,
+          //   그걸 반영하지 않으면 SSG 주문의 WAIT 예약건이 cancelable=true 로 내려가 "선택은 되는데
+          //   제출하면 400" 이 된다. 발송건 SQL(findCancelableDeliveryIds)에는 없는 order-level 게이트라
+          //   술어가 아니라 여기서 order.type 으로 판정한다.
+          //   (레거시 non-wallet 주문도 400 이지만 wallet 여부는 비동기 조회라 여기서 보지 않는다 —
+          //    그 조합은 WAIT 예약건이 사실상 드물어 후속 항목으로 남긴다.)
+          const perDelivery = evaluateDeliveryCancelable(orderDelivery, order.type, now);
+          const orderLevelBlock = order.type === IOrderType.SSG ? DeliveryCancelBlockReason.UNSUPPORTED_ORDER : null;
+
           orderDeliveryList.push({
             id: orderDelivery.id,
             deliveryTarget: decryptedDeliveryTarget,
@@ -1495,6 +1602,8 @@ export class OrderService {
             memo: orderDelivery.memo,
             status: orderDelivery.status,
             isResent: orderDelivery.resendAt !== null,
+            cancelable: orderLevelBlock === null && perDelivery.cancelable,
+            cancelBlockReason: orderLevelBlock ?? perDelivery.blockReason,
           });
         }
 
@@ -2077,7 +2186,8 @@ export class OrderService {
           : null;
 
         const lineView = readLineProductView(orderProductMapping);
-        for (const orderDelivery of orderProductMapping.orderDeliveries) {
+        // 취소된 발송건은 리포트에서 제외한다(197-16). 근거는 isDeliveryInCompleteReport docstring 참조.
+        for (const orderDelivery of orderProductMapping.orderDeliveries.filter(isDeliveryInCompleteReport)) {
           // deliveryTarget 복호화 후 마스킹 처리 (originalDeliveryTarget 우선 사용)
           const targetToDecrypt = orderDelivery.originalDeliveryTarget || orderDelivery.deliveryTarget;
           const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(targetToDecrypt) ?? '';
@@ -2551,7 +2661,8 @@ export class OrderService {
             : null;
 
           const lineView = readLineProductView(orderProductMapping);
-          for (const orderDelivery of orderProductMapping.orderDeliveries) {
+          // 취소된 발송건은 리포트에서 제외한다(197-16). 근거는 isDeliveryInCompleteReport docstring 참조.
+          for (const orderDelivery of orderProductMapping.orderDeliveries.filter(isDeliveryInCompleteReport)) {
             // deliveryTarget 복호화 후 마스킹 처리 (originalDeliveryTarget 우선 사용)
             const targetToDecrypt = orderDelivery.originalDeliveryTarget || orderDelivery.deliveryTarget;
             const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(targetToDecrypt) ?? '';
@@ -3482,6 +3593,35 @@ export class OrderService {
       .createQueryBuilder('orderProductMapping')
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('orderProductMapping.order', 'order')
+      .leftJoinAndSelect('orderProductMapping.orderDeliveries', 'orderDeliveries')
+      .where('orderProductMapping.orderId = :orderId', { orderId })
+      .getMany();
+  }
+
+  /**
+   * 부분취소 정산금액 재계산 전용 로더 (197-16).
+   *
+   * 위 getOrderProductsForSettlementAmount(정산수정과 공유)는 product 를 **innerJoin** 한다.
+   * ProductEntity 는 BaseEntity 의 @DeleteDateColumn 을 갖기 때문에, 주문 이후 상품이 소프트삭제되면
+   * TypeORM 이 조인에 deleted_at IS NULL 을 걸어 **그 매핑 행이 결과에서 통째로 사라진다.**
+   * 그 상태로 재계산하면 삭제 상품 몫이 0으로 세어져 settleAmount 가 실제보다 낮게(전부 삭제면 0)
+   * 저장되고, 이후 전체취소가 신흐름에서 그 값을 그대로 환불액으로 읽어
+   * (refundAmount = order.settleAmount → refundAmount > 0 단락평가로 wallet 경로 자체가 스킵)
+   * **취소는 되고 환불은 0원** 이 된다. 매핑 일부만 삭제되면 과소환불이라 더 늦게 발견된다.
+   *
+   * 그래서 여기서는 product 를 **leftJoin** 해 매핑 행을 남긴다. 단가는 정산 계산이 이미
+   * readLineProductView(snapshotProductPrice ?? product?.price ?? 0)로 읽으므로, 상품이 없어도
+   * **주문 시점 스냅샷 단가**로 정확히 재계산된다 — 전체취소가 정가 폴백에 쓰는 정책과 동일하다.
+   *
+   * ※ 상품이 살아 있으면 leftJoin 과 innerJoin 은 같은 행을 돌려주므로, 정산수정(createOrderSettle)의
+   *   difference 블록과 기준이 어긋나지 않는다(difference = 0 유지). 오직 소프트삭제된 경우에만
+   *   갈라지며, 그때 갈라지는 쪽이 옳다. 공유 헬퍼를 고치지 않고 분리한 이유는 정산수정 경로까지
+   *   기준이 바뀌는 파급을 이 티켓에서 지지 않기 위해서다.
+   */
+  private async getOrderProductsForCancelSettlement(orderId: number) {
+    return this.orderProductMappingRepository
+      .createQueryBuilder('orderProductMapping')
+      .leftJoinAndSelect('orderProductMapping.product', 'product')
       .leftJoinAndSelect('orderProductMapping.orderDeliveries', 'orderDeliveries')
       .where('orderProductMapping.orderId = :orderId', { orderId })
       .getMany();
@@ -5611,9 +5751,831 @@ export class OrderService {
     });
   }
 
+  /**
+   * 주문 안에서 지금 취소할 수 있는 발송건 id 목록.
+   *
+   * 아래 조건을 **모두** 만족해야 한다. 하나라도 빠지면 이미 고객에게 간 쿠폰을 취소하고
+   * 돈까지 돌려주는 사고가 된다.
+   *
+   *  1) status = WAIT
+   *     발송 대기 중인 행만. COMPLETE/FAIL/CANCEL 은 이미 끝난 건이다.
+   *
+   *  2) actual_send_at IS NULL
+   *     ★ status 만으로 미발송을 판정하면 안 된다. 외부 API 발송 성공 처리
+   *       (external.api.service.ts phaseC_handleSuccess)는 orderDelivery.actualSendAt 과
+   *       order.status 만 세팅하고 orderDelivery.status 는 건드리지 않는다 — 즉 발송에
+   *       성공해도 WAIT 로 남는다. 같은 이유로 외부 API 취소 가드도 status 가 아니라
+   *       actualSendAt 을 본다. 이 조건이 없으면 이미 나간 쿠폰이 취소된다.
+   *
+   *  3) claimed_at IS NULL
+   *     발송 배치가 이미 집어간(claim) 행은 곧 나간다. claimWaitDeliveries 가
+   *     claimed_at 을 CAS 로 세팅해 소유권을 잡으므로, 잡힌 행은 건드리지 않는다.
+   *
+   *  4) send_request_at >= now + DELIVERY_CANCEL_CUTOFF_MS
+   *     티켓의 "실발송 10분 전까지" 규칙. 배치는 send_request_at < now 인 행만 집으므로
+   *     이 조건과 배치의 픽업 조건은 서로 겹치지 않는다.
+   *
+   *  5) coupon_issued_at IS NULL  /  6) bar_code IS NULL
+   *     쿠폰이 이미 발급된 행은 취소 대상이 아니다. 발급 후 발송 직전에 프로세스가 죽으면
+   *     그 행은 status=WAIT / actual_send_at=NULL 로 남고, 재기동 시 releaseStaleBatchClaims 가
+   *     claimed_at 까지 NULL 로 되돌린다 — 조건 1·2·3 을 모두 통과하는 상태가 된다.
+   *     현재는 그런 행의 send_request_at 이 과거라 조건 4 가 막아주지만, 그건 claimed_at 이
+   *     막는 것이 아니라 컷오프에 우연히 걸리는 것이다. 발급 여부를 직접 본다.
+   *
+   *     ★ 두 컬럼을 모두 봐야 한다. coupon_issued_at 은 초이스 선택 / 이메일 수령 경로에서만
+   *       기록된다(order.receive.service.ts). 일반 배치 발송의 PIN 발급은 이 컬럼을 건드리지
+   *       않고 bar_code 만 채우며, 배치 자신도 "이미 발급됐나" 를 bar_code 로 판정한다
+   *       (delivery.batch.service.ts). 즉 coupon_issued_at 만 보면 배치 경로에서는 방어력이 0 이다.
+   *       bar_code 는 실제 쿠폰 발급 시점(배치 발송)에만 채워지므로, 이 조건이 정상적인 예약
+   *       대기 건의 취소를 막지는 않는다.
+   *       (테스트발송은 여기 해당하지 않는다 — testDelivery 는 test_order_delivery 에만 쓰고
+   *        order_delivery 행은 건드리지 않는다. 테스트발송했다고 취소가 막히지 않는다.)
+   *
+   *  7) order.type != EXTERNAL
+   *     외부 API 주문은 배치가 claim 하지 않으므로(claimWaitDeliveries 의 EXISTS 조건)
+   *     claimed_at 이 영원히 NULL 이고, 그 경로에서 조건 3 은 방어력이 0 이다.
+   *     지금 안전한 이유는 외부 API 가 sendRequestAt 을 즉시(now)로만 만들어 조건 4 에
+   *     걸리기 때문인데, 그것은 타 모듈의 암묵 불변식이다. 외부 API 에 예약발송이 생기면
+   *     조건 3·4 가 동시에 무너진다. 배치가 EXTERNAL 을 명시 배제하는 것과 대칭을 맞춘다.
+   *
+   * ※ 이 헬퍼는 **부분취소 경로(partialDeliveryCancel)에서만** 쓴다.
+   *   전체취소 경로는 여전히 주문 단위로 판정한다 — 예약 mapping 들의 sendRequestAt 중 가장
+   *   이른 값 하나로 주문 전체를 보는 reserveSendTimes 블록(같은 파일 deliveryCancel 안).
+   *   그 방식은 "주문 전체를 한꺼번에 취소한다" 는 전제에서는 옳고, 전체취소는 앞단의
+   *   countIrreversibleDeliveries 가 이미 나간 건이 섞인 주문을 통째로 거부하므로 유지한다.
+   *   취소 단위가 발송건으로 내려가는 부분취소에서만 이 헬퍼가 필요하다.
+   *
+   * soft-delete 된 행은 SelectQueryBuilder 가 deleted_at 필터를 자동 적용해 제외된다
+   * (UpdateQueryBuilder 는 자동 적용하지 않으므로 갱신 시에는 명시해야 한다).
+   */
+  // ★ 아래 조건집합은 domain/delivery.cancelable.ts 의 evaluateDeliveryCancelable(화면 표시용)과
+  //   1:1 로 일치해야 한다. 이 SQL 이 권위값(취소는 이 결과의 부분집합만 허용)이고 술어는 advisory 다.
+  //   조건을 바꾸면 양쪽을 함께 바꾸고 delivery.cancelable.spec.ts 로 어긋남을 잡는다.
+  private async findCancelableDeliveryIds(orderId: number, now: Date): Promise<number[]> {
+    const cutoff = new Date(now.getTime() + DELIVERY_CANCEL_CUTOFF_MS);
+
+    const rows = await this.orderDeliveryRepository
+      .createQueryBuilder('od')
+      .select('od.id', 'id')
+      .innerJoin('od.orderProductMapping', 'opm')
+      .innerJoin('opm.order', 'o')
+      .where('opm.orderId = :orderId', { orderId })
+      .andWhere('od.status = :wait', { wait: IOrderDeliveryStatus.WAIT })
+      .andWhere('od.actualSendAt IS NULL')
+      .andWhere('od.claimedAt IS NULL')
+      .andWhere('od.sendRequestAt >= :cutoff', { cutoff })
+      .andWhere('od.couponIssuedAt IS NULL')
+      .andWhere('od.barCode IS NULL')
+      // 발송 배치(claimWaitDeliveries)가 집는 조건집합과 맞춘다. 지금은 bar_code IS NULL 이
+      // 간접적으로 같은 행을 걸러내지만, 그건 "발급되면 bar_code 도 찬다" 는 다른 모듈의
+      // 암묵 불변식에 기댄 것이다. 배치가 직접 보는 컬럼을 여기서도 본다(조건 6 과 같은 이유).
+      .andWhere('od.reportState IS NULL')
+      // CAS 와 같은 조건집합을 유지한다 — 여기만 빠지면 화면엔 취소가능으로 뜨고 누르면 실패한다.
+      // (두 곳의 drift 는 cancelable parity 실DB 테스트가 감지한다)
+      .andWhere('od.couponStatus NOT IN (:...unsendable)', { unsendable: UNSENDABLE_COUPON_STATUSES })
+      .andWhere('(od.mutationClaimedAt IS NULL OR od.mutationClaimedAt < :mutationStale)', {
+        mutationStale: new Date(now.getTime() - MUTATION_CLAIM_STALE_MS),
+      })
+      .andWhere('o.type != :externalType', { externalType: IOrderType.EXTERNAL })
+      .orderBy('od.id', 'ASC')
+      .getRawMany<{ id: number }>();
+
+    return rows.map((row) => Number(row.id));
+  }
+
+  /**
+   * 고른 발송건을 CANCEL 로 전환한다. 조건부 UPDATE(CAS) 이며 갱신된 행 수를 돌려준다.
+   *
+   * findCancelableDeliveryIds 로 목록을 고른 시점과 실제로 바꾸는 시점 사이에는 시간이 흐른다.
+   * 그 사이 발송 배치가 같은 행을 claim 해 갈 수 있으므로, 판정 조건을 UPDATE 의 WHERE 에
+   * 다시 넣어 DB 가 갱신 순간에 확인하게 한다. 조건이 어긋난 행은 갱신되지 않고 affected 로 드러난다.
+   *
+   * 하나라도 못 바꾸면 여기서 던진다. 반환값으로 알리고 호출자가 검사하게 두지 않는다 —
+   * TypeScript 에는 반환값 무시를 막는 수단이 없어(`await fn(...)` 이 경고 없이 통과)
+   * "반드시 확인하라" 는 계약이 주석 외에 강제력을 갖지 못한다. 판정에 필요한 값
+   * (요청 건수·affected)을 이 함수가 이미 다 쥐고 있으므로 판정도 여기서 한다.
+   * @Transactional() 이라 throw 가 곧 롤백이고, 어차피 롤백이 유일한 정답이라
+   * 호출부에 선택권을 줄 이유가 없다.
+   *
+   * 중복 id 는 들여보내지 않는다. SQL 의 IN 은 집합이라 중복을 접으므로
+   * [9003, 9003, 9004] 는 affected 2 가 되어 정상 취소가 "경합" 으로 오판된다.
+   * DTO 의 @ArrayUnique 가 정상 경로를 막지만, 서비스를 직접 부르는 경로가 생겨도
+   * 뚫리지 않도록 여기서도 접는다.
+   *
+   * ★ deleted_at IS NULL 을 명시한 이유: UpdateQueryBuilder 는 SelectQueryBuilder 와 달리
+   *   soft-delete 필터를 자동으로 붙이지 않는다. 없으면 soft-delete 된 행까지 취소된다.
+   *   근거: typeorm 0.3.28 QueryBuilder.createWhereExpression 이 deleted_at IS NULL 을
+   *   queryType === 'select' 인 경우에만 삽입한다. 업그레이드 시 이 지점을 재확인할 것.
+   *
+   * ★ orderId 스코프가 반드시 필요하다. deliveryIds 는 결국 요청 바디에서 온 값이고,
+   *   id IN (...) 만으로는 이 함수가 그 값을 무조건 신뢰하게 된다. 남의 주문 발송건 id 를
+   *   섞어 보내면 그 건이 취소되고 환불은 요청자의 주문 기준으로 일어난다 — IDOR 이면서
+   *   자금 결함이다. deliveryCancel 은 소유권 검사가 주석 처리돼 있고 엔드포인트 가드도
+   *   클래스 레벨 인증뿐이라 앞단에서 걸러진다는 보장이 없다.
+   *   호출부에서 findCancelableDeliveryIds 결과와 교집합을 취하더라도 여기서 한 번 더 막는다.
+   *   이 함수가 "돈을 되돌려도 되는가" 판정의 마지막 관문이고, 조건 추가 비용은 사실상 0이다.
+   *   (배치의 claimWaitDeliveries 도 같은 EXISTS 패턴으로 주문 타입을 제한한다.)
+   *
+   * ★ 조회 단계(findCancelableDeliveryIds)의 조건집합을 **그대로 재검증**한다 — status/claimed_at/
+   *   actual_send_at 에 더해 coupon_issued_at·bar_code·report_state·EXTERNAL 까지(관리자 리뷰 HIGH).
+   *   조회~갱신 사이에 쿠폰이 발급되면 status 는 WAIT, claimed_at 은 NULL 인 채로 발급 신호만 생길
+   *   수 있고, 그 조합은 종전 4개 조건으로는 걸러지지 않아 **발급된 쿠폰을 취소하고 환불**하게 된다.
+   *   지금은 발송 경로들이 claimed_at/actual_send_at 을 먼저 채워 간접 차단되지만 그것은 타 모듈의
+   *   암묵 불변식이다. 이 문장이 "돈을 되돌려도 되는가" 의 마지막 관문이므로 남에게 기대지 않는다.
+   *
+   * sendRequestAt(10분 규칙)도 **갱신 직전에 새로 읽은 시각** 기준으로 다시 본다(조회 때 쓴 now 를
+   * 재사용하면 재검증이 아니다). 조회~갱신 사이에 send_request_at 이 다른 흐름(유효기간 변경·재발행)
+   * 으로 앞당겨진 행을 배제하고, "발송 10분 전까지" 규칙을 갱신 시점에도 지킨다.
+   * SQL NOW() 를 쓰지 않는 이유는 DB 서버 time_zone 설정에 의존하게 되어(저장은 드라이버
+   * timezone 변환) 설정이 바뀌면 조건이 조용히 무력화되기 때문이다 — 자세한 근거는 아래 주석 참조.
+   * (미발송 자체는 위 상태 신호들이 보장한다 — 배치는 send_request_at 이 지난 행만 집고 집는 순간
+   * claimed_at 이 차므로, 이 조건은 규칙 준수용이지 유일한 근거가 아니다.)
+   */
+  private async cancelDeliveriesIfStillWaiting(
+    orderId: number,
+    deliveryIds: number[],
+    cancelReason: string,
+    canceledAt: Date,
+  ): Promise<void> {
+    const targetIds = [...new Set(deliveryIds)];
+
+    if (targetIds.length === 0) {
+      // 여기 도달하는 빈 목록은 호출자 버그다. DTO(@ArrayNotEmpty)와 선별 단계가 이미 걸렀어야 한다.
+      // 조용히 0 을 돌려주면 "요청 0건 = affected 0건" 이 되어 "전부 성공" 으로 판정되고,
+      // 발송건은 하나도 취소되지 않은 채 환불만 실행된다.
+      throw new InternalServerErrorException(
+        `cancelDeliveriesIfStillWaiting: 취소 대상이 비어 있다 (orderId=${orderId})`,
+      );
+    }
+
+    // ★ 컷오프 재검증 기준 시각은 **갱신 직전에 새로 읽는다**(조회 때 쓴 now 를 재사용하면 재검증이
+    //   아니다). NOW() 같은 SQL 함수를 쓰지 않는 이유는 타임존 의존을 만들지 않기 위해서다 —
+    //   NOW() 는 DB 서버 time_zone 설정을 따르는데 send_request_at 은 드라이버가 커넥션
+    //   timezone('+09:00')으로 변환해 넣은 값이라, 서버 tz 가 UTC 로 바뀌면 9시간이 어긋나
+    //   조건이 **항상 참(= 조용한 무력화)** 이 된다. 자금 가드가 인프라 설정 변경에 조용히
+    //   꺼지면 안 된다. JS Date 를 바인딩하면 저장할 때와 같은 변환을 거쳐 항상 정합적이다.
+    //   (dev RDS·로컬 모두 Asia/Seoul 이라 지금은 NOW() 로도 맞지만, 그 일치에 기대지 않는다.)
+    const cutoffAt = new Date(Date.now() + DELIVERY_CANCEL_CUTOFF_MS);
+
+    const result = await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({
+        status: IOrderDeliveryStatus.CANCEL,
+        // ★ 변형 lease 를 취소 소유로 **탈취**한다 (197-16 리뷰 P1).
+        //   아래 WHERE 는 stale(5분 초과) lease 를 통과시킨다 — 크래시 잔재가 발송건을 영구히
+        //   취소 불가로 만들지 않기 위해서다. 그런데 통과만 시키고 값을 그대로 두면, 아직 살아 있는
+        //   원 소유자(외부 통신이 길어진 CS 폐기·재발행)의 후속 쓰기가 `WHERE mutation_claimed_at =
+        //   자기토큰` 으로 여전히 일치해 affected=1 로 성공한다. 그 쓰기는 status 를 다시 쓰므로
+        //   (delivery.batch.service.ts:1965 updateDeliveryOwned) 방금 CANCEL 로 바꾼 행이
+        //   COMPLETE 로 되살아나고, 우리는 이미 환불까지 끝낸 뒤다.
+        //   탈취하면 그 쓰기가 affected=0 이 되어 [BATCH_FENCE_LOST] 로 시끄럽게 멈춘다.
+        //   같은 규칙이 배치 선점에 이미 명시돼 있다 — delivery.batch.service.ts:696 주석 참조.
+        //   ※ 값은 canceledAt 과 같게 둔다(형제와 동일 관례 — 소유자 식별이 일관된다).
+        //   ※ 해제하지 않는다: 토큰 값이 canceledAt(= 그때의 now)이라 MUTATION_CLAIM_STALE_MS
+        //     뒤에는 stale 로 판정돼 **스스로 풀린다.** 그 사이 다른 변형 경로는 이 행에 대해
+        //     affected=0 을 받는데, CANCEL 은 종단 상태라 어차피 거부돼야 할 쓰기들이다.
+        //     ※ 처음에는 "모든 획득 경로가 status=WAIT 를 요구한다" 고 적어 뒀는데 **사실이 아니다**
+        //       (197-16 재리뷰 F5). CS 폐기(customer.service.service.ts:1340)·리포트 lease
+        //       (delivery.batch.service.ts:1243)·재발송(message-resend-executor.service.ts:351)
+        //       은 status 를 안 본다. 안 풀어도 되는 근거는 WAIT 조건이 아니라 위의 자동 만료다.
+        mutationClaimedAt: canceledAt,
+        cancelReason,
+        canceledAt,
+      })
+      .where('id IN (:...deliveryIds)', { deliveryIds: targetIds })
+      // ★ EXTERNAL 배제까지 EXISTS 안에서 처리한다. 조회 단계(findCancelableDeliveryIds)의
+      //   o.type != EXTERNAL 과 같은 조건 — order.type 은 불변이고 주문 행도 이미 잠겨 있어
+      //   현실적으로 창이 없지만, "다른 단계가 걸러 줬을 것" 이라는 가정을 이 문장에 남기지 않는다.
+      .andWhere(
+        'EXISTS (SELECT 1 FROM order_product_mapping opm JOIN `order` o ON o.id = opm.order_id ' +
+          'WHERE opm.id = order_delivery.order_product_mapping_id AND opm.order_id = :orderId ' +
+          'AND o.type != :externalType)',
+        { orderId, externalType: IOrderType.EXTERNAL },
+      )
+      .andWhere('status = :wait', { wait: IOrderDeliveryStatus.WAIT })
+      .andWhere('claimedAt IS NULL')
+      .andWhere('actualSendAt IS NULL')
+      // ★ 발급/진행 신호를 CAS 에서도 재검증한다 (관리자 리뷰 HIGH).
+      //   조회 단계는 이 셋을 보는데 갱신 단계가 빼면, 조회~갱신 창에서 쿠폰이 발급돼도
+      //   status 가 WAIT 이고 claimed_at 이 비어 있는 경로로 취소·환불이 통과할 수 있다.
+      //   현재는 발송 경로들이 claimed_at/actual_send_at 을 먼저 채워 간접 차단되지만, 그건
+      //   타 모듈의 암묵 불변식이다. CAS 는 "돈을 되돌려도 되는가" 의 마지막 관문이므로
+      //   조회 단계와 같은 조건집합을 직접 들고 있어야 한다(추가 비용 사실상 0).
+      //   ※ sendRequestAt 컷오프만 제외 — 시간은 되돌아가지 않아 조회 시 통과했으면 갱신 시에도
+      //     통과하고(여유만 줄어듦), 그 구간의 실질 방어는 claimed_at 이 담당한다.
+      .andWhere('couponIssuedAt IS NULL')
+      .andWhere('barCode IS NULL')
+      .andWhere('reportState IS NULL')
+      // ★ 쿠폰상태 축을 함께 본다 (리뷰 P1). status 와 coupon_status 는 **별개 축**이다 —
+      //   CS 폐기(execDiscard)는 coupon_status 만 CANCEL/REFUND_CANCEL 로 쓰고 status 는 건드리지
+      //   않으므로 `status=WAIT + coupon_status=CANCEL` 행이 실제로 존재한다
+      //   (order.delivery.mutation.claim.ts 의 UNSENDABLE_COUPON_STATUSES 설명 참조).
+      //   status 만 보는 이 CAS 는 그 "이미 폐기·환불된 핀" 을 취소 대상으로 잡아 한 번 더 환불했다.
+      .andWhere('couponStatus NOT IN (:...unsendable)', { unsendable: UNSENDABLE_COUPON_STATUSES })
+      // ★ CS 가 **지금 작업 중**인 건도 배제한다. 위 조건은 이미 커밋된 결과만 걸러낸다 —
+      //   폐기가 협력사 통신 중이라 아직 커밋 전이면 coupon_status 는 그대로 NOT_USED 라
+      //   어떤 격리수준으로도 보이지 않는다. 그 구간의 표시가 mutation_claimed_at lease 다.
+      //   ※ IS NULL 로만 막으면 안 된다. 크래시로 해제 못 한 lease 는 스스로 지워지지 않아
+      //     그 발송건이 **영구히** 취소 불가가 된다. CS 의 획득 조건과 같은 stale 규칙을 써서
+      //     5분이 지난 lease 는 무시한다(self-heal 동일 기준).
+      .andWhere('(mutationClaimedAt IS NULL OR mutationClaimedAt < :mutationStale)', {
+        mutationStale: new Date(Date.now() - MUTATION_CLAIM_STALE_MS),
+      })
+      // ★ 컷오프를 갱신 시점 기준으로 다시 본다 (관리자 리뷰 P1). cutoffAt 은 이 UPDATE 직전에
+      //   새로 읽은 시각이라, 조회~갱신 사이에 send_request_at 이 다른 흐름(유효기간 변경·재발행)
+      //   으로 앞당겨져 발송이 임박해진 행을 배제한다.
+      //   ※ 이 조건이 없어도 "이미 나간 건" 은 위 4개 신호가 막는다(배치는 send_request_at 이
+      //     지난 행만 집고, 집는 순간 claimed_at 이 찬다). 즉 이 조건은 10분 규칙을 갱신 시점에도
+      //     지키기 위한 것이지 미발송 보장의 유일한 근거가 아니다.
+      .andWhere('sendRequestAt >= :cutoffAt', { cutoffAt })
+      // ★ 컷오버 배제 술어 (§9 quiesce 계약 — legacy.delivery.entry.point.ts).
+      //   이 UPDATE 는 legacy claim CAS 다(WAIT 을 선점해 CANCEL 로 바꾸고 그 근거로 환불한다).
+      //   전환(cutover_migrated_at)·드레이닝(cutover_draining_at) 마크가 선 발송건은 Level A 슬롯
+      //   모델이 소유하는데, 두 모델은 서로의 점유를 모른다. 이 술어가 없으면 신규 모델이 잡고 있는
+      //   건을 legacy 취소가 함께 잡아 **중복 환불**이 뚫린다 — 계약이 막으려는 바로 그 경우다.
+      //   가드(assertLegacyAllowed)가 아니라 술어로 다는 이유: 판정과 점유를 한 문장으로 원자화해야
+      //   admission race(가드 통과 후 마크가 서는 창)가 닫힌다. 안전성의 근거는 술어 쪽이다.
+      //   ※ 표시용 술어(evaluateDeliveryCancelable)에는 넣지 않는다 — 화면은 delivery_workflow 를
+      //     읽지 않고, 컷오버는 운영 구간 상태라 여기서 걸리면 다른 경합과 똑같이 affected 부족 →
+      //     ConflictException("다시 조회 후 재시도")으로 드러난다.
+      .andWhere(NOT_CUTOVER_ORDER_DELIVERY)
+      .andWhere('deletedAt IS NULL')
+      // ※ 형제(delivery.batch.service.ts claimWaitDeliveries)에 있는 조건 중 **여기 없는 것이 하나**
+      //   있다: 활성 pin_issue_command 배제(`NOT EXISTS … STARTED/RETRYING/…`). 의도적으로 뺐다.
+      //   그 행은 ssg-insert-state.service.ts 에서만 만들어지는 SSG 전용이고, 부분취소는 진입부에서
+      //   SSG 주문을 400 으로 거부하므로 지금은 도달 경로가 없다.
+      //   ⚠️ SSG 부분취소를 여는 후속 티켓(docs/followup-ssg-partial-cancel.md)에서는 **반드시 넣어야**
+      //     한다 — 발급 명령이 진행 중인 발송건을 취소하면 그 명령이 나중에 PIN 을 발급해
+      //     "환불된 죽은 핀" 이 고객에게 간다.
+      .execute();
+
+    const affected = result.affected ?? 0;
+    if (affected !== targetIds.length) {
+      // 조회와 갱신 사이에 발송 배치가 claim 해 갔거나, 다른 경로가 상태를 바꿨다.
+      // 로그에 요청/실제 건수와 id 를 남긴다 — 이게 없으면 "왜 취소가 안 됐나" 를 사후에 못 푼다.
+      this.logger.error(
+        `[DELIVERY_CANCEL_RACE] orderId=${orderId} requested=${targetIds.length} affected=${affected} ` +
+          `ids=[${targetIds.join(',')}] — 발송 진행으로 상태가 바뀐 것으로 보임, 취소 롤백`,
+      );
+      throw new ConflictException(
+        '취소 처리 중 일부 발송건이 발송 단계로 넘어가 취소하지 못했습니다. ' +
+          '아무것도 취소되지 않았고 환불도 일어나지 않았습니다. ' +
+          '발송 결과를 확인한 뒤 남은 대기 건만 다시 취소해 주세요.',
+      );
+    }
+  }
+
+  /**
+   * 주문 안에서 이미 발송 단계로 넘어간 발송건 수.
+   *
+   * 전체취소가 그런 건까지 CANCEL 로 덮고 환불하는 것을 막기 위한 카운트다.
+   * "취소 가능한가"(findCancelableDeliveryIds)의 여집합이 아니라 **되돌릴 수 없는 것만** 센다 —
+   * 컷오프(10분)에 걸린 건은 아직 안 나갔으므로 여기 포함하지 않는다.
+   *
+   * 하나라도 해당하면 되돌릴 수 없다.
+   *  - actual_send_at IS NOT NULL : 실제로 나갔다
+   *  - coupon_issued_at IS NOT NULL : 쿠폰이 발급됐다(초이스 선택/이메일 수령 경로)
+   *  - bar_code IS NOT NULL : PIN 이 협력사에 발급됐다(일반 배치 발송 경로 — 이쪽은
+   *      coupon_issued_at 을 쓰지 않으므로 그 조건만으로는 잡히지 않는다)
+   *  - claimed_at IS NOT NULL : 발송 배치가 이미 소유권을 잡았다. 곧 나가므로 덮으면 안 된다.
+   *      부분취소는 이 창을 findCancelableDeliveryIds 조건 3 으로 명시적으로 막는데,
+   *      전체취소만 빠져 있어 배치가 집어간 행을 CANCEL 로 덮을 수 있었다(같은 근거, 같은 방어).
+   *  - status 가 터미널 : COMPLETE / COMPLETE_SMS / FAIL / FAIL_SMS
+   */
+  private async countIrreversibleDeliveries(orderId: number): Promise<number> {
+    return this.orderDeliveryRepository
+      .createQueryBuilder('od')
+      .innerJoin('od.orderProductMapping', 'opm')
+      .where('opm.orderId = :orderId', { orderId })
+      .andWhere(irreversibleDeliveryPredicate('od.'), IRREVERSIBLE_TERMINAL_PARAMS)
+      .getCount();
+  }
+
+  /**
+   * 아직 취소되지 않은 발송건이 남아 있는 상품행(order_product_mapping) id 집합.
+   *
+   * 전체취소의 10분 컷오프는 예약 상품행들의 sendRequestAt 중 **가장 이른 시각**을 기준으로 판정한다.
+   * 그런데 부분취소가 생기면서 "예약시각은 지났는데 발송은 안 된(=취소된) 상품행" 이 처음 생겼다.
+   * 그 행을 그대로 최솟값 계산에 넣으면 지난 시각이 영구히 남아, 아직 여유가 충분한 나머지 예약건까지
+   * 전체취소가 **영원히 400** 이 된다(시간이 갈수록 더 과거가 되므로 회복 경로가 없다).
+   *
+   *   예) A 12시 · B 15시 → 11시에 A 만 부분취소 → 13시에 B 전체취소 시도
+   *       최솟값이 여전히 12시라 diff 가 음수 → "10분 전까지만 가능합니다" 로 거부
+   *
+   * 그래서 컷오프는 "아직 살아 있는 상품행" 만 봐야 한다. 취소된 행은 이미 환불까지 끝나 보호할
+   * 대상이 아니다.
+   *
+   * ※ 발송건을 그래프로 끌어와 메모리에서 거르지 않는 이유: 여기서 필요한 것은 행별 "남아 있나"
+   *   여부 하나뿐이라, 발송건이 수백~수천인 주문에서 전량 로딩은 낭비다. countIrreversibleDeliveries
+   *   와 같은 전용 집계 쿼리 패턴을 따른다.
+   */
+  private async findMappingIdsWithActiveDeliveries(orderId: number): Promise<Set<number>> {
+    const rows = await this.orderDeliveryRepository
+      .createQueryBuilder('od')
+      .innerJoin('od.orderProductMapping', 'opm')
+      .select('DISTINCT opm.id', 'mappingId')
+      .where('opm.orderId = :orderId', { orderId })
+      .andWhere('od.status != :canceled', { canceled: IOrderDeliveryStatus.CANCEL })
+      .andWhere('od.deletedAt IS NULL')
+      .getRawMany<{ mappingId: number }>();
+
+    return new Set(rows.map((row) => Number(row.mappingId)));
+  }
+
+  /**
+   * 예약 발송건 부분취소 (197-16).
+   *
+   * deliveryIds 를 준 요청만 이 경로로 온다. 주지 않으면 종전대로 주문 전체가 취소된다 —
+   * 발송확정 전에는 발송건이 전부 TEMP 라 "일부만 취소" 라는 개념도, 되돌릴 잔액도 없기 때문에
+   * 부분취소를 강제하지 않는다.
+   *
+   * 전체취소와 다른 점:
+   *  - 취소 대상을 요청이 지목한다(단, 반드시 findCancelableDeliveryIds 의 부분집합이어야 한다)
+   *  - 환불이 주문 전액이 아니라 그 발송건 몫이다 (RefundPoolService.refund)
+   *  - 잔여 발송건이 남으면 order.status 를 DELIVERY_CANCEL 로 내리지 않는다
+   *
+   * ※ 아래 @Transactional() 은 **독립 트랜잭션이 아니다.** 호출부(deliveryCancel)도 @Transactional()
+   *   이고 둘 다 기본 전파(REQUIRED)라, 이 데코레이터는 새 트랜잭션도 세이브포인트도 만들지 않고
+   *   호출부의 트랜잭션에 그대로 합류한다. 이 경로가 곳곳에서 기대는 "throw = 롤백" 은 이 데코레이터가
+   *   보장하는 것이 아니라 **바깥 트랜잭션이 함께 롤백되기 때문에** 성립한다.
+   *   그래서 호출부가 나중에 이 호출을 try/catch 로 감싸면 취소(CANCEL)와 환불 원장이 그대로 커밋된다 —
+   *   "409 = 아무것도 안 됐다" 보장이 조용히 깨지므로 감싸지 말 것. 격리가 필요하면 전파를
+   *   REQUIRES_NEW 로 올리는 것이 아니라(원장이 바깥과 갈라진다) 호출 구조를 바꿔야 한다.
+   */
   @Transactional()
+  private async partialDeliveryCancel(
+    orderId: number,
+    deliveryIds: number[],
+    cancelReason: string,
+  ): Promise<OrderPartialDeliveryCancelResDto> {
+    // 전체취소와 동일하게 order 행부터 잠근다(락 순서 일관).
+    const lockedOrder = await this.orderRepository
+      .createQueryBuilder('order')
+      .setLock('pessimistic_write')
+      .where('order.id = :id', { id: orderId })
+      .getOne();
+    if (!lockedOrder) {
+      throw new BadRequestException('해당 주문건은 존재하지 않습니다.');
+    }
+
+    // ★ 락을 잡은 뒤에 현재 시각을 읽는다. 락 대기는 innodb_lock_wait_timeout(기본 50초)까지
+    //   늘어질 수 있어, 대기 전에 찍은 시각으로 10분 컷오프를 계산하면 그만큼 창이 헐거워지고
+    //   canceled_at 도 과거로 기록된다.
+    const now = new Date();
+
+    // 부분취소는 발송확정 이후에만 성립한다. 그 전에는 발송건이 TEMP 라 막을 발송도, 되돌릴 돈도 없다.
+    if (lockedOrder.status !== IOrderStatus.DELIVERY_CONFIRMED) {
+      throw new BadRequestException(
+        '발송 대기 상태의 주문만 발송건별로 취소할 수 있습니다. ' + 'deliveryIds 없이 요청하면 주문 전체가 취소됩니다.',
+      );
+    }
+
+    // SSG 는 행사잔액 차감 이력이 주문 단위로 뭉쳐 있어(ssg_event_amount_history.order_delivery_id 미기록)
+    // 발송건 몫을 역산할 근거가 없다. 근거 없이 안분하면 행사잔액이 부풀고, 그쪽은 상한 검증이 없어
+    // 되돌리기 어렵다. 이 차단은 ssg_event_amount_history.order_delivery_id 에 귀속이 기록되고
+    // restoreEventBalance 가 범위 복구를 지원한 뒤에야 풀 수 있다.
+    // 후속 티켓으로 분리(2026-07-23 결정): docs/followup-ssg-partial-cancel.md 참조.
+    // (SSG 는 지갑+행사잔액을 둘 다 차감하므로 부분취소도 두 축 복구가 필요 — 문서에 설계 스케치 포함.)
+    if (lockedOrder.type === IOrderType.SSG) {
+      throw new BadRequestException(
+        'SSG 주문은 아직 발송건별 취소를 지원하지 않습니다. 주문 전체 취소를 이용해 주세요.',
+      );
+    }
+
+    // 지갑(allocation) 이 없는 주문은 발송건 몫 환불의 근거가 없다.
+    // 지갑 도입(2026-05) 이전 주문이 여기 해당하며, 취소 가능한 주문은 사실상 그 이후 것이다.
+    const externalManager = this.orderRepository.manager;
+    if (!(await this.walletManagedPredicate.isWalletManaged(orderId, externalManager))) {
+      throw new BadRequestException(
+        '이 주문은 발송건별 취소를 지원하지 않습니다(정산 정보 없음). 주문 전체 취소를 이용해 주세요.',
+      );
+    }
+
+    // 요청한 id 가 "지금 취소 가능한 것" 의 부분집합인지 확인한다.
+    // 부분 수용(가능한 것만 취소)하지 않는 이유: 요청자는 N건을 취소했다고 믿는데 실제로는 M건만
+    // 취소되고 환불도 M건분이라, 차이를 응답으로 알려줘도 이미 일부가 커밋된 뒤다. 전량 거부가 안전하다.
+    const cancelable = new Set(await this.findCancelableDeliveryIds(orderId, now));
+    // 정렬해 둔다 — 멱등키·로그·에러 메시지가 요청 순서에 흔들리지 않게 한다.
+    const requested = [...new Set(deliveryIds)].sort((a, b) => a - b);
+    const notCancelable = requested.filter((deliveryId) => !cancelable.has(deliveryId));
+
+    if (notCancelable.length > 0) {
+      // 돈이 오가는 요청의 거부인데 서버에 흔적이 전혀 없었다. 사유를 알 수 없더라도
+      // "어떤 주문의 어떤 id 가 걸렸는지" 는 남겨야 문의가 왔을 때 추적이 된다.
+      this.logger.warn(
+        `[DELIVERY_CANCEL_REJECT] orderId=${orderId} requested=[${requested.join(',')}] ` +
+          `notCancelable=[${notCancelable.join(',')}] cancelable=[${[...cancelable].join(',')}]`,
+      );
+      // 응답에 나열하는 id 는 앞에서 자른다 — deliveryIds 상한이 1000 이라 전량을 이어붙이면
+      // 에러 메시지 하나가 7KB 를 넘고, 화면에는 어차피 다 못 띄운다. 전량은 위 로그에 남는다.
+      const shown = notCancelable.slice(0, NOT_CANCELABLE_IDS_IN_MESSAGE);
+      const omitted = notCancelable.length - shown.length;
+      throw new BadRequestException(
+        `취소할 수 없는 발송건이 포함돼 있습니다: ${shown.join(', ')}` +
+          (omitted > 0 ? ` 외 ${omitted}건` : '') +
+          '. 이미 발송됐거나 발송 준비가 시작됐거나, 발송이 임박(10분 이내)했거나, ' +
+          '이 주문의 발송건이 아니거나, 외부 API 주문일 수 있습니다. ' +
+          '최신 발송 상태를 다시 조회해 주세요.',
+      );
+    }
+
+    // 조건부 UPDATE. 갱신 건수가 요청과 다르면 그 사이 발송 단계로 넘어간 것이므로 여기서 던진다(롤백).
+    await this.cancelDeliveriesIfStillWaiting(orderId, requested, cancelReason, now);
+
+    // 취소분 몫만 환불한다. 재원 배분(신용초과 → 여신 → 예치금)과 멱등은 RefundPoolService 가 담당한다.
+    //
+    // ※ externalManager 를 넘겨 같은 트랜잭션에서 실행한다(외부 API 취소 / CS 폐기와 동일한 방식).
+    //   refund-pool 의 lock 후 재조회가 평문 SELECT 라 호출자 격리수준을 따르는 기존 조건이 여기에도
+    //   적용된다. 이번 브랜치가 새로 만든 문제가 아니라 기존 호출부 4곳 중 3곳이 이미 같은
+    //   조건이며(외부API 취소 / CS 폐기 / 발송실패 환불), 여기만 고쳐도 해소되지 않으므로
+    //   현행을 따른다 — 격리수준을 올리려면 RefundPoolService 쪽에서 일괄로 해야 한다.
+    //
+    // ★ 멱등키 prefix 에 id 목록을 그대로 이어붙이면 안 된다.
+    //   저장 컬럼은 order_payment_refund_event.idempotency_key / wallet_transaction.idempotency_key 둘 다
+    //   varchar(120) 이고, RefundPoolService 가 이 prefix 뒤에 `:line:{id}:point_skipped_expired`(최대 27자)
+    //   까지 붙인다. id 를 나열하면 발송건 9건에서 120자를 넘겨 strict 모드는 Data too long(1406) 으로,
+    //   비-strict 모드는 잘린 키끼리 uq_refund_event_idempotency 충돌로 트랜잭션이 통째로 롤백된다.
+    //   "수신자 수십~수백 명 중 일부만 취소" 가 이 기능의 본래 용도라 그 규모에서 반드시 깨진다.
+    //   정렬된 집합의 해시를 쓰면 길이가 입력 크기와 무관하게 고정되고, 같은 집합을 다른 순서로 보내도
+    //   같은 키가 되어 재시도 멱등이 유지된다.
+    const requestDigest = createHash('sha1').update(requested.join(',')).digest('hex').slice(0, 16);
+
+    // ★ 과금 범위(회사 + 소속 사용자)를 **환불보다 먼저** 잠근다 (리뷰 P2 — 데드락).
+    //
+    //   아래에서 레거시 미러(회사 예치금 / 사용자 여신)를 증감 UPDATE 하는데, UPDATE 도 그 행에
+    //   락을 건다. 즉 이 경로의 실제 순서는 종전에 `주문 → 지갑 → 회사·사용자` 였다.
+    //   그런데 발송확정(deliveryConfirmed)은 `주문 → 회사·사용자(lockBillingScope) → 지갑` 이다.
+    //   지갑과 회사의 순서가 서로 반대라, 같은 회사의 **서로 다른 주문** 두 건이 동시에 돌면
+    //     T1(부분취소): 지갑 잡고 회사 대기
+    //     T2(발송확정): 회사 잡고 지갑 대기
+    //   로 교착된다. 주문 번호가 달라 주문 락으로는 걸러지지 않는다.
+    //
+    //   여기서 미리 잡아 순서를 발송확정과 같게 맞춘다. 잠그는 대상·총량은 종전과 같고
+    //   (어차피 아래 UPDATE 가 같은 행을 잠근다) 보유 구간만 환불 앞으로 당겨진다.
+    //   ※ 환불 구간에는 외부 통신이 없다(전부 DB 작업) — 보유 시간이 크게 늘지 않는다.
+    //   ※ 반환값을 쓰지 않고 아래에서 billingUser 를 다시 읽는 것은 의도다. 여기서는 순서를 맞추는
+    //     것이 목적이고, 재조회는 환불이 반영된 최신 값을 읽기 위한 것이다(READ COMMITTED).
+    await this.lockBillingScope(getBillingUserId(lockedOrder));
+
+    const refundResult = await this.refundPoolService.refund(
+      {
+        orderId,
+        // CS 폐기환불(DISCARD_REFUND) 과 구분한다 — 원장에서 "왜 돈이 돌아왔나" 를 사유별로 추적해야 한다.
+        eventType: OrderPaymentRefundEventType.CANCEL,
+        targetDeliveryIds: requested,
+        idempotencyKeyPrefix: `partial_cancel:${orderId}:${requestDigest}`,
+      },
+      externalManager,
+    );
+
+    // 멱등 hit 이면 원장만 재사용되고 돈은 움직이지 않는다. 그대로 성공 응답을 주면
+    // "취소됐고 환불됐다" 고 알리면서 실제로는 0원이 나간다 — 외부 API 취소도 같은 상황을 bail 로 처리한다.
+    if (refundResult.alreadyRefunded) {
+      this.logger.error(
+        `[DELIVERY_CANCEL_REFUND_NOOP] orderId=${orderId} ids=[${requested.join(',')}] ` +
+          `digest=${requestDigest} — 멱등 hit 으로 환불 미실행, 취소 롤백`,
+      );
+      throw new ConflictException(
+        '이미 처리된 취소 요청입니다. 발송 상태를 다시 조회한 뒤 남은 대기 건만 취소해 주세요.',
+      );
+    }
+
+    // ★ 환불 커버리지 검증. cancelDeliveriesIfStillWaiting 은 요청한 발송건을 전부 CANCEL 로 바꾸는데,
+    //   RefundPoolService 는 order_payment_allocation_line 이 있는 발송건만 환불한다(라인당 원장 1개).
+    //   정상 흐름은 발송건:라인 = 1:1 이라 항상 일치하지만, 라인이 없는 발송건(재발행 대체행 등)이
+    //   요청에 섞이면 그 건은 CANCEL 됐는데 환불은 안 되고(고객은 여전히 청구됨) 아무 에러도 없이
+    //   200 + "취소 완료" 로그가 나간다. 원장 수(=환불된 라인 수)와 요청 수가 다르면 롤백한다.
+    if (refundResult.ledgerIds.length !== requested.length) {
+      this.logger.error(
+        `[DELIVERY_CANCEL_REFUND_COVERAGE] orderId=${orderId} requested=${requested.length} ` +
+          `refundedLines=${refundResult.ledgerIds.length} ids=[${requested.join(',')}] ` +
+          `— 일부 발송건에 정산 라인이 없어 미환불, 취소 롤백`,
+      );
+      throw new ConflictException(
+        '취소 대상 중 환불 정보를 찾지 못한 발송건이 있어 처리하지 못했습니다. 아무것도 취소되지 않았습니다. 고객센터로 문의해 주세요.',
+      );
+    }
+
+    // 레거시 미러 역복원 (전체취소·외부API취소와 동일). RefundPoolService 는 legacy 컬럼을 건드리지
+    // 않으므로 이중복원이 아니다. 이게 빠져 있으면 지갑 잔액은 맞는데 고객사 화면·정산 화면의
+    // 예치금/여신이 취소 전 값에 멈춰 서로 어긋난다.
+    //
+    // ★ 재원별 금액은 refund 가 돌려준 값을 그대로 쓴다. `allocation(after) - allocation(before)` 로
+    //   역산하면 안 된다 — before 를 락 없이 읽은 뒤 refund 가 wallet/allocation 락을 잡기 때문에,
+    //   그 사이 같은 주문의 **다른 발송건을 CS 폐기 등이 환불하면 그 몫까지 차액에 섞인다**.
+    //   CS 쪽은 자기 몫을 이미 레거시 미러에 반영하므로, 부분취소가 남의 환불분을 한 번 더
+    //   회사 예치금/여신에 적립하는 과다적립이 났다(관리자 리뷰 P1).
+    //
+    // ★ 이 값이 "이번 호출의 몫" 인 근거는 **바로 위 alreadyRefunded 가드**다.
+    //   RefundPoolService.buildRefundResult 는 넘겨받은 원장 행을 합해서 돌려주는데,
+    //   호출부 7곳이 `기존 원장 → alreadyRefunded=true` / `이번에 만든 원장 → false` 로
+    //   예외 없이 짝지어져 있다. 즉 alreadyRefunded=false 면 반환 금액은 반드시 이번 호출 몫이다.
+    //   멱등 hit(=기존 원장 총액이 실려 옴)은 위에서 던져 여기까지 오지 않는다.
+    //   ⚠️ 그 가드를 지우면 재시도가 미러에 과다적립된다 — partial-cancel.spec 이 이를 고정한다.
+    const depositRefunded = refundResult.refundedDepositAmount;
+    const creditRefunded = refundResult.refundedCreditUsedAmount;
+    const excessRefunded = refundResult.refundedCreditExcessAmount;
+
+    const billingUserId = getBillingUserId(lockedOrder);
+    const billingUser = await this.userRepository.findOneOrFail({
+      where: { id: billingUserId },
+      relations: ['company'],
+    });
+    const isCompanyBalanceMode = billingUser.company?.balanceManagementType === 'COMPANY';
+
+    // ★ 두 컬럼 모두 DB 에서 증감시킨다(읽은 값 + 델타를 되쓰지 않는다).
+    //   balance / all_settle_amount 는 회사·유저 단위 공유 자원이라 이 주문의 락으로 보호되지 않는다.
+    //   같은 고객사의 서로 다른 주문 2건이 동시에 취소되면, 각자 락 밖에서 읽은 값에 자기 델타를 더해
+    //   되쓰므로 갱신 하나가 통째로 유실된다(lost update = 환불 한 건이 잔액에 반영되지 않음).
+    //   증감식을 DB 에 넘기면 UPDATE 가 행 락 안에서 현재값 기준으로 계산해 유실이 구조적으로 사라진다.
+    //   company.balance 는 종전에 save(엔티티 전체)라 다른 필드까지 stale 스냅샷으로 덮어쓸 위험도 있었다.
+    if (depositRefunded > 0 && isCompanyBalanceMode && billingUser.company) {
+      await this.userCompanyRepository
+        .createQueryBuilder()
+        .update()
+        .set({ balance: () => 'balance + :depositRefunded' })
+        .where('id = :id', { id: billingUser.company.id })
+        .setParameters({ depositRefunded })
+        .execute();
+    }
+    if (creditRefunded + excessRefunded > 0) {
+      // wallet path 는 user.balance 를 건드리지 않으므로 all_settle_amount 만 움직인다.
+      await this.userRepository
+        .createQueryBuilder()
+        .update()
+        .set({ allSettleAmount: () => 'all_settle_amount - :creditReturned' })
+        .where('id = :id', { id: billingUser.id })
+        .setParameters({ creditReturned: creditRefunded + excessRefunded })
+        .execute();
+    }
+
+    // 남은 발송건이 없으면 주문도 취소로 내린다. 남아 있으면 DELIVERY_CONFIRMED 를 유지해야
+    // 잔여분이 정상 발송되고, 전건 터미널이 됐을 때 배치가 완료·정산으로 넘긴다.
+    //
+    // ★ 취소 축(status)만 보면 안 된다 (197-16 리뷰 P1). 발송건의 생사는 **두 축**이다 —
+    //   status(취소됐나)와 coupon_status(폐기됐나). 폐기는 status 를 건드리지 않으므로,
+    //   폐기 후 재발행된 원본은 `status=COMPLETE / coupon_status=CANCEL` 로 남는다.
+    //   1건 주문을 재발행한 뒤 새 행을 부분취소하면 살아 있는 발송건은 0 인데 죽은 원본이
+    //   1 건으로 잡혀, 주문이 DELIVERY_CONFIRMED 로 남고 allocation 도 안 닫힌다(settleAmount 만 0).
+    //   정산 표시(buildSettlementDisplayLines)는 이미 그 원본을 빼고 있었다 — 술어를 공유해 맞춘다.
+    const remaining = await this.orderDeliveryRepository
+      .createQueryBuilder('od')
+      .innerJoin('od.orderProductMapping', 'opm')
+      .where('opm.orderId = :orderId', { orderId })
+      .andWhere('od.status != :canceled', { canceled: IOrderDeliveryStatus.CANCEL })
+      .andWhere(notDiscardedReplacedOriginPredicate('od'))
+      .getCount();
+
+    // ★ 고객 메일에 쓸 "앞으로 나갈 건수" 는 위 remaining 과 **다른 숫자**다. 재활용하면 안 된다.
+    //   remaining 은 "취소 안 된 것 전부" 라 COMPLETE·FAIL 처럼 이미 끝난 건도 센다. 주문을
+    //   취소 상태로 내릴지 판단하는 데는 그게 맞다(하나라도 남았으면 주문을 살려 둬야 한다).
+    //   그러나 메일은 "남은 건은 예정대로 발송됩니다" 라고 안내하므로 **아직 안 나간 것만** 세야 한다.
+    //   이 티켓의 대표 시나리오가 "일부 발송완료 + 일부 대기" 라, 재활용하면 이미 받은 쿠폰·실패 건까지
+    //   "앞으로 발송" 으로 안내하는 거짓 메일이 고객에게 나간다(발송완료 1 + 실패 1 + 대기 1 → "3건 발송 예정").
+    //   ★ 여기에도 같은 술어를 건다. 폐기 후 재발행은 원본이 WAIT 인 채로 남을 수 있는데(발송 전 폐기),
+    //     그러면 죽은 원본과 그 자리를 채운 새 행이 **둘 다** 세어져 "발송 예정 2건" 이라고 안내한다.
+    const remainingWaiting = await this.orderDeliveryRepository
+      .createQueryBuilder('od')
+      .innerJoin('od.orderProductMapping', 'opm')
+      .where('opm.orderId = :orderId', { orderId })
+      .andWhere('od.status = :wait', { wait: IOrderDeliveryStatus.WAIT })
+      .andWhere(notDiscardedReplacedOriginPredicate('od'))
+      .getCount();
+
+    // ★ 주문의 정산금액을 "취소 반영 후 값" 으로 맞춘다.
+    //   정산정보 입력/수정(createOrderSettle·updateOrderSettle)은 발송확정 이후 주문에 대해
+    //   `difference = order.settleAmount - 재계산금액` 만큼 잔액을 조정한다. 재계산 쪽
+    //   (buildSettlementDisplayLines)은 이제 취소된 발송건을 빼므로, settleAmount 를 원액으로 두면
+    //   그 차이가 통째로 "돌려줄 돈" 으로 잡혀 이미 환불한 취소분이 한 번 더 지급된다.
+    //   부분취소가 "발송확정 + 취소된 발송건" 조합의 첫 생산자라 이 경로는 이번에 새로 열렸다.
+    //
+    //   ★ settleAmount -= totalRefundedAmount(환불 실지급액) 로 빼면 안 된다. 환불액의 카드할증은
+    //     payable base(gross - 포인트) 기준인데(refund-pool), 정산 재계산의 할증은 gross 기준이라,
+    //     카드할증+포인트 병용 주문에서 그 차이(할증율 × 취소분 포인트)만큼 settleAmount 가 높게 남아
+    //     이후 정산수정 difference 가 소액 양수 → 취소분 일부가 다시 환불된다. 정산수정과 "동일한 함수·
+    //     동일한 로딩" 으로 재계산해 덮으면 difference 가 정확히 0 이 된다(할증·포인트·반올림 무관).
+    if (remaining === 0) {
+      // 전건 취소 — 전체취소와 같은 종단 상태를 만든다(다른 코드가 보는 조합을 늘리지 않는다).
+      //
+      // ★ allocation 도 전체취소와 같은 표현으로 닫는다. 이게 빠지면 released_at 이 NULL 로 남아
+      //   isWalletManaged(= EXISTS(allocation WHERE order_id=? AND released_at IS NULL)) 가 계속
+      //   true 인 조합 — "주문은 취소됐는데 지갑은 아직 점유 중" — 이 새로 생긴다. 같은 종단 사건이
+      //   요청 형태(전체취소 vs 대기건 전량 부분취소)에 따라 두 가지 wallet 표현으로 갈리면
+      //   사후 스윕·정산이 둘을 다르게 본다. UI 의 "전체 선택" 은 자연스러운 조작이라 반드시 도달한다.
+      //
+      //   여기서 돈은 움직이지 않는다. 위에서 발송건별로 이미 전액 환불했고(커버리지 가드가 보장),
+      //   releaseConfirmation 은 자원별로 max(0, used - restored) 만, 포인트도
+      //   (usedAmount - restoredAmount - skippedExpiredAmount) 만 복구하므로 전부 0 이다.
+      //   즉 이 호출의 효과는 released_at/release_reason 기록과 INITIAL attempt 의 ROLLED_BACK 정리뿐이다.
+      await this.orderConfirmationReleaseService.releaseConfirmation(
+        { orderId, reason: 'order_cancel_partial_all', failedDeliveryIds: null },
+        externalManager,
+      );
+      lockedOrder.status = IOrderStatus.DELIVERY_CANCEL;
+      lockedOrder.cancelReason = cancelReason;
+      lockedOrder.canceledAt = now;
+      lockedOrder.settleAmount = 0;
+      lockedOrder.isSettleBalance = false;
+      lockedOrder.isCreditExcess = false;
+    } else {
+      // CAS 로 status=CANCEL 이 이미 반영된 발송건을 같은 트랜잭션에서 재조회해 재계산한다
+      // (정산수정과 동일한 계산 함수 calculateOrderSettlementAmount + 부분취소 전용 로더).
+      //
+      // ※※ [별도 티켓 — 추적 문서: docs/followup-settleamount-basis-inconsistency.md]
+      //   (리뷰 LOW 반영: 주석에만 남기면 사라지므로 추적 문서 경로를 코드에 박아 둔다.
+      //    티켓 번호가 발급되면 이 줄에 함께 적을 것.)
+      //   settleAmount 의 basis 가 코드베이스에서 통일돼 있지 않다.
+      //   - 발송확정(wallet 최신, order.service deliveryConfirmed):
+      //       settleAmount = allocation.payableSettlementAmount
+      //       = (gross - 포인트) + 카드할증(gross - 포인트)   ← 포인트 제외, 할증 base 도 포인트 뺀 값
+      //   - 정산수정(createOrderSettle/updateOrderSettle, 살아있는 경로):
+      //       settleAmount = calculateOrderSettlementAmount = gross + 카드할증(gross)   ← 포인트 포함
+      //   포인트 쓴 주문에서 두 basis 는 (포인트값 + 할증×포인트)만큼 다르다. 이 불일치는 부분취소와
+      //   무관한 기존 사안이며(포인트 주문을 발송확정 후 정산수정하면 원래부터 difference 가 어긋날 수
+      //   있음), 실제 잔액 오조정까지 가는지는 "정산수정 difference 블록이 이 wallet 주문들에 실제로
+      //   도는지 + 도면 포인트만큼 오조정되는지" 를 정산 담당과 확인해야 한다. → 별도 티켓.
+      //
+      //   여기서 wallet 관례(payableSettlementAmount)가 아니라 calculateOrderSettlementAmount 를
+      //   쓰는 이유: 부분취소발 이중환불을 실제로 일으키는 것이 정산수정의 difference 블록이고, 그 블록이
+      //   비교 기준으로 쓰는 함수가 바로 calculateOrderSettlementAmount 다. 같은 함수로 맞춰야
+      //   difference = 0 이 되어 이중환불이 사라진다. payableSettlementAmount 로 맞추면 basis 가 어긋나
+      //   이중환불이 되살아난다. 즉 "버그를 일으키는 그 경로" 와 basis 를 일치시키는 것이 정답이다.
+      //   (basis 통일은 위 별도 티켓에서 정산수정·발송확정을 한꺼번에 정리하는 게 맞다.)
+      //   ★ 로더는 부분취소 전용(getOrderProductsForCancelSettlement)을 쓴다. 정산수정과 공유하는
+      //     innerJoin 로더를 쓰면 주문 이후 소프트삭제된 상품의 매핑이 통째로 빠져 settleAmount 가
+      //     과소(전부 삭제면 0)로 저장되고, 이후 전체취소가 그 값을 환불액으로 읽어 무·과소환불이 된다.
+      //     자세한 근거는 그 메서드의 주석 참조.
+      const survivingMappings = await this.getOrderProductsForCancelSettlement(orderId);
+      const recomputedSettleAmount = calculateOrderSettlementAmount(
+        { cardSurchargeApplied: lockedOrder.cardSurchargeApplied, orderProductMappings: survivingMappings },
+        lockedOrder.cardSurchargeApplied,
+      );
+
+      // 단가를 **복원할 근거가 없는** 매핑이 있으면 던져서 롤백한다.
+      //
+      // readLineProductView 는 snapshotProductPrice ?? product?.price ?? 0 순으로 폴백하는데,
+      // 스냅샷도 없고(스냅샷 도입 이전 주문) 상품도 소프트삭제된 매핑은 마지막 0 으로 떨어진다.
+      // 그 0 을 조용히 저장하면 이후 전체취소가 그것을 환불액으로 읽어(신흐름 refundAmount =
+      // order.settleAmount) "취소는 되고 환불은 0원" 이 된다 — 돈이 걸린 침묵이라 막는다.
+      // 이 주문은 전체취소로 처리하면 된다(그 경로는 settleAmount 를 덮지 않은 원본값으로 환불한다).
+      //
+      // ★ 판정 기준을 "재계산 결과가 0" 으로 두면 안 된다. 정당한 0원 정산 주문(무료 프로모션,
+      //   전액할인)이 같은 값을 내는데, 그걸 막으면 그 주문은 전체취소로 밀려나고 전체취소는
+      //   refundAmount(0) > 0 단락평가로 wallet 경로를 건너뛰어 allocation.released_at 이 NULL 로
+      //   남는다 — 이 브랜치가 막으려던 바로 그 drift 로 유도된다. 그래서 "값이 0인가" 가 아니라
+      //   "근거가 없는가"(스냅샷·상품 둘 다 부재)로 좁힌다.
+      const unresolvableMappings = survivingMappings.filter(
+        (mapping) => mapping.snapshotProductPrice == null && mapping.product == null,
+      );
+      if (unresolvableMappings.length > 0) {
+        this.logger.error(
+          `[DELIVERY_CANCEL_SETTLE_RECALC] orderId=${orderId} 잔여=${remaining}건 — 단가 복원 근거가 없는 ` +
+            `매핑 ${unresolvableMappings.length}건(스냅샷·상품 모두 부재) mappingIds=` +
+            `[${unresolvableMappings.map((mapping) => mapping.id).join(',')}] → 롤백(무·과소환불 차단)`,
+        );
+        throw new InternalServerErrorException(
+          '취소 후 정산금액을 계산하지 못해 처리하지 못했습니다. 아무것도 취소되지 않았습니다. ' +
+            '주문 전체 취소를 이용하거나 고객센터로 문의해 주세요.',
+        );
+      }
+      lockedOrder.settleAmount = recomputedSettleAmount;
+
+      // ★ 여기서 isSettleBalance / isCreditExcess 는 **일부러 건드리지 않는다** (1차 리뷰 LOW —
+      //   "remaining === 0 분기와 비대칭" 지적에 대한 답. 모양이 다른 것은 상황이 다르기 때문이다).
+      //
+      //   이 플래그는 두 가지를 겸한다. 이름만 보면 앞엣것만 같지만 실제 판정은 뒤엣것으로 쓰인다.
+      //     ① 결제 수단   : 예치금(선입금)으로 냈나(true) / 여신으로 냈나(false)
+      //     ② 미환불 표시 : 아직 돌려주지 않았다. 환불하고 나면 내려서 이중 환불을 막는다.
+      //   ②의 증거는 전체취소 legacy 분기다 — 예치금으로 돌려준 **직후** isSettleBalance=false 로
+      //   내린다(:6576-6582). 수단이 바뀐 것이 아니라 "처리 끝" 을 적는 것이다.
+      //
+      //   그래서 판단 기준은 "수단이 바뀌었나" 가 아니라 **"이 주문에 아직 돌려줄 게 남았나"** 다.
+      //     전체취소            : 전액 환불 → 내린다
+      //     부분취소(잔여 있음) : 남은 건은 아직 안 돌려줬다 → **내리면 안 된다**  ← 여기
+      //     부분취소(잔여 0)    : 결과적으로 전액 환불 → 전체취소와 같은 종단 상태로 내린다
+      //
+      //   내리면 실제로 돈이 잘못 간다. 이 플래그를 읽는 곳이 셋이고 전부 "어디로 돌려줄까" 를 정한다:
+      //     · CS 폐기환불   customer.service.service (shouldRestoreBalance = isSettleComplete || isSettleBalance)
+      //     · 배치 실패환불 delivery.batch.service (같은 판정)
+      //     · 자동 정산확정 delivery.batch.service (isSettleBalance=true 만 SETTLE_COMPLETE)
+      //   예치금으로 낸 주문에서 이 값을 false 로 내리면, 남은 발송건을 CS 가 폐기환불할 때
+      //   예치금을 복원하지 않고 여신(allSettleAmount)을 깎는다 — 고객사 예치금은 안 돌아온다.
+    }
+    await this.orderRepository.save(lockedOrder);
+
+    // 금액을 남긴다 — 돈이 오간 엔드포인트에서 "얼마를 돌려줬나" 를 원장 조회 없이 답할 수 있어야 한다.
+    // ★ refunded(=totalRefundedAmount)는 gross 기준 총액이라 **포인트 복구분을 포함**한다.
+    //   괄호 안 재원별 분해는 allocation 델타에서 읽은 값이라 포인트가 빠져 있어, 포인트를 쓴 주문에서는
+    //   합이 총액과 다르다. 차이는 포인트 복구분이다(둘 다 정확한 값 — 기준이 다를 뿐).
+    this.logger.log(
+      `[DELIVERY_CANCEL] 부분취소 완료 orderId=${orderId} canceled=${requested.length}건 ` +
+        `refunded=${refundResult.totalRefundedAmount}원(포인트 포함 총액) ` +
+        `내역: 예치금=${depositRefunded} 여신=${creditRefunded} 신용초과=${excessRefunded} ` +
+        `ids=[${requested.join(',')}] 잔여=${remaining}건`,
+    );
+
+    // 고객사 직접주문(DIRECT) 은 전체취소와 마찬가지로 통지한다 — 돈이 돌아갔는데 외부에 기록이
+    // 남지 않으면 안 된다.
+    // ★ 잔여가 0이면(대기 건을 전량 취소) 위에서 주문을 DELIVERY_CANCEL 로 내려 사실상 전체취소다.
+    //   이때 부분취소 문안("일부 취소, 남은 0건")을 보내면 고객에게 모순된 안내가 나가므로
+    //   전체취소 문안("주문이 취소되었습니다")으로 보낸다. 잔여가 있으면 부분취소 전용 문안.
+    // ★ @Transactional() 안이므로 커밋 후 발송 — tx 미점유, 롤백 시 미발송. best-effort.
+    if (isDirectCustomerCancelTarget(lockedOrder, billingUser)) {
+      runOnTransactionCommit(() => {
+        if (remaining === 0) {
+          void this.orderCancelNotificationService.notifyDirectOrderCancel(lockedOrder, billingUser);
+        } else {
+          void this.orderCancelNotificationService.notifyDirectOrderPartialCancel(lockedOrder, billingUser, {
+            canceledCount: requested.length,
+            // 메일은 "예정대로 발송" 안내라 대기 건수만 넘긴다(remaining 은 이미 끝난 건도 센다).
+            waitingCount: remainingWaiting,
+            cancelReason,
+            canceledAt: now,
+          });
+        }
+      });
+    }
+
+    // 돈이 오간 요청이므로 결과를 응답으로도 돌려준다 — 로그에만 남기면 클라이언트가
+    // "무엇이 취소됐고 얼마가 돌아갔는지" 를 대사할 방법이 없다.
+    // 전량 거부 정책상 canceledIds 는 항상 요청 집합과 같지만(부분 성공 없음), 정렬·중복제거된
+    // 실제 처리 대상을 그대로 내려 클라이언트가 자기 요청과 대조할 수 있게 한다.
+    return {
+      canceledIds: requested,
+      refundedAmount: refundResult.totalRefundedAmount,
+      remaining,
+    };
+  }
+
+  /**
+   * ★ READ COMMITTED 로 고정한다 (리뷰 P1). 기본값(MySQL REPEATABLE READ)이면 자금이 어긋난다.
+   *
+   * REPEATABLE READ 는 트랜잭션의 **첫 비잠금 SELECT** 시점 스냅샷을 끝까지 보여준다. 잠금 읽기
+   * (FOR UPDATE)와 UPDATE 는 최신을 보므로, 한 트랜잭션 안에서 두 종류가 섞이면 앞뒤가 어긋난다.
+   * 이 경로는 정확히 그 형태다 — 락으로 직렬화해 놓고, 정작 판단은 비잠금 SELECT 로 한다.
+   *
+   * 실제로 어긋나는 곳:
+   *  1) 주문 행을 두 번 읽는다. 잠금 조회(존재확인+직렬화)와 그래프 조회(실제 사용)가 분리돼 있는데,
+   *     뒤엣것이 스냅샷을 본다. 락을 기다리는 동안 부분취소가 settleAmount 를 낮추고 커밋해도
+   *     낮아지기 전 값을 읽어 그 금액으로 환불한다.
+   *  2) 취소 후 정산 재계산이 다른 발송건 상태를 비잠금으로 읽는다. 같은 주문의 다른 발송건을
+   *     먼저 취소한 트랜잭션이 커밋됐어도 그 건을 아직 살아 있는 것으로 세어 금액을 부풀린다.
+   *  3) RefundPoolService 는 "락 잡고 → 다시 읽어 중복 확인" 방식이라 호출자에게 READ COMMITTED 를
+   *     명시적으로 요구한다(refund-pool.service.ts). 외부 manager 를 넘기는 이 경로가 그 요구를
+   *     지키지 않고 있었다 — 스냅샷을 보면 재확인이 옛 값을 봐서 중복 확인이 무력화된다.
+   *
+   * 대안으로 "잠금 읽기를 먼저 두어 스냅샷 시점을 뒤로 미루기" 도 가능하지만, 그건 **어디에도 적혀
+   * 있지 않은 순서 규칙**("락보다 앞에 비잠금 SELECT 를 두지 마라")에 계속 기대는 방식이다.
+   * 실제로 소유권 검증 한 줄이 앞에 들어가면서 그 규칙이 깨졌던 전례가 있다. 격리수준으로 내리면
+   * 스냅샷 자체가 없어져 순서에 의존하지 않는다.
+   *
+   * 안전성 근거: 이 트랜잭션이 직접 수행하는 읽기 13곳을 전수 확인했고, "같은 값을 두 번 읽고
+   * 동일함을 전제" 하는 코드는 없다. 두 번 읽는 두 곳(취소가능 조회↔CAS, 잠금조회↔그래프조회)은
+   * 모두 값이 달라질 수 있다는 전제로 쓰여 있어(affected 대조 / 위 1번) 낮추면 오히려 정확해진다.
+   */
+  @Transactional({ isolationLevel: IsolationLevel.READ_COMMITTED })
   async deliveryCancel(user: ILoginUserInfo, getBody: OrderDeliveryCancelReqDto) {
-    const { id, cancelReason } = getBody;
+    const { id, cancelReason, deliveryIds } = getBody;
+
+    // ★ 소유권(조회범위) 검증 — 이 엔드포인트는 클래스 가드가 JWT 유효성만 보고, 서비스의
+    //   order.userId 조건도 주석 처리돼 있어 **인증된 아무나 주문 id 만 알면 타 테넌트의 예약
+    //   발송을 취소**시킬 수 있었다(관리자 리뷰 P1 보안). 자금·비가역 경로이므로 조회 API 와
+    //   같은 기준(applyViewScopeFilter)으로 막는다.
+    //   ※ canTransitionDelivery(발송확정 권한)를 쓰지 않는 이유: 그 술어는 SUPER/OPERATION 전용이라
+    //     자기 주문을 취소하던 고객사(CORPORATE_ADMIN)가 전부 막혀 동작이 바뀐다. 여기서 필요한 것은
+    //     "남의 주문을 못 건드린다" 이므로 조회범위 기준이 정확하고 기존 동작을 보존한다.
+    //   ※ 전체취소·부분취소 **양쪽 앞**에 둔다 — 부분취소는 user 를 받지도 않아 검사 자체가 없었다.
+    //   ※ 같은 화면의 인접 액션(reviewComplete·deliveryConfirmed)은 canTransitionDelivery(권한 기준)로
+    //     판정한다. 여기와 술어가 다른 것은 **의도된 차이**다 — 위 이유로 취소는 권한이 아니라 조회범위를
+    //     본다. 다만 결과적으로 "스코프 밖 직발송 건을 운영자가 발송확정은 되는데 취소는 안 되는" 조합이
+    //     생긴다(되돌릴 수 없는 쪽이 더 느슨한 역전). UI 에 그 id 획득 경로가 없어 지금은 드러나지
+    //     않지만, 두 술어를 통일한다면 그건 발송확정 쪽을 조이는 방향이어야 한다.
+    //   ※ 거부는 403 이 아니라 400('주문이 존재하지 않습니다') 이다 — 조회 API 와 같은 응답이라
+    //     "그 주문이 존재하는지" 자체를 알려주지 않는다(id 순회로 존재 여부를 캐는 것까지 막는다).
+    await this.assertOrderInViewScope(user, id);
+
+    // deliveryIds 를 준 요청은 부분취소 경로로 보낸다.
+    // 주지 않으면 아래 전체취소가 종전과 동일하게 동작한다 — 기존 프론트는 영향을 받지 않는다.
+    if (deliveryIds && deliveryIds.length > 0) {
+      return this.partialDeliveryCancel(id, deliveryIds, cancelReason);
+    }
+
+    // 주문 행 단독 잠금 (deliveryConfirmed 와 동일 패턴).
+    //  - 조인을 건 채로 FOR UPDATE 를 걸면 product 행까지 잠겨, 같은 상품을 쓰는 무관한 주문들이
+    //    직렬화된다. 그래서 잠금 쿼리와 그래프 로딩 쿼리를 분리한다.
+    //  - 락 위치가 맨 앞인 것이 중요하다. 종전에는 order 행 잠금이 맨 끝 save() 시점에야 잡혀
+    //    "wallet → order" 순서였고, 이는 "order → wallet" 으로 잡는 정산확정
+    //    (tryAtomicSettleConfirm)·발송확정과 순서가 역전돼 데드락 소지가 있었다.
+    const lockedOrder = await this.orderRepository
+      .createQueryBuilder('order')
+      .setLock('pessimistic_write')
+      .where('order.id = :id', { id })
+      .getOne();
+
+    if (!lockedOrder) {
+      throw new BadRequestException('해당 주문건은 존재하지 않습니다.');
+    }
 
     const order = await this.orderRepository
       .createQueryBuilder('order')
@@ -5644,18 +6606,62 @@ export class OrderService {
     const now = new Date();
     // 취소 기준 시각: 예약 mapping들의 sendRequestAt 중 가장 이른 시각 사용
     // 상품 행별 예약시각이 서로 다를 수 있으므로, 가장 임박한(이른) 발송 건을 기준으로 보호한다.
+    //
+    // ★ 이미 전부 취소된 상품행은 제외한다. 그 행의 예약시각은 보호할 대상이 없는데도 최솟값을
+    //   과거로 끌어내려, 여유가 충분한 나머지 예약건까지 영구히 취소 불가로 만든다(리뷰 P2).
+    //   부분취소가 "예약시각은 지났는데 발송은 안 된 행" 을 처음 만들면서 생긴 조합이다.
+    const activeMappingIds = await this.findMappingIdsWithActiveDeliveries(order.id);
     const reserveSendTimes = (order.orderProductMappings ?? [])
       .filter((mapping) => mapping.sendType === 'RESERVE' && mapping.sendRequestAt)
+      .filter((mapping) => activeMappingIds.has(mapping.id))
       .map((mapping) => mapping.sendRequestAt!.getTime());
-    const sendRequestAtTime = reserveSendTimes.length > 0 ? Math.min(...reserveSendTimes) : 0;
+
+    // ★ 보호할 예약건이 하나도 없으면 컷오프는 **적용 대상이 아니다**(null).
+    //   종전에는 이 자리에 0(1970년)을 넣어 "지난 지 한참" 으로 계산했다. 예약행이 하나도 없는
+    //   주문에서는 어차피 위 countIrreversibleDeliveries 가 먼저 막아 드러나지 않았지만,
+    //   취소된 행을 걸러내기 시작하면 "예약행이 전부 취소됨" 상태가 새로 만들어져 같은 자리에서
+    //   또 영구 차단이 난다 — 고치려던 결함을 자리만 옮기는 꼴이다.
+    //   시각이 없다는 것과 시각이 과거라는 것은 다른 사실이므로 값도 다르게 둔다.
+    const sendRequestAtTime = reserveSendTimes.length > 0 ? Math.min(...reserveSendTimes) : null;
     const nowTime = now.getTime();
-    const diffMs = sendRequestAtTime - nowTime;
+    const diffMs = sendRequestAtTime === null ? null : sendRequestAtTime - nowTime;
     const tenMinutesMs = 10 * 60 * 1000;
 
     if (order.status === IOrderStatus.DELIVERY_REQUEST || order.status === IOrderStatus.REVIEW_COMPLETE) {
       // 주문완료 또는 검토완료 상태에서 취소 허용
     } else if (order.status === IOrderStatus.DELIVERY_CONFIRMED) {
-      if (diffMs < tenMinutesMs) {
+      // ★ 이미 나간 건이 섞여 있으면 주문 전체 취소를 거부한다.
+      //
+      // 아래 실행부는 주문의 모든 발송건을 상태 무관하게 CANCEL 로 덮고 settleAmount 전액을
+      // 환불한다. 그런데 바로 위 10분 게이트는 sendType === 'RESERVE' 인 상품행만 보므로,
+      // 즉시발송 상품행(이미 발송완료) + 예약 상품행(아직 대기) 이 섞인 주문은 게이트를
+      // 통과한다 — 예약분의 여유(예: 하루 뒤)만 보고 판정하기 때문이다.
+      // 그 결과 이미 고객 손에 간 쿠폰이 CANCEL 로 덮이고 그 몫까지 환불된다(응답 200, 로그 없음).
+      //
+      // 발송확정 이후에만 검사하면 된다. 그 전(DELIVERY_REQUEST/REVIEW_COMPLETE)에는
+      // 발송건이 아직 TEMP 라 나간 것이 있을 수 없고 잔액 차감도 없다.
+      //
+      // ※ 이 문장은 **일반 주문에서만 참이다** (197-16 재리뷰 F2 — 원래 있던 조건, 이번 범위 밖).
+      //   외부API 주문은 DELIVERY_REQUEST 로 생성되고(external.api.service.ts:978·2411) 발송건이
+      //   곧바로 COMPLETE + bar_code 가 되므로 이 분기를 아예 안 지난다. 종전에는 그 행까지
+      //   CANCEL 로 덮고 전액 환불했고(조용한 돈 사고), 지금은 아래 CAS 가 그 행을 건너뛰고
+      //   사후검사가 409 를 던진다 — 즉 **막히긴 하는데 이 API 로는 다시 취소되지 않는다.**
+      //   메시지도 일시적 경합처럼 읽혀 운영자가 재시도하게 된다. 고치려면 이 사전 조회를
+      //   status 분기 밖으로 빼야 하는데, 거부 문구·운영 흐름이 함께 바뀌므로 후속으로 분리한다.
+      const irreversible = await this.countIrreversibleDeliveries(order.id);
+      if (irreversible > 0) {
+        this.logger.error(
+          `[DELIVERY_CANCEL] orderId=${order.id} 되돌릴 수 없는 발송건 ${irreversible}건 포함 — 주문 전체 취소 거부`,
+        );
+        throw new ConflictException(
+          `이미 발송됐거나 쿠폰이 발급된 발송건이 ${irreversible}건 있어 주문 전체를 취소할 수 없습니다. ` +
+            '발송 결과를 확인한 뒤 고객센터를 통해 개별 처리해 주세요.',
+        );
+      }
+
+      // diffMs === null 이면 아직 살아 있는 예약건이 없다는 뜻이라 이 게이트의 판정 대상이 아니다.
+      // (이미 나간 건은 바로 위 countIrreversibleDeliveries 가 막는다 — 여기서 또 막을 이유가 없다.)
+      if (diffMs !== null && diffMs < tenMinutesMs) {
         throw new BadRequestException('주문 취소는 발송 요청 시간 10분 전까지만 가능합니다.');
       }
     } else {
@@ -5697,8 +6703,29 @@ export class OrderService {
     // Wallet Cutover Bundle (PR2-005) — wallet-managed 주문은 OrderConfirmationReleaseService 로 일괄 보상.
     // 라우팅: allocation 존재 + released_at IS NULL → wallet path (flag mode 무관, allocation routing > flag).
     const externalManager = this.orderRepository.manager;
-    const isWalletManaged =
-      refundAmount > 0 && (await this.walletManagedPredicate.isWalletManaged(order.id, externalManager));
+    // ★ 여기에 refundAmount > 0 을 걸면 안 된다(리뷰 P2). "지갑을 쓰는 주문인가" 와 "돌려줄 돈이
+    //   있는가" 는 다른 질문인데, && 로 묶으면 0원 주문이 지갑 경로 자체를 건너뛴다.
+    //   그러면 releaseConfirmation 이 호출되지 않아 allocation.released_at 이 NULL 로 남는다 —
+    //   주문·발송건은 CANCEL 인데 지갑은 "아직 진행 중" 인 상태가 되고, isWalletManaged 판정이
+    //   계속 true 라 이후 경로들이 이 주문을 미결로 본다. INITIAL attempt 도 닫히지 않는다.
+    //   0원이 나오는 실제 경로: 무료·100% 할인 잔여분, 부분취소 후 남은 것이 0원인 경우.
+    //   금액 판단은 releaseConfirmation 이 이미 한다 — restore 금액이 0 이면 지갑을 건드리지 않고
+    //   released_at 만 찍는다(order-confirmation-release.service.ts: `if (restoreDeposit > 0)`).
+    //   즉 0원에 호출해도 돈은 움직이지 않고 도장만 찍힌다.
+    const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(order.id, externalManager);
+
+    // ★ 레거시 미러(회사 예치금 / 사용자 예치금·여신)에 **얼마를 움직였는지**만 모은다 (197-16 리뷰 P1).
+    //   종전에는 엔티티 필드를 메모리에서 증감한 뒤 save 로 통째 저장했다. 그러면 UPDATE 가
+    //   `balance = 60000` 같은 **절대값**이 되는데, 그 값은 트랜잭션 시작 전에 락 없이 읽은 것이다.
+    //   같은 고객사의 **서로 다른 주문** 두 건이 동시에 취소되면 둘 다 같은 옛 값을 읽고 각자
+    //   자기 델타를 더해 되쓰므로, 나중에 커밋한 쪽이 앞의 반영을 통째로 덮는다(lost update).
+    //   지갑 원장은 두 건 다 맞는데 화면·정산 잔액만 한 건분 모자란다 — 에러도 로그도 없다.
+    //   아래에서 `balance = balance + :delta` 로 넘기면 DB 가 행 락 안에서 현재값 기준으로
+    //   계산하므로 순서와 무관하게 정확해진다(부분취소가 이미 쓰는 방식과 통일).
+    //   ※ 메모리 증감은 그대로 둔다 — 취소 통지 등 뒤쪽 코드가 oneUser 를 그대로 쓴다.
+    let companyBalanceDelta = 0;
+    let userBalanceDelta = 0;
+    let allSettleDelta = 0;
 
     if (isWalletManaged) {
       const allocation = await externalManager.findOne(OrderPaymentAllocationEntity, {
@@ -5723,8 +6750,10 @@ export class OrderService {
       // legacy mirror reverse (wallet path — user.balance 미기록).
       if (isCompanyBalanceMode && oneUser.company) {
         oneUser.company.balance += depositRefund;
+        companyBalanceDelta += depositRefund;
       }
       oneUser.allSettleAmount -= creditRefund + excessRefund;
+      allSettleDelta -= creditRefund + excessRefund;
       order.settleAmount = 0;
       order.isSettleBalance = false;
       order.isCreditExcess = false;
@@ -5732,8 +6761,10 @@ export class OrderService {
       if (order.isSettleBalance) {
         if (isCompanyBalanceMode && oneUser.company) {
           oneUser.company.balance += refundAmount;
+          companyBalanceDelta += refundAmount;
         } else {
           oneUser.balance += refundAmount;
+          userBalanceDelta += refundAmount;
         }
         order.isSettleBalance = false;
         // legacy deposit sync (!isWalletManaged 분기 전용 — wallet path 는 위 releaseConfirmation 이 예치금 복구).
@@ -5747,6 +6778,7 @@ export class OrderService {
         });
       } else {
         oneUser.allSettleAmount -= refundAmount;
+        allSettleDelta -= refundAmount;
         // legacy credit sync (여신복구 — allSettleAmount 감소를 여신 잔액에 반영).
         await this.legacyWalletCreditSyncService.syncCredit(externalManager, {
           billingUserId,
@@ -5762,19 +6794,104 @@ export class OrderService {
     order.cancelReason = cancelReason;
     order.canceledAt = new Date();
     await this.orderRepository.save(order);
-    await this.orderDeliveryRepository.update(
-      { orderProductMappingId: In(orderProductMappingIdList) },
-      { status: IOrderDeliveryStatus.CANCEL },
-    );
-    if (isWalletManaged) {
-      // wallet path 는 user.balance 를 건드리지 않으므로 update 로 좁혀 stale overwrite 차단.
-      await this.userRepository.update({ id: oneUser.id }, { allSettleAmount: oneUser.allSettleAmount });
-    } else {
-      await this.userRepository.save(oneUser);
+    // 발송건에도 취소 시각·사유를 남긴다. 부분취소만 채우고 전체취소는 비워두면
+    // canceled_at IS NULL 이 "미취소" 와 "주문 전체취소" 두 가지를 뜻하게 되어,
+    // 그 컬럼으로 취소 여부를 판정하는 코드가 전체취소 건을 통째로 놓친다.
+    //
+    // ★ 이미 CANCEL 인 행은 건드리지 않는다. 부분취소로 먼저 취소된 발송건이 있는 주문을
+    //   이어서 전체취소하면(도달 가능 — 부분취소는 주문을 DELIVERY_CONFIRMED 로 남긴다),
+    //   조건 없는 UPDATE 가 그 건의 사유·시각을 전체취소 값으로 덮어써 발송건별 취소이력이
+    //   사라진다. 발송건 단위 컬럼을 만든 이유(주문 단위 컬럼은 마지막 사유가 앞선 사유를
+    //   덮어쓴다)가 그대로 재현되는 셈이다. 로컬 QA 에서 실제로 재현했다.
+    //   soft-delete 된 행도 제외한다 — update() 는 deleted_at 필터를 자동 적용하지 않는다.
+    //
+    // ★ 사전 조회(countIrreversibleDeliveries)는 **안전의 근거가 아니다** (197-16 리뷰 P1).
+    //   그건 그 순간의 사진이라, 0 건을 확인한 직후에도 발송 배치가 WAIT 행을 집어(claimed_at)
+    //   외부 발급·발송을 시작할 수 있다. 그래서 갱신이 같은 조건을 **다시** 본다(술어 공유).
+    //   ※ 조건이 늘었으므로 정상 취소가 막히지 않는지가 관건인데, 여기 걸리는 행은 사전 조회도
+    //     거부하는 행과 같다(같은 술어). 늘어난 건 "그 사이에 생긴 것" 뿐이다.
+    // ★ 변형 lease 도 함께 본다. 부분취소 CAS 와 같은 이유이며(그쪽 SET 주석 참조), 통과시킨
+    //   stale lease 는 SET 으로 탈취해 뒤늦게 돌아온 좀비의 쓰기를 affected=0 으로 만든다.
+    const mutationStale = new Date(Date.now() - MUTATION_CLAIM_STALE_MS);
+    await this.orderDeliveryRepository
+      .createQueryBuilder()
+      .update(OrderDeliveryEntity)
+      .set({
+        status: IOrderDeliveryStatus.CANCEL,
+        canceledAt: order.canceledAt,
+        cancelReason,
+        mutationClaimedAt: order.canceledAt,
+      })
+      .where('orderProductMappingId IN (:...mappingIds)', { mappingIds: orderProductMappingIdList })
+      .andWhere('status != :canceled', { canceled: IOrderDeliveryStatus.CANCEL })
+      .andWhere('deletedAt IS NULL')
+      .andWhere(`NOT ${irreversibleDeliveryPredicate()}`, IRREVERSIBLE_TERMINAL_PARAMS)
+      .andWhere('(mutationClaimedAt IS NULL OR mutationClaimedAt < :mutationStale)', { mutationStale })
+      // ★ 컷오버 배제 술어 (197-16 재리뷰 F1). 이 UPDATE 가 조건부 CAS 가 되면서 부분취소와
+      //   **같은 성격**이 됐다 — WAIT 을 선점해 CANCEL 로 바꾸고 그것을 근거로 환불하는 legacy
+      //   claim CAS. §9 quiesce 계약(legacy.delivery.entry.point.ts)은 이 술어를 legacy claim CAS
+      //   에 반드시 함께 싣도록 규정한다. 없으면 컷오버를 켜는 순간 Level A 슬롯 모델이 잡고 있는
+      //   건을 legacy 전체취소가 함께 잡아 **중복 환불**이 뚫린다.
+      //   ※ 조건부 UPDATE 로 바뀌기 전(무조건 UPDATE)에는 이 술어를 실을 자리 자체가 없었다.
+      //     e3cf9868 이 CAS 로 바꾸면서 형제(부분취소 CAS)와 비대칭이 생겼고 여기서 메운다.
+      //   ※ 여기 걸려 빠진 행은 아래 사후검사가 잡아 409 로 되돌린다 — 조용히 새지 않는다.
+      .andWhere(NOT_CUTOVER_ORDER_DELIVERY)
+      .execute();
+
+    // ★ 사후 검사 — 갱신 건수를 비교하지 않고 **결과 상태**로 묻는다.
+    //   부분취소는 "몇 건을 취소할지" 를 알고 시작하니 affected 와 요청 수를 맞대면 되지만,
+    //   전체취소는 그 수를 모른다. 대신 이 시점에 지켜야 할 것은 하나뿐이다 —
+    //   **취소 안 된 발송건이 0 건이어야 한다.** 위 조건에 걸려 빠진 행이 하나라도 있으면
+    //   그 주문은 "전체취소" 가 아니게 되는데, 환불은 전액으로 나간다. 던져서 되돌린다.
+    //   (soft-delete 된 행은 SelectQueryBuilder 가 자동으로 뺀다)
+    const notCanceled = await this.orderDeliveryRepository
+      .createQueryBuilder('od')
+      .where('od.orderProductMappingId IN (:...mappingIds)', { mappingIds: orderProductMappingIdList })
+      .andWhere('od.status != :canceled', { canceled: IOrderDeliveryStatus.CANCEL })
+      .getCount();
+    if (notCanceled > 0) {
+      this.logger.error(
+        `[ORDER_CANCEL_PARTIAL_UPDATE] orderId=${order.id} 취소되지 않은 발송건 ${notCanceled}건 남음 — ` +
+          `조회~갱신 사이에 발송 단계로 넘어갔거나 다른 작업이 점유 중. 전체취소 롤백`,
+      );
+      throw new ConflictException(
+        '취소 처리 중 일부 발송건이 발송 단계로 넘어갔거나 다른 작업이 진행 중입니다. ' +
+          '아무것도 취소되지 않았습니다. 발송 상태를 다시 조회해 주세요.',
+      );
     }
-    // 회사 레벨 balance 변경 시 company도 저장
-    if (isCompanyBalanceMode && oneUser.company) {
-      await this.userCompanyRepository.save(oneUser.company);
+    // ★ 레거시 미러는 **DB 증감식**으로 반영한다 (197-16 리뷰 P1 — 위 델타 주석 참조).
+    //   읽은 값 + 델타를 되쓰면 같은 고객사의 다른 주문이 그 사이에 반영한 몫이 통째로 사라진다.
+    //   `x = x + :delta` 로 넘기면 UPDATE 가 행 락 안에서 현재값 기준으로 계산해 유실이 없어진다.
+    //   ※ 델타가 0 이면 쿼리를 보내지 않는다 — 불필요한 행 락을 잡지 않기 위해서다.
+    //   ※ save(oneUser) 통짜 저장을 걷어낸 것이기도 하다. 그건 이 트랜잭션이 건드리지도 않은
+    //     다른 컬럼까지 락 없이 읽은 스냅샷 값으로 덮어쓸 수 있었다(wallet 경로가 이미 update 로
+    //     좁혀 둔 이유와 같다 — 이제 두 경로가 같은 방식이 된다).
+    if (allSettleDelta !== 0) {
+      await this.userRepository
+        .createQueryBuilder()
+        .update()
+        .set({ allSettleAmount: () => 'all_settle_amount + :allSettleDelta' })
+        .where('id = :id', { id: oneUser.id })
+        .setParameters({ allSettleDelta })
+        .execute();
+    }
+    if (userBalanceDelta !== 0) {
+      await this.userRepository
+        .createQueryBuilder()
+        .update()
+        .set({ balance: () => 'balance + :userBalanceDelta' })
+        .where('id = :id', { id: oneUser.id })
+        .setParameters({ userBalanceDelta })
+        .execute();
+    }
+    if (companyBalanceDelta !== 0 && oneUser.company) {
+      await this.userCompanyRepository
+        .createQueryBuilder()
+        .update()
+        .set({ balance: () => 'balance + :companyBalanceDelta' })
+        .where('id = :id', { id: oneUser.company.id })
+        .setParameters({ companyBalanceDelta })
+        .execute();
     }
 
     // 고객사 직접주문(DIRECT) 취소 시 주문자 대표 이메일로 통지.

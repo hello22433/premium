@@ -3,6 +3,12 @@
 jest.mock('typeorm-transactional', () => ({
   Transactional: () => (_target: unknown, _key: unknown, descriptor: unknown) => descriptor,
   Propagation: { REQUIRED: 'REQUIRED', REQUIRES_NEW: 'REQUIRES_NEW' },
+  IsolationLevel: {
+    READ_UNCOMMITTED: 'READ UNCOMMITTED',
+    READ_COMMITTED: 'READ COMMITTED',
+    REPEATABLE_READ: 'REPEATABLE READ',
+    SERIALIZABLE: 'SERIALIZABLE',
+  },
   runOnTransactionCommit: jest.fn(),
   initializeTransactionalContext: jest.fn(),
   addTransactionalDataSources: jest.fn(),

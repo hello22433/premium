@@ -123,6 +123,22 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
     expect(claim).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ refundExecution: fencing }));
   });
 
+  // ★ 발송취소(부분취소, 197-16) 안전망. 발송취소 환불은 wallet 원장에만 기록돼 exists()=false 지만,
+  //   status=CANCEL 이면 이미 환불된 건이므로 복구하면 안 된다(이중환불). exists 를 뒤집어도(false)
+  //   CANCEL 이면 skip 해야 이 방어가 유효하다.
+  it('status=CANCEL + exists=false → skip (발송취소 이중환불 방지, claimWithManager 미호출)', async () => {
+    const sut = makeSut(false);
+
+    const result = await sut.restoreBalanceOnDiscard(
+      buildOrderDelivery(IOrderDeliveryStatus.CANCEL),
+      operator,
+      {} as any,
+    );
+
+    expect(result).toBeNull();
+    expect(sut.refundLedgerService.claimWithManager).not.toHaveBeenCalled();
+  });
+
   const legacyDiscardQueryRunner = () => {
     const builder: any = {
       update: () => builder,
