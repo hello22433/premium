@@ -77,4 +77,26 @@ export class SsgIssueLogEntity {
     comment: 'order_delivery.coupon_num (orphan 복원용)',
   })
   couponNum: string | null;
+
+  /**
+   * EP-P30 §6-A — 발급 차수의 영속화. `external_issue_count` 는 **권한 소비 횟수**지 실제 INSERT
+   * 시도 횟수가 아니라, 권한만 소비하고 INSERT 전에 죽은 상태를 구분할 수 없다.
+   * (command_id, ordinal) 로그의 존재 여부가 "그 차수의 INSERT 가 있었는가"의 유일한 증인이다.
+   *
+   * legacy 행과 구버전 프로세스가 쓴 행은 NULL 이며, NULL 은 "시도 없음" 증거로 쓰지 않는다(보수 처리).
+   */
+  @Column({ type: 'bigint', name: 'pin_issue_command_id', nullable: true, comment: 'FK) pin_issue_command.id' })
+  pinIssueCommandId: string | null;
+
+  @Column({ type: 'tinyint', name: 'issue_ordinal', nullable: true, comment: '발급 차수 1=최초, 2=자동 재발급' })
+  issueOrdinal: number | null;
+
+  /**
+   * EP-P30 §6-D tombstone. 운영 복구·재발급 진입 시 DELETE 대신 표식한다.
+   *
+   * - 활성 후보(어떤 PIN 을 조회·재사용할가) → `superseded_at IS NULL`
+   * - 시도 이력(NOT_ATTEMPTED 판정·재점유 증인)·번호 블랙리스트 → 필터 없음(전체 행)
+   */
+  @Column({ type: 'datetime', precision: 6, name: 'superseded_at', nullable: true, comment: 'tombstone 시각' })
+  supersededAt: Date | null;
 }

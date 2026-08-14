@@ -1,5 +1,7 @@
 import { PartnerSettleFeatureFlag } from '../../partner_settle/application/partner.settle.feature.flag';
 import { PartnerSettleProducerService } from '../../partner_settle/application/partner.settle.producer.service';
+import { SsgAutoResolveConfig } from './ssg.autoresolve.config';
+import { SsgPinObservationService } from './ssg.pin.observation.service';
 // 실제 DB 연결 없는 단위 테스트이므로 typeorm-transactional 데코레이터를 no-op으로 mock한다.
 jest.mock('typeorm-transactional', () => ({
   Transactional: () => (_target: unknown, _key: unknown, _descriptor: unknown) => _descriptor,
@@ -186,6 +188,8 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
         { provide: getRepositoryToken(SsgResendDeductPendingEntity), useValue: {} },
         { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, isEnabledFor: () => false } },
         { provide: PartnerSettleProducerService, useValue: {} },
+        { provide: SsgAutoResolveConfig, useValue: new SsgAutoResolveConfig({ get: () => 'off' } as any) },
+        { provide: SsgPinObservationService, useValue: { record: jest.fn() } },
       ],
     }).compile();
 
@@ -402,7 +406,9 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
       ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
       ssgIssue.issue.mockRejectedValue(new SsgIssueRejectedError('8021', '한도 초과'));
 
-      await expect(sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority)).rejects.toBeInstanceOf(SsgIssueRejectedError);
+      await expect(sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority)).rejects.toBeInstanceOf(
+        SsgIssueRejectedError,
+      );
       expect(ssgInsertStateService.markFailed).toHaveBeenCalledWith(orderDelivery.id);
       expect(ssgInsertStateService.markConfirmed).not.toHaveBeenCalled();
     });
@@ -414,7 +420,9 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
       ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
       ssgIssue.issue.mockRejectedValue(new SsgIssueUnknownError('XML 파싱 실패'));
 
-      await expect(sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority)).rejects.toBeInstanceOf(SsgIssueUnknownError);
+      await expect(sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority)).rejects.toBeInstanceOf(
+        SsgIssueUnknownError,
+      );
       expect(ssgInsertStateService.markFailed).not.toHaveBeenCalled();
       expect(ssgInsertStateService.markConfirmed).not.toHaveBeenCalled();
     });
@@ -583,10 +591,13 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
       await sut.issue(orderDelivery, ssgEvent);
 
       // 핵심: Mutex 내 orphan → CONFIRMED → 새 INSERT 없이 PIN 재사용
-      expect(ssgInsertStateService.markConfirmed).toHaveBeenCalledWith(orderDelivery.id, expect.objectContaining({
-        barCode: '8ORPHAN1',
-        personalCode: '01399990001',
-      }));
+      expect(ssgInsertStateService.markConfirmed).toHaveBeenCalledWith(
+        orderDelivery.id,
+        expect.objectContaining({
+          barCode: '8ORPHAN1',
+          personalCode: '01399990001',
+        }),
+      );
       expect(ssgInsertStateService.markFailed).not.toHaveBeenCalled();
       expect(ssgIssue.issue).not.toHaveBeenCalled();
       expect(orderDelivery.barCode).toBe('8ORPHAN1');

@@ -294,55 +294,50 @@ describe('PartnerCompanyExternBatchService.checkGalaxiaDaily — existingLog 원
     orderDeliveryRepository = module.get(getRepositoryToken(OrderDeliveryEntity));
 
     // dedup 에서 기존 로그 발견 (existingLog)
-    galaxiaBarcodeLogRepository.createQueryBuilder.mockReturnValue(
-      makeQueryBuilderMock({ id: EXISTING_LOG_ID }),
-    );
+    galaxiaBarcodeLogRepository.createQueryBuilder.mockReturnValue(makeQueryBuilderMock({ id: EXISTING_LOG_ID }));
     // loadOrderDeliveryForSettlement 용 — relations 포함
     orderDeliveryRepository.findOne.mockResolvedValue(buildOrderDeliveryWithRelations());
     orderDeliveryRepository.save.mockImplementation((entity: any) => Promise.resolve(entity));
   });
 
   describe('appDiv=10/20/25 기존 로그 — 원장 생성 재시도', () => {
-    it.each(['10', '20', '25'])(
-      'appDiv=%s: existingLog.id 기반 멱등키로 원장을 재시도한다',
-      async (appDiv) => {
-        galaxia.checkDaily.mockResolvedValue({
-          resCode: '0000',
-          resMsg: 'Success',
-          transactions: [buildTransaction({ appDiv })],
-        });
+    it.each(['10', '20', '25'])('appDiv=%s: existingLog.id 기반 멱등키로 원장을 재시도한다', async (appDiv) => {
+      galaxia.checkDaily.mockResolvedValue({
+        resCode: '0000',
+        resMsg: 'Success',
+        transactions: [buildTransaction({ appDiv })],
+      });
 
-        await runDaily();
+      await runDaily();
 
-        // 로그가 이미 있으므로 save 하지 않는다
-        expect(galaxiaBarcodeLogRepository.save).not.toHaveBeenCalled();
+      // 로그가 이미 있으므로 save 하지 않는다
+      expect(galaxiaBarcodeLogRepository.save).not.toHaveBeenCalled();
 
-        if (appDiv === '10') {
-          // 사용 → record (양수 원장)
-          expect(settleProducer.record).toHaveBeenCalledTimes(1);
-          expect(settleProducer.record).toHaveBeenCalledWith(
-            expect.objectContaining({ orderDeliveryId: 3001 }),
-            expect.objectContaining({
-              kind: 'USAGE',
-              baseAmount: BigInt(50000),
-              galaxiaBarcodeLogId: EXISTING_LOG_ID,
-            }),
-          );
-        } else {
-          // 20/25 → recordCancellation (역분개)
-          expect(settleProducer.findReversibleEntries).toHaveBeenCalledWith(3001);
-          expect(settleProducer.recordCancellation).toHaveBeenCalledTimes(1);
-          expect(settleProducer.recordCancellation).toHaveBeenCalledWith(
-            expect.objectContaining({ orderDeliveryId: 3001 }),
-            expect.objectContaining({
-              kind: 'USAGE',
-              reversesLedgerId: 501,
-              galaxiaBarcodeLogId: EXISTING_LOG_ID,
-            }),
-          );
-        }
-      },
-    );
+      if (appDiv === '10') {
+        // 사용 → record (양수 원장)
+        expect(settleProducer.record).toHaveBeenCalledTimes(1);
+        expect(settleProducer.record).toHaveBeenCalledWith(
+          expect.objectContaining({ orderDeliveryId: 3001 }),
+          expect.objectContaining({
+            kind: 'USAGE',
+            baseAmount: BigInt(50000),
+            galaxiaBarcodeLogId: EXISTING_LOG_ID,
+          }),
+        );
+      } else {
+        // 20/25 → recordCancellation (역분개)
+        expect(settleProducer.findReversibleEntries).toHaveBeenCalledWith(3001);
+        expect(settleProducer.recordCancellation).toHaveBeenCalledTimes(1);
+        expect(settleProducer.recordCancellation).toHaveBeenCalledWith(
+          expect.objectContaining({ orderDeliveryId: 3001 }),
+          expect.objectContaining({
+            kind: 'USAGE',
+            reversesLedgerId: 501,
+            galaxiaBarcodeLogId: EXISTING_LOG_ID,
+          }),
+        );
+      }
+    });
   });
 
   describe('appDiv=81 기존 로그 — 상태 보정 + 역분개 재시도 (same-tx)', () => {

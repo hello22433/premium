@@ -1,5 +1,7 @@
 import { PartnerSettleFeatureFlag } from '../../partner_settle/application/partner.settle.feature.flag';
 import { PartnerSettleProducerService } from '../../partner_settle/application/partner.settle.producer.service';
+import { SsgAutoResolveConfig } from './ssg.autoresolve.config';
+import { SsgPinObservationService } from './ssg.pin.observation.service';
 // 실제 DB 연결 없는 단위 테스트이므로 typeorm-transactional 데코레이터를 no-op으로 mock한다.
 jest.mock('typeorm-transactional', () => ({
   Transactional: () => (_target: unknown, _key: unknown, _descriptor: unknown) => _descriptor,
@@ -137,6 +139,8 @@ describe('PartnerCompanyExternService.refreshCouponStatus — GALAXIA INACTIVE �
         },
         { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, isEnabledFor: () => false } },
         { provide: PartnerSettleProducerService, useValue: {} },
+        { provide: SsgAutoResolveConfig, useValue: new SsgAutoResolveConfig({ get: () => 'off' } as any) },
+        { provide: SsgPinObservationService, useValue: { record: jest.fn() } },
         {
           provide: getRepositoryToken(GiftielExchangeHistoryEntity),
           useValue: { ...mock<Repository<GiftielExchangeHistoryEntity>>(), ...makeRepoMock() },

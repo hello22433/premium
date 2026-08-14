@@ -52,6 +52,7 @@ import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-w
 import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
 import { InventoryPinAllocationService } from '../../inventory_coupon/application/inventory.pin.allocation.service';
 import { InventoryPinSendService } from '../../inventory_coupon/application/inventory.pin.send.service';
+import { SsgAutoResolveConfig } from '../../partner_company_extern/application/ssg.autoresolve.config';
 
 /**
  * B1: 정산 복구 이벤트 미생성(초기 발송 실패 보류) redesign 회귀 테스트.
@@ -272,6 +273,8 @@ describe('DeliveryBatchService - B1 settlement-hold redesign', () => {
         { provide: LegacyWalletCreditSyncService, useValue: { syncCredit: jest.fn(), syncDeposit: jest.fn() } },
         { provide: InventoryPinAllocationService, useValue: { allocate: jest.fn() } },
         { provide: InventoryPinSendService, useValue: { send: jest.fn() } },
+
+        { provide: SsgAutoResolveConfig, useValue: new SsgAutoResolveConfig({ get: () => 'off' } as any) },
         { provide: getRepositoryToken(OrderDeliveryAttemptEntity), useValue: attemptRepository },
         {
           provide: getRepositoryToken(OrderPaymentRefundEventEntity),

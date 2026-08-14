@@ -696,10 +696,7 @@ export class PartnerCompanyExternBatchService {
       });
     }
 
-    return qb
-      .orderBy('orderDelivery.id', 'DESC')
-      .take(limit)
-      .getMany();
+    return qb.orderBy('orderDelivery.id', 'DESC').take(limit).getMany();
   }
 
   // ===== 파트너사별 그룹핑 =====
@@ -840,8 +837,7 @@ export class PartnerCompanyExternBatchService {
   ): Promise<void> {
     // B15 write-guard — USED 재수집 건은 컬럼 불변(§7.1). flag on + 이미 USED 인 건만 해당.
     // 협력사 응답은 정산 증적으로 쓰되, 기존 상태(USED, tradeAt 등)를 덮어쓰지 않는다.
-    const b15Recollected =
-      this.settleFlag.isEnabled && orderDelivery.couponStatus === OrderDeliveryCouponStatus.USED;
+    const b15Recollected = this.settleFlag.isEnabled && orderDelivery.couponStatus === OrderDeliveryCouponStatus.USED;
 
     const evidence = apiResult.settlementEvidence;
     if (!evidence) {
@@ -1102,9 +1098,10 @@ export class PartnerCompanyExternBatchService {
           result.settlementEvidence = {
             observedKind: 'EXCHANGE',
             occurredAt: exchDtm ? parseDateString(exchDtm) : null,
-            baseAmount: orderDelivery.orderProductMapping?.snapshotProductPrice != null
-              ? BigInt(orderDelivery.orderProductMapping.snapshotProductPrice)
-              : null,
+            baseAmount:
+              orderDelivery.orderProductMapping?.snapshotProductPrice != null
+                ? BigInt(orderDelivery.orderProductMapping.snapshotProductPrice)
+                : null,
             providerEvidenceRef: `${orderDelivery.transactionId}|${pinStatusCd}|${exchDtm ?? ''}`,
             transactionId: orderDelivery.transactionId,
             pinStatusCd,
@@ -1203,9 +1200,10 @@ export class PartnerCompanyExternBatchService {
         result.settlementEvidence = {
           observedKind: 'EXCHANGE',
           occurredAt: result.tradeAt ?? null,
-          baseAmount: orderDelivery.orderProductMapping?.snapshotProductPrice != null
-            ? BigInt(orderDelivery.orderProductMapping.snapshotProductPrice)
-            : null,
+          baseAmount:
+            orderDelivery.orderProductMapping?.snapshotProductPrice != null
+              ? BigInt(orderDelivery.orderProductMapping.snapshotProductPrice)
+              : null,
           providerEvidenceRef: `${orderDelivery.ssgEvent!.no}|${orderDelivery.ssgEvent!.order}|${orderDelivery.personalCode}`,
         };
       }
@@ -1243,9 +1241,10 @@ export class PartnerCompanyExternBatchService {
           result.settlementEvidence = {
             observedKind: 'EXCHANGE',
             occurredAt: daouCheckOut.useDate ? parseDateString(daouCheckOut.useDate) : null,
-            baseAmount: orderDelivery.orderProductMapping?.snapshotProductPrice != null
-              ? BigInt(orderDelivery.orderProductMapping.snapshotProductPrice)
-              : null,
+            baseAmount:
+              orderDelivery.orderProductMapping?.snapshotProductPrice != null
+                ? BigInt(orderDelivery.orderProductMapping.snapshotProductPrice)
+                : null,
             cpnStatus: daouCheckOut.cpnStatus,
           };
         } else if (daouCheckOut.cpnStatus === '02') {
@@ -1646,8 +1645,7 @@ export class PartnerCompanyExternBatchService {
     // flag on: 바코드 로그 + 상태 write + 원장 append 를 같은 트랜잭션으로 묶는다(§6.5).
     // 로그가 tx 밖이면 실패 시 dedup 이 재시도를 차단해 영구 미정산이 된다.
     const isGalaxiaSettlement =
-      this.settleFlag.isEnabledFor(IPartnerCompanyType.GALAXIA) &&
-      ['10', '20', '25', '81'].includes(raw.appdiv);
+      this.settleFlag.isEnabledFor(IPartnerCompanyType.GALAXIA) && ['10', '20', '25', '81'].includes(raw.appdiv);
 
     if (isGalaxiaSettlement) {
       await runInTransaction(async () => {
@@ -2268,14 +2266,7 @@ export class PartnerCompanyExternBatchService {
       await runInTransaction(async () => {
         const savedLog = await this.galaxiaBarcodeLogRepository.save(logData);
         await this.orderDeliveryRepository.update({ id: orderDelivery.id }, updateData);
-        await this.recordGalaxiaUsageSettlement(
-          orderDelivery.id,
-          savedLog.id,
-          'dept',
-          '10',
-          now,
-          usedAmount,
-        );
+        await this.recordGalaxiaUsageSettlement(orderDelivery.id, savedLog.id, 'dept', '10', now, usedAmount);
       });
     } else {
       await this.galaxiaBarcodeLogRepository.save(logData);
@@ -2600,9 +2591,10 @@ export class PartnerCompanyExternBatchService {
         kind: 'EXCHANGE',
         idempotencyKey: buildProviderTransitionKey(IPartnerCompanyType.GIFTIEL, 'EXCHANGE', sourceEventId),
         occurredAt,
-        baseAmount: od.orderProductMapping.snapshotProductPrice != null
-          ? BigInt(od.orderProductMapping.snapshotProductPrice)
-          : null,
+        baseAmount:
+          od.orderProductMapping.snapshotProductPrice != null
+            ? BigInt(od.orderProductMapping.snapshotProductPrice)
+            : null,
         providerEvidenceRef: sourceEventId,
       });
     } else {
