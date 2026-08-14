@@ -177,8 +177,10 @@ const LIST_DATE_EXPR =
  *   들어갈 수 있고, mysql2 는 그것을 `new Date(NaN)` 으로 돌려준다. 그 값은 null 이 아니므로
  *   `??` 를 그대로 통과하고, 뒤이어 `format()`(date-fns v3)이 `RangeError` 를 던진다.
  *   호출부가 `.map()` 안이라 **그 행 하나가 아니라 페이지 전체가 500** 이 된다.
- *   종전 마지막 칸 `updated_at` 은 `datetime(6) NOT NULL` 이라 이 경로가 없었다 — ④ 를 넣으면서
- *   처음 열렸다(리뷰 HIGH-1).
+ *   ⚠️ 이 경로는 이 PR 이 연 것이 **아니다.** 종전 체인도 `actualSendAt ?? failedAt ?? updatedAt`
+ *     이었고 앞의 둘은 `datetime NULL`(sql/snapshots/prod_db.md:388, 373)이라 같은 값이 들어갈 수
+ *     있다. 즉 결함은 이 PR 보다 오래됐고 더 넓다 — 리뷰 HIGH-1 과 그 반영 커밋이 "④ 를 넣으면서
+ *     처음 열렸다" 고 적었던 것은 **둘 다 틀렸다.**
  *
  * ⚠️ SQL 쪽 `NULLIF` 만으로는 부족하다. 그것은 정확히 `'0000-00-00 00:00:00'` 하나만 걷어내므로
  *   `2026-00-00` 같은 **부분 제로날짜**는 통과시킨다(그것도 JS 에서 Invalid Date 다).
@@ -318,12 +320,19 @@ export class PartnerCompanyExternHistoryService {
 
     // 페이징 및 정렬
     //
-    // ⚠️ id 보조키는 장식이 아니다. sortDate 는 초 정밀도이고, 한 상품의 모든 발송건이 **같은**
-    //   send_request_at 을 갖는다(order.service.ts 가 productSendAt 을 그 상품 전 행에 넣고 한 번에
-    //   insert 한다). 동률 행의 LIMIT/OFFSET 순서는 MySQL 이 보장하지 않으므로, 보조키가 없으면
-    //   같은 행이 두 페이지에 나오거나(중복) 어느 페이지에도 안 나온다(누락). 재발송 대상을 눈으로
-    //   훑는 화면이라 누락은 곧 미발송 방치다. 한 페이지만 보면 멀쩡해 보여 발견이 늦다.
-    //   환불목록(refund.service.ts)이 같은 이유로 이미 id 보조키를 쓴다.
+    // ⚠️ id 보조키. sortDate 는 초 정밀도이고, 한 상품의 모든 발송건이 **같은** send_request_at 을
+    //   갖는다(order.service.ts 가 productSendAt 을 그 상품 전 행에 넣고 한 번에 insert 한다).
+    //
+    //   ⚠️ 다만 "없으면 같은 행이 두 페이지에 나오거나 빠진다" 는 **이 스택에서는 사실이 아니다.**
+    //     조인 + skip/take 면 TypeORM 이 distinct-id 2단 쿼리를 만들고, 그 1단 ORDER BY 에 PK 를
+    //     보조키로 **자동 주입**한다(SelectQueryBuilder 의
+    //     `if (!orderBys[columnAlias]) orderBys[columnAlias] = 'ASC'`). 페이지 경계는 원래도 결정적이었다.
+    //
+    //   실제로 고친 것은 둘이다 — (a) 2단(엔티티) 쿼리의 ORDER BY 는 sortDate 뿐이라 **페이지 안**
+    //   행 순서가 매 요청 흔들렸고, (b) 자동 보조키 방향이 ASC 라 화면 기대(DESC)와 반대였다.
+    //   ⚠️ 부수 효과 — 동률 행 순서가 id ASC 에서 **id DESC 로 뒤집힌다**(운영자 눈에 보인다).
+    //   그리고 자동 주입은 조인이 빠지거나 skip/take 가 없어지면 사라지므로 명시해 둘 값어치가 있다.
+    //   환불목록(refund.service.ts)이 같은 형태를 쓴다.
     const skip = (page - 1) * take;
     queryBuilder.orderBy('sortDate', 'DESC').addOrderBy('orderDelivery.id', 'DESC').skip(skip).take(take);
 
@@ -530,10 +539,14 @@ export class PartnerCompanyExternHistoryService {
       errorMessage = '문자/알림톡 발송 실패';
     }
 
-    // ⚠️ LIST_DATE_EXPR(필터·정렬)의 칸 순서를 **그대로 복제**한 것이다. 근거와 ⑤ 를 남긴 이유는
-    // 그 상수의 주석에 있다. 한쪽만 고치면 "필터에는 걸리는데 화면 날짜는 다른" 상태가 된다.
-    // ⑤(updated_at)만 validDate 를 안 씌운다 — datetime(6) NOT NULL 이라 무효값이 될 수 없고,
-    // 여기서 null 로 만들면 날짜 칸이 빈 채로 나가 정렬·검색과 화면이 어긋난다.
+    // LIST_DATE_EXPR(필터·정렬)과 **같은 칸 순서**를 쓴다. 다만 "그대로 복제" 는 아니다 —
+    // 판정 방식이 다르다. SQL 은 validDateSql(연·월·일이 모두 0 보다 큰가), 여기는 isValidDate
+    // (getTime() 이 NaN 이 아닌가)다. 둘은 **같은 값을 걷어내도록 맞춰 둔 것**이지 같은 코드가
+    // 아니다. 한쪽만 고치면 필터와 화면이 갈린다.
+    //
+    // ⑤(updated_at)도 검사한다. 종전 주석은 "NOT NULL 이라 무효값이 될 수 없다" 고 적었는데
+    // 그건 틀렸다 — 위 isValidDate 주석이 이미 "제로날짜는 NULL 이 아니라 값이라 NOT NULL 컬럼에도
+    // 들어간다" 고 말한다. 다섯 칸이 다 무효면 날짜 칸이 비는데, 대안이 페이지 전체 500 이다.
     const legacyDisplayDate =
       this.pickListDate(orderDelivery.actualSendAt, 'actual_send_at', orderDelivery.id, sink) ??
       this.pickListDate(orderDelivery.failedAt, 'failed_at', orderDelivery.id, sink) ??
