@@ -79,6 +79,7 @@ describe('실패내역 화면 SoT 렌더', () => {
       addSelect: jest.fn().mockReturnThis(),
       select: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
       skip: jest.fn().mockReturnThis(),
       take: jest.fn().mockReturnThis(),
       getManyAndCount: jest.fn().mockResolvedValue([rows, rows.length]),
@@ -254,6 +255,17 @@ describe('실패내역 화면 SoT 렌더', () => {
         updatedAt: new Date('2026-08-10T00:00:03'),
       });
       expect(at).toBe('2026-08-10T00:00:03');
+    });
+
+    // 동률 행의 LIMIT/OFFSET 순서는 MySQL 이 보장하지 않는다. 한 상품의 모든 발송건이 같은
+    // send_request_at 을 가지므로 보조키가 빠지면 페이지 간 중복·누락이 난다(리뷰 HIGH-2).
+    it('정렬에 id 보조키를 걸어 동률 행의 페이지 순서를 고정한다', async () => {
+      const { sut, qb } = await buildSut([makeDelivery()], new Map());
+
+      await sut.getHistoryList({ page: 1, take: 20 } as never);
+
+      expect(qb.orderBy).toHaveBeenCalledWith('sortDate', 'DESC');
+      expect(qb.addOrderBy).toHaveBeenCalledWith('orderDelivery.id', 'DESC');
     });
 
     it('필터·정렬용 SQL 이 표시 로직과 같은 칸 순서를 쓴다', async () => {

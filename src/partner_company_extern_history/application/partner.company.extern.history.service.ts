@@ -242,8 +242,15 @@ export class PartnerCompanyExternHistoryService {
     }
 
     // 페이징 및 정렬
+    //
+    // ⚠️ id 보조키는 장식이 아니다. sortDate 는 초 정밀도이고, 한 상품의 모든 발송건이 **같은**
+    //   send_request_at 을 갖는다(order.service.ts 가 productSendAt 을 그 상품 전 행에 넣고 한 번에
+    //   insert 한다). 동률 행의 LIMIT/OFFSET 순서는 MySQL 이 보장하지 않으므로, 보조키가 없으면
+    //   같은 행이 두 페이지에 나오거나(중복) 어느 페이지에도 안 나온다(누락). 재발송 대상을 눈으로
+    //   훑는 화면이라 누락은 곧 미발송 방치다. 한 페이지만 보면 멀쩡해 보여 발견이 늦다.
+    //   환불목록(refund.service.ts)이 같은 이유로 이미 id 보조키를 쓴다.
     const skip = (page - 1) * take;
-    queryBuilder.orderBy('sortDate', 'DESC').skip(skip).take(take);
+    queryBuilder.orderBy('sortDate', 'DESC').addOrderBy('orderDelivery.id', 'DESC').skip(skip).take(take);
 
     const [orderDeliveries, totalCount] = await queryBuilder.getManyAndCount();
 
