@@ -39,9 +39,40 @@ describe('FileService.downloadWithPath — 오류 처리', () => {
     await expect(sut.downloadWithPath('/tmp', 'name', validUrl)).rejects.toBeInstanceOf(NotFoundException);
   });
 
-  it('S3 $metadata 404 → NotFound', async () => {
+  // ★ 코드가 없을 때만 404 를 '객체 없음' 으로 본다. 코드가 있으면 코드로만 판정한다(아래 NoSuchBucket 참조).
+  it('S3 $metadata 404 (에러 코드 없음) → NotFound', async () => {
     const sut = makeSut(jest.fn().mockRejectedValue({ $metadata: { httpStatusCode: 404 } }));
     await expect(sut.downloadWithPath('/tmp', 'name', validUrl)).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  // ★ NoSuchBucket 도 HTTP 404 다. 404 만 보고 '파일 없음' 으로 번역하면 버킷 설정이 깨진 인프라 장애가
+  //   사용자에게 "파일을 찾을 수 없습니다" 로 나가고, 500 이면 울릴 경보가 4xx 라 울리지 않는다.
+  it('★NoSuchBucket(404) → InternalServerError (인프라 장애를 파일 없음으로 위장하지 않는다)', async () => {
+    const sut = makeSut(
+      jest.fn().mockRejectedValue(
+        Object.assign(new Error('no bucket'), {
+          name: 'NoSuchBucket',
+          $metadata: { httpStatusCode: 404 },
+        }),
+      ),
+    );
+    await expect(
+      sut.downloadWithPath('/tmp', 't', 'https://b.s3.amazonaws.com/private/5/a.xlsx'),
+    ).rejects.toBeInstanceOf(InternalServerErrorException);
+  });
+
+  it('HeadObject 계열 NotFound(404) → NotFound', async () => {
+    const sut = makeSut(
+      jest.fn().mockRejectedValue(
+        Object.assign(new Error('nf'), {
+          name: 'NotFound',
+          $metadata: { httpStatusCode: 404 },
+        }),
+      ),
+    );
+    await expect(
+      sut.downloadWithPath('/tmp', 't', 'https://b.s3.amazonaws.com/private/5/a.xlsx'),
+    ).rejects.toBeInstanceOf(NotFoundException);
   });
 
   it('그 외 S3 실패(인증/네트워크) → InternalServerError (경로오류로 오도 안 함)', async () => {

@@ -60,10 +60,20 @@ export class FileService {
     }
   }
 
-  /** S3(GetObject) '객체 없음' 판별 — AWS SDK v3 에러/HTTP 메타의 여러 형태에 대응. */
+  /**
+   * S3 '객체 없음' 판별 — GetObject 는 NoSuchKey, HeadObject 는 NotFound 를 준다.
+   *
+   * ★ 404 만으로 판정하면 안 된다: NoSuchBucket 도 HTTP 404 라 버킷 설정이 깨진 인프라 장애가
+   *   사용자에게 "파일을 찾을 수 없습니다" 로 나가고, 500 이면 울릴 경보가 404 라 안 울린다.
+   *   그래서 코드가 있으면 코드로만 판정하고, 코드가 없는 경우에만 404 를 폴백으로 쓴다.
+   */
   private isNotFoundError(error: unknown): boolean {
     const e = error as { name?: string; Code?: string; $metadata?: { httpStatusCode?: number } };
-    return e?.name === 'NoSuchKey' || e?.Code === 'NoSuchKey' || e?.$metadata?.httpStatusCode === 404;
+    const code = e?.name ?? e?.Code;
+    if (code) {
+      return code === 'NoSuchKey' || code === 'NotFound';
+    }
+    return e?.$metadata?.httpStatusCode === 404;
   }
 
   /** S3 URL 의 객체를 메모리 버퍼로 읽는다(엑셀 파싱 등 서버 내 처리용). */
