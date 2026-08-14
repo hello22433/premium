@@ -19,10 +19,11 @@ export class ProductUpdateHistoryEntity extends BaseEntity {
   @Column({ type: 'varchar', length: 256, comment: '변경 key 이름' })
   keyName: string;
 
-  @Column({ type: 'varchar', length: 512, nullable: true, comment: '변경 전 value' })
+  // 유의사항(memo)은 512자를 쉽게 넘기며, 이력이 잘리면 수정 전 문구로 되돌릴 근거가 사라진다.
+  @Column({ type: 'text', nullable: true, comment: '변경 전 value' })
   beforeValue: string | null;
 
-  @Column({ type: 'varchar', length: 512, nullable: true, comment: '변경 후 value' })
+  @Column({ type: 'text', nullable: true, comment: '변경 후 value' })
   afterValue: string | null;
 
   @Column({ type: 'varchar', length: 512, nullable: true, comment: '수정 사유' })

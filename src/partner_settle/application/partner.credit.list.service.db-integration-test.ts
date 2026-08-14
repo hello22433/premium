@@ -36,6 +36,7 @@ describe('PartnerCreditListService — 여신 표 SQL 집계 DB 통합', () => {
   let service: PartnerCreditListService;
   let daouId: number;
   let ssgId: number;
+  let galaxiaId: number;
   let idemSeq = 0;
 
   beforeAll(async () => {
@@ -81,6 +82,7 @@ describe('PartnerCreditListService — 여신 표 SQL 집계 DB 통합', () => {
     const pcRepo = dataSource.getRepository(PartnerCompanyEntity);
     daouId = (await pcRepo.save(pcRepo.create(partnerFixture('DAOU', IPartnerCompanyType.DAOU)))).id;
     ssgId = (await pcRepo.save(pcRepo.create(partnerFixture('SSG', IPartnerCompanyType.SSG)))).id;
+    galaxiaId = (await pcRepo.save(pcRepo.create(partnerFixture('GALAXIA', IPartnerCompanyType.GALAXIA)))).id;
 
     service = new PartnerCreditListService(
       pcRepo,
@@ -138,8 +140,8 @@ describe('PartnerCreditListService — 여신 표 SQL 집계 DB 통합', () => {
     });
   }
 
-  async function seedLedger(over: Partial<PartnerSettleLedgerEntity>) {
-    await dataSource.getRepository(PartnerSettleLedgerEntity).insert({
+  async function seedLedger(over: Partial<PartnerSettleLedgerEntity>): Promise<number> {
+    const result = await dataSource.getRepository(PartnerSettleLedgerEntity).insert({
       partnerCompanyId: daouId,
       subItemKey: 'NONE',
       sourceType: 'ISSUANCE',
@@ -152,6 +154,7 @@ describe('PartnerCreditListService — 여신 표 SQL 집계 DB 통합', () => {
       idempotencyKey: `IDEM:${idemSeq++}`,
       ...over,
     });
+    return Number(result.identifiers[0].id);
   }
 
   it('미정산 집계: settleBatchId NULL · NORMAL/ON_HOLD · ADJUSTMENT 제외', async () => {
@@ -167,6 +170,77 @@ describe('PartnerCreditListService — 여신 표 SQL 집계 DB 통합', () => {
     expect(daou.availableBalance).toBe('180'); // 330 - 150
     expect(daou.balanceSourceStatus).toBe('AVAILABLE');
     expect(daou.creditDataStatus).toBe('OK');
+  });
+
+  it('갤럭시아 백화점 선충전: 브랜드별 settleAmount 전체 배치 합산·역분개 상쇄·ADJUSTMENT 제외', async () => {
+    await seedConfig(galaxiaId, 'GALAXIA_LOTTE', ['0', '1000', '0']);
+    await seedConfig(galaxiaId, 'GALAXIA_HYUNDAI', ['0', '1000', '0']);
+    await seedConfig(galaxiaId, 'GALAXIA_GALLERIA', ['0', '1000', '0']);
+
+    // baseAmount(정가)가 아니라 settleAmount(수수료 차감 후 정산액)를 소진액으로 사용한다.
+    const lotteOriginalId = await seedLedger({
+      partnerCompanyId: galaxiaId,
+      subItemKey: 'GALAXIA_LOTTE',
+      baseAmount: '150',
+      settleAmount: '100',
+      settleBatchId: null,
+    });
+    // 이미 정산확정된 배치도 선충전 소진액에서는 영구 차감한다.
+    await seedLedger({
+      partnerCompanyId: galaxiaId,
+      subItemKey: 'GALAXIA_LOTTE',
+      baseAmount: '60',
+      settleAmount: '40',
+      settleBatchId: 11,
+    });
+    // 취소 역분개(음수)는 같은 브랜드 소진액을 상쇄한다.
+    await seedLedger({
+      partnerCompanyId: galaxiaId,
+      subItemKey: 'GALAXIA_LOTTE',
+      baseAmount: '-30',
+      settleAmount: '-25',
+      settleBatchId: 12,
+      reversesLedgerId: lotteOriginalId,
+    });
+    // 내부 차액조정은 갤럭시아 실제 선충전 차감이 아니므로 제외한다.
+    await seedLedger({
+      partnerCompanyId: galaxiaId,
+      subItemKey: 'GALAXIA_LOTTE',
+      sourceType: 'ADJUSTMENT',
+      baseAmount: '900',
+      settleAmount: '900',
+    });
+    await seedLedger({
+      partnerCompanyId: galaxiaId,
+      subItemKey: 'GALAXIA_HYUNDAI',
+      baseAmount: '250',
+      settleAmount: '200',
+      settleBatchId: 21,
+    });
+    await seedLedger({
+      partnerCompanyId: galaxiaId,
+      subItemKey: 'GALAXIA_GALLERIA',
+      baseAmount: '350',
+      settleAmount: '300',
+      settleBatchId: null,
+    });
+
+    const lotte = await getRow('GALAXIA', 'GALAXIA_LOTTE');
+    const hyundai = await getRow('GALAXIA', 'GALAXIA_HYUNDAI');
+    const galleria = await getRow('GALAXIA', 'GALAXIA_GALLERIA');
+
+    expect(lotte.availableBalance).toBe('885'); // 1000 - (100 + 40 - 25), ADJUSTMENT 제외
+    expect(hyundai.availableBalance).toBe('800'); // 브랜드별 별도 합산
+    expect(galleria.availableBalance).toBe('700');
+    expect([lotte, hyundai, galleria].map((row) => row.balanceSourceStatus)).toEqual([
+      'AVAILABLE',
+      'AVAILABLE',
+      'AVAILABLE',
+    ]);
+
+    const mobile = await getRow('GALAXIA', 'GALAXIA_MOBILE');
+    expect(mobile.availableBalance).toBeNull();
+    expect(mobile.balanceSourceStatus).toBe('NOT_AVAILABLE'); // 실 config 입력 전 숫자 노출 차단
   });
 
   it('전월 단순 발송금액: 직전 마감 월·양수 row만·확정분 포함·당월/음수/NEEDS_REVIEW 제외', async () => {

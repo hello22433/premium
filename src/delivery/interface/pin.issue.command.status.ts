@@ -1,7 +1,9 @@
+export { SsgPinResolution } from '../../partner_company_extern/interface/ssg.issue';
+
 /**
  * 협력사 PIN 발급 명령 상태 (§5.2).
  *
- * `RETRY_PENDING`·`RECONCILING`·`RETRYING`·`UNKNOWN_DEFERRED` 는 미확정 상태이며
+ * `RETRY_PENDING`·`RECONCILING`·`RETRYING`·`UNKNOWN_DEFERRED`·`OPS_REVIEW_REQUIRED` 는 미확정 상태이며
  * 완료·정산·최종 환불을 차단한다(§9 재무·정산 계약).
  */
 export enum PinIssueCommandStatus {
@@ -20,6 +22,8 @@ export enum PinIssueCommandStatus {
   EXHAUSTED = 'EXHAUSTED',
   /** 발급 여부 불명 — 신규 발급 기본 금지(§8.1 B) */
   UNKNOWN_DEFERRED = 'UNKNOWN_DEFERRED',
+  /** 자동 처리 불가 — 운영 확인 전까지 재선점 및 신규 발급 금지 */
+  OPS_REVIEW_REQUIRED = 'OPS_REVIEW_REQUIRED',
 }
 
 /**
@@ -27,9 +31,11 @@ export enum PinIssueCommandStatus {
  */
 export const PIN_RETRY_BLOCKING_STATUSES: PinIssueCommandStatus[] = [
   PinIssueCommandStatus.STARTED,
+  PinIssueCommandStatus.RETRY_PENDING,
   PinIssueCommandStatus.RECONCILING,
   PinIssueCommandStatus.RETRYING,
   PinIssueCommandStatus.UNKNOWN_DEFERRED,
+  PinIssueCommandStatus.OPS_REVIEW_REQUIRED,
 ];
 
 /**
@@ -48,3 +54,18 @@ export enum PartnerResponseClass {
   TERMINAL = 'TERMINAL',
   UNKNOWN = 'UNKNOWN',
 }
+
+/** order_delivery 당 하나만 존재할 수 있는 PIN 명령 상태. */
+export const PIN_ISSUE_ACTIVE_STATUSES: PinIssueCommandStatus[] = [
+  PinIssueCommandStatus.STARTED,
+  PinIssueCommandStatus.RETRY_PENDING,
+  PinIssueCommandStatus.RETRYING,
+  PinIssueCommandStatus.OPS_REVIEW_REQUIRED,
+];
+
+/** 자동 worker가 결과를 반영할 수 있는 이전 상태. OPS_REVIEW_REQUIRED와 종결 상태는 운영 전용이다. */
+export const PIN_ISSUE_AUTOMATED_TRANSITION_STATUSES: PinIssueCommandStatus[] = [
+  PinIssueCommandStatus.STARTED,
+  PinIssueCommandStatus.RETRY_PENDING,
+  PinIssueCommandStatus.RETRYING,
+];

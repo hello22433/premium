@@ -6,6 +6,11 @@ import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliverySsgInsertStateEntity } from '../../entity/order.delivery.ssg.insert.state.entity';
 import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
 import { SsgIssueLogKeyCollisionError } from '../../partner_company_extern/infra/ssg.issue';
+import { PinIssueCommandEntity } from '../../entity/pin.issue.command.entity';
+import {
+  hasConsumedSsgIssueAuthority,
+  PinIssueCommandAuthority,
+} from './pin-issue-command.service';
 import { MarkAttemptedResult, SsgInsertState } from '../interface/ssg.insert.state';
 
 /**
@@ -130,7 +135,15 @@ export class SsgInsertStateService {
    * docs/plans/2026-08-04-ssg-issue-log-unique-typed-collision.md
    */
   @Transactional({ propagation: Propagation.REQUIRES_NEW })
-  async markAttempted(orderDeliveryId: number, payload: SsgAttemptPayload): Promise<MarkAttemptedResult> {
+  async markAttempted(
+    orderDeliveryId: number,
+    payload: SsgAttemptPayload,
+    authority: PinIssueCommandAuthority | undefined,
+  ): Promise<MarkAttemptedResult> {
+    if (!(await this.lockCurrentConsumedIssueAuthority(authority))) {
+      this.logger.warn(`markAttempted skipped (SSG INSERT authority stale): id=${orderDeliveryId}.`);
+      return MarkAttemptedResult.SKIPPED_ACTIVE;
+    }
     const insertResult = await this.stateRepository
       .createQueryBuilder()
       .insert()
@@ -191,6 +204,27 @@ export class SsgInsertStateService {
     return MarkAttemptedResult.SKIPPED_ACTIVE;
   }
 
+  /**
+   * Locks the command row in the same REQUIRES_NEW transaction that creates
+   * ATTEMPTED/log state. A stale or missing owner therefore leaves no durable
+   * candidate behind for a later HTTP recheck to reject.
+   */
+  private async lockCurrentConsumedIssueAuthority(authority: PinIssueCommandAuthority | undefined): Promise<boolean> {
+    if (!authority) {
+      return false;
+    }
+
+    const command = await this.stateRepository.manager
+      .getRepository(PinIssueCommandEntity)
+      .createQueryBuilder('command')
+      .setLock('pessimistic_write')
+      .where('command.id = :commandId', { commandId: authority.commandId })
+      .andWhere('command.owner_token = :ownerToken', { ownerToken: authority.ownerToken })
+      .andWhere('command.generation = :generation', { generation: authority.generation })
+      .andWhere('command.workflow_version = :workflowVersion', { workflowVersion: authority.workflowVersion })
+      .getOne();
+    return hasConsumedSsgIssueAuthority(command);
+  }
   /**
    * ATTEMPTED → CONFIRMED.
    *

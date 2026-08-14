@@ -5,6 +5,7 @@ import { IProductType } from '../../product/interface/product.type';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { OrderDeliveryEmailCouponStatus } from '../../delivery/interface/order.delivery.email.coupon.status';
+import { IOrderType } from '../../order/interface/order.type';
 
 /**
  * 초이스 재진입 차단 — 순수 판정 로직 단위 테스트.
@@ -13,6 +14,7 @@ import { OrderDeliveryEmailCouponStatus } from '../../delivery/interface/order.d
 describe('OrderReceiveService 재진입 차단 판정', () => {
   // 순수 메서드만 호출하므로 의존성은 주입하지 않는다.
   const service = new OrderReceiveService(
+    null as any,
     null as any,
     null as any,
     null as any,
@@ -218,5 +220,79 @@ describe('OrderReceiveService 재진입 차단 판정', () => {
         isLegacy(makeOd({ choicePostSendStatus: ChoicePostSendStatus.SENT, choiceSelectProductId: 7, barCode: 'B' })),
       ).toBe(false);
     });
+  });
+});
+describe('OrderReceiveService SSG PIN authority', () => {
+  const authority = {
+    commandId: 'command-1',
+    ownerToken: 'matching-owner',
+    generation: '0',
+    workflowVersion: '0',
+  };
+
+  const createService = (createAndConsumeInitialSsgIssueAuthority: jest.Mock) => {
+    const partnerCompanyExternService = { issue: jest.fn().mockResolvedValue(undefined) };
+    const deliveryBatchService = {
+      createAndConsumeInitialSsgIssueAuthority,
+      markSsgIssueSucceeded: jest.fn().mockResolvedValue(undefined),
+      markSsgIssueOpsReview: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new OrderReceiveService(
+      null as any,
+      null as any,
+      null as any,
+      null as any,
+      null as any,
+      null as any,
+      null as any,
+      null as any,
+      partnerCompanyExternService as any,
+      deliveryBatchService as any,
+      null as any,
+      null as any,
+      null as any,
+      null as any,
+      null as any,
+    );
+    return { service, partnerCompanyExternService, deliveryBatchService };
+  };
+
+  const ssgOrderDelivery = {
+    id: 91,
+    orderProductMapping: {
+      order: { type: IOrderType.SSG },
+      product: { partnerCompany: { type: 'SSG' } },
+    },
+  } as any;
+
+  it('calls the SSG vendor once with consumed matching authority and fences success', async () => {
+    const { service, partnerCompanyExternService, deliveryBatchService } = createService(
+      jest.fn().mockResolvedValue(authority),
+    );
+
+    await (service as any).issueWithSsgAuthority(ssgOrderDelivery, null, authority.ownerToken);
+
+    expect(deliveryBatchService.createAndConsumeInitialSsgIssueAuthority).toHaveBeenCalledWith(
+      ssgOrderDelivery,
+      authority.ownerToken,
+    );
+    expect(partnerCompanyExternService.issue).toHaveBeenCalledTimes(1);
+    expect(partnerCompanyExternService.issue).toHaveBeenCalledWith(ssgOrderDelivery, null, undefined, authority);
+    expect(deliveryBatchService.markSsgIssueSucceeded).toHaveBeenCalledWith(authority, ssgOrderDelivery.id);
+  });
+
+  it('does not call the SSG vendor when the authority is stale or missing', async () => {
+    const staleAuthority = new Error('SSG INSERT authority lost');
+    const { service, partnerCompanyExternService, deliveryBatchService } = createService(
+      jest.fn().mockRejectedValue(staleAuthority),
+    );
+
+    await expect((service as any).issueWithSsgAuthority(ssgOrderDelivery, null, 'stale-owner')).rejects.toBe(
+      staleAuthority,
+    );
+
+    expect(partnerCompanyExternService.issue).not.toHaveBeenCalled();
+    expect(deliveryBatchService.markSsgIssueSucceeded).not.toHaveBeenCalled();
+    expect(deliveryBatchService.markSsgIssueOpsReview).not.toHaveBeenCalled();
   });
 });

@@ -60,7 +60,7 @@ import {
   DeliveryCancelIntentStatus,
 } from '../../delivery/interface/delivery.cancel.intent.status';
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
-import { RefundPoolService } from '../../wallet/application/refund-pool.service';
+import { type RefundEventResult, RefundPoolService } from '../../wallet/application/refund-pool.service';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 import {
   OrderDeliveryAttemptEntity,
@@ -91,6 +91,7 @@ import { UserTaskHistoryEntity } from 'src/entity/user.task.history.entity';
 import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.delivery.refund.status.enum';
 import { IOrderSendMethod } from '../../order/interface/order.send.method';
 import { IOrderType } from '../../order/interface/order.type';
+import { readLineProductView } from '../../order/util/order.snapshot.builder';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { SsgRefundOutcome } from '../../delivery/interface/ssg.refund.resolve';
 import { assertExpireDayRangeValid, resolveExpireDays } from '../../common/utils/expire.util';
@@ -319,18 +320,11 @@ export class CustomerServiceService {
     const company = user.company;
     const isCompanyBalanceMode = company?.balanceManagementType === 'COMPANY';
     const shouldRestoreBalance = order.isSettleComplete || order.isSettleBalance;
-    let restoreType: OrderDeliveryRefundRestoreType;
-    if (!shouldRestoreBalance) {
-      restoreType = 'ALL_SETTLE_AMOUNT';
-    } else if (isCompanyBalanceMode) {
-      restoreType = 'COMPANY_BALANCE';
-    } else {
-      restoreType = 'BALANCE';
-    }
-
     const isWalletManaged = await this.walletManagedPredicate.isWalletManaged(order.id, queryRunner.manager);
     let latestAttempt: OrderDeliveryAttemptEntity | null = null;
-    if (isWalletManaged && order.isSettleComplete) {
+    let walletRefund: RefundEventResult | null = null;
+
+    if (isWalletManaged) {
       latestAttempt = await queryRunner.manager.findOne(OrderDeliveryAttemptEntity, {
         where: { orderDeliveryId: orderDelivery.id },
         order: { id: 'DESC' },
@@ -340,25 +334,63 @@ export class CustomerServiceService {
           `wallet-managed delivery ${orderDelivery.id} missing delivery attempt — drift, aborting discard refund`,
         );
       }
-      const walletRefund = await this.refundPoolService.refundSettledDiscardToDeposit(
-        {
-          orderId: order.id,
-          orderDeliveryId: orderDelivery.id,
-          refundAmount: restoreAmount,
-          idempotencyKeyPrefix: buildDiscardRefundKey(
-            order.id,
-            orderDelivery.id,
-            WalletResourceType.DEPOSIT,
-            Number(latestAttempt.id),
-          ),
-        },
-        queryRunner.manager,
-      );
+      walletRefund = order.isSettleComplete
+        ? await this.refundPoolService.refundSettledDiscardToDeposit(
+            {
+              orderId: order.id,
+              orderDeliveryId: orderDelivery.id,
+              refundAmount: restoreAmount,
+              idempotencyKeyPrefix: buildDiscardRefundKey(
+                order.id,
+                orderDelivery.id,
+                WalletResourceType.DEPOSIT,
+                Number(latestAttempt.id),
+              ),
+            },
+            queryRunner.manager,
+          )
+        : await this.refundPoolService.refund(
+            {
+              orderId: order.id,
+              eventType: OrderPaymentRefundEventType.DISCARD_REFUND,
+              targetDeliveryIds: [orderDelivery.id],
+              idempotencyKeyPrefix: `discard_refund:${order.id}:${orderDelivery.id}:${latestAttempt.id}`,
+            },
+            queryRunner.manager,
+          );
       if (walletRefund.alreadyRefunded) {
         return null;
       }
       restoreAmount = walletRefund.totalRefundedAmount;
     }
+
+    let restoreType: OrderDeliveryRefundRestoreType;
+    if (walletRefund && !order.isSettleComplete) {
+      restoreType =
+        isCompanyBalanceMode && walletRefund.refundedDepositAmount > 0 ? 'COMPANY_BALANCE' : 'ALL_SETTLE_AMOUNT';
+    } else if (!shouldRestoreBalance) {
+      restoreType = 'ALL_SETTLE_AMOUNT';
+    } else if (isCompanyBalanceMode) {
+      restoreType = 'COMPANY_BALANCE';
+    } else {
+      restoreType = 'BALANCE';
+    }
+
+    const restoreBreakdown = walletRefund
+      ? {
+          point: walletRefund.refundedPointAmount,
+          deposit: walletRefund.refundedDepositAmount,
+          credit: walletRefund.refundedCreditUsedAmount,
+          creditExcess: walletRefund.refundedCreditExcessAmount,
+          pointSkippedExpired: walletRefund.pointSkippedExpiredAmount,
+        }
+      : {
+          point: 0,
+          deposit: shouldRestoreBalance ? restoreAmount : 0,
+          credit: shouldRestoreBalance ? 0 : restoreAmount,
+          creditExcess: 0,
+          pointSkippedExpired: 0,
+        };
 
     await this.refundLedgerService.claimWithManager(queryRunner.manager, {
       orderDeliveryId: orderDelivery.id,
@@ -369,14 +401,48 @@ export class CustomerServiceService {
       isSettleBalance: order.isSettleBalance,
       sourcePath: 'CS_DISCARD',
       operatorUserId: operatorUser.id,
-      memo: `폐기복구/${restoreAmount}원`,
+      memo: `폐기복구/${restoreAmount}원${walletRefund ? `/재원:${JSON.stringify(restoreBreakdown)}` : ''}`,
       refundExecution,
     });
 
-    let beforeBalance: number;
-    let afterBalance: number;
+    let beforeBalance = 0;
+    let afterBalance = 0;
+    let beforeAllSettleAmount: number | null = null;
+    let afterAllSettleAmount: number | null = null;
+    let beforeDepositBalance: number | null = null;
+    let afterDepositBalance: number | null = null;
 
-    if (shouldRestoreBalance) {
+    if (walletRefund && !order.isSettleComplete) {
+      if (isCompanyBalanceMode && company && walletRefund.refundedDepositAmount > 0) {
+        await queryRunner.manager
+          .createQueryBuilder()
+          .update(UserCompanyEntity)
+          .set({ balance: () => 'balance + :amount' })
+          .where('id = :id', { id: company.id })
+          .setParameters({ amount: walletRefund.refundedDepositAmount })
+          .execute();
+        const freshCompany = await queryRunner.manager.findOne(UserCompanyEntity, { where: { id: company.id } });
+        afterDepositBalance = freshCompany!.balance;
+        beforeDepositBalance = afterDepositBalance - walletRefund.refundedDepositAmount;
+      }
+
+      const creditRestoreAmount = walletRefund.refundedCreditUsedAmount + walletRefund.refundedCreditExcessAmount;
+      if (creditRestoreAmount > 0) {
+        await queryRunner.manager
+          .createQueryBuilder()
+          .update(UserEntity)
+          .set({ allSettleAmount: () => 'all_settle_amount - :amount' })
+          .where('id = :id', { id: user.id })
+          .setParameters({ amount: creditRestoreAmount })
+          .execute();
+        const freshUser = await queryRunner.manager.findOne(UserEntity, { where: { id: user.id } });
+        afterAllSettleAmount = freshUser!.allSettleAmount;
+        beforeAllSettleAmount = afterAllSettleAmount + creditRestoreAmount;
+      }
+
+      beforeBalance = beforeDepositBalance ?? beforeAllSettleAmount ?? 0;
+      afterBalance = afterDepositBalance ?? afterAllSettleAmount ?? 0;
+    } else if (shouldRestoreBalance) {
       if (isCompanyBalanceMode && company) {
         await queryRunner.manager
           .createQueryBuilder()
@@ -388,7 +454,7 @@ export class CustomerServiceService {
         const fresh = await queryRunner.manager.findOne(UserCompanyEntity, { where: { id: company.id } });
         afterBalance = fresh!.balance;
         beforeBalance = afterBalance - restoreAmount;
-      } else {
+      } else if (!isWalletManaged) {
         await queryRunner.manager
           .createQueryBuilder()
           .update(UserEntity)
@@ -400,7 +466,6 @@ export class CustomerServiceService {
         afterBalance = fresh!.balance;
         beforeBalance = afterBalance - restoreAmount;
       }
-      // 레거시(wallet 미관리) 선입금환불분만 wallet deposit 동기화 (wallet-managed 는 wallet 경로가 처리).
       if (!isWalletManaged) {
         await this.legacyWalletCreditSyncService.syncDeposit(queryRunner.manager, {
           billingUserId,
@@ -423,7 +488,8 @@ export class CustomerServiceService {
       const fresh = await queryRunner.manager.findOne(UserEntity, { where: { id: user.id } });
       afterBalance = fresh!.allSettleAmount;
       beforeBalance = afterBalance + restoreAmount;
-      // 레거시(allocation 없음, wallet 미관리) 외상 복구분만 wallet 동기화 (wallet-managed 는 wallet 경로가 처리).
+      beforeAllSettleAmount = beforeBalance;
+      afterAllSettleAmount = afterBalance;
       if (!isWalletManaged) {
         await this.legacyWalletCreditSyncService.syncCredit(queryRunner.manager, {
           billingUserId,
@@ -436,46 +502,85 @@ export class CustomerServiceService {
       }
     }
 
-    const refundRouteMemo = order.isSettleComplete
-      ? '정산확정후폐기/선입금환불'
-      : order.isSettleBalance
-        ? '미정산/선입금환불'
-        : '미정산/여신복구';
-    // 여신(allSettleAmount) 복구인지 — 활동로그 재원 라벨 + 계정관리 이력관리 제외 판정에 공용.
+    const restoredResourceCount = [
+      restoreBreakdown.point,
+      restoreBreakdown.deposit,
+      restoreBreakdown.credit,
+      restoreBreakdown.creditExcess,
+    ].filter((amount) => amount > 0).length;
+    const isMixedRestore = restoredResourceCount > 1;
+    let restoreTarget: 'DEPOSIT' | 'CREDIT' | null = null;
+    if (!walletRefund) {
+      restoreTarget = restoreType === 'ALL_SETTLE_AMOUNT' ? 'CREDIT' : 'DEPOSIT';
+    } else if (restoredResourceCount === 1 && restoreBreakdown.deposit > 0) {
+      restoreTarget = 'DEPOSIT';
+    } else if (restoredResourceCount === 1 && restoreBreakdown.credit > 0) {
+      restoreTarget = 'CREDIT';
+    }
+
+    let refundRouteMemo: string;
+    if (order.isSettleComplete) {
+      refundRouteMemo = '정산확정후폐기/선입금환불';
+    } else if (!walletRefund) {
+      refundRouteMemo = order.isSettleBalance ? '미정산/선입금환불' : '미정산/여신복구';
+    } else if (isMixedRestore) {
+      refundRouteMemo = '미정산/혼합복구';
+    } else if (restoreBreakdown.deposit > 0) {
+      refundRouteMemo = '미정산/선입금환불';
+    } else if (restoreBreakdown.credit > 0) {
+      refundRouteMemo = '미정산/여신복구';
+    } else if (restoreBreakdown.point > 0) {
+      refundRouteMemo = '미정산/포인트복구';
+    } else if (restoreBreakdown.creditExcess > 0) {
+      refundRouteMemo = '미정산/신용초과복구';
+    } else {
+      refundRouteMemo = '미정산/만료포인트복구생략';
+    }
     const isCreditRestore = restoreType === 'ALL_SETTLE_AMOUNT';
 
-    await this.activityLogService.createLog({
-      userId: operatorUser.id,
-      userEmail: operatorUser.email,
-      method: 'POST',
-      requestUrl: '/customer-service/discard-restore',
-      actionType: ActivityLogActionType.DISCARD_RESTORE,
-      ipAddress: '',
-      statusCode: 200,
-      result: ActivityLogResult.SUCCESS,
-      responseTime: 0,
-      requestParams: {
-        targetUserId: billingUserId,
-        targetUserEmail: user.email,
-        targetBusinessName: company?.businessName ?? '',
-        targetCompanyId: company?.id ?? null,
-        orderDeliveryId: orderDelivery.id,
-        orderId: order.id,
-        restoreAmount,
-        isSettleBalance: order.isSettleBalance,
-        isSettleComplete: order.isSettleComplete,
-        restoreType,
-        restoreTarget: isCreditRestore ? 'CREDIT' : 'DEPOSIT',
-        ...(isCreditRestore ? { beforeAllSettleAmount: beforeBalance, afterAllSettleAmount: afterBalance } : {}),
-        beforeBalance,
-        afterBalance,
-        memo: `폐기복구(${refundRouteMemo})/ ${restoreAmount}원/ orderDelivery:${orderDelivery.id}`,
+    await this.activityLogService.createLog(
+      {
+        userId: operatorUser.id,
+        userEmail: operatorUser.email,
+        method: 'POST',
+        requestUrl: '/customer-service/discard-restore',
+        actionType: ActivityLogActionType.DISCARD_RESTORE,
+        ipAddress: '',
+        statusCode: 200,
+        result: ActivityLogResult.SUCCESS,
+        responseTime: 0,
+        requestParams: {
+          targetUserId: billingUserId,
+          targetUserEmail: user.email,
+          targetBusinessName: company?.businessName ?? '',
+          targetCompanyId: company?.id ?? null,
+          orderDeliveryId: orderDelivery.id,
+          orderId: order.id,
+          restoreAmount,
+          restoreBreakdown,
+          isSettleBalance: order.isSettleBalance,
+          isSettleComplete: order.isSettleComplete,
+          restoreType,
+          ...(restoreTarget ? { restoreTarget } : {}),
+          ...(beforeAllSettleAmount != null ? { beforeAllSettleAmount, afterAllSettleAmount } : {}),
+          ...(beforeDepositBalance != null ? { beforeDepositBalance, afterDepositBalance } : {}),
+          beforeBalance,
+          afterBalance,
+          memo: `폐기복구(${refundRouteMemo})/ ${restoreAmount}원/ orderDelivery:${orderDelivery.id}`,
+        },
       },
-    });
+      queryRunner.manager,
+    );
 
-    // 계정관리 > 이력관리 항목 기록.
-    // 여신복구(ALL_SETTLE_AMOUNT)는 예치금/선입금 이동 이력이 아니므로 계정관리 이력관리에서 제외한다.
-    if (!isCreditRestore) {
+    const historyRestoreAmount =
+      walletRefund && !order.isSettleComplete
+        ? isCompanyBalanceMode
+          ? walletRefund.refundedDepositAmount
+          : 0
+        : isCreditRestore
+          ? 0
+          : restoreAmount;
+    if (historyRestoreAmount > 0) {
       if (!operatorName) {
         const operatorEntity = await queryRunner.manager.findOne(UserEntity, {
           where: { id: operatorUser.id },
@@ -489,39 +594,9 @@ export class CustomerServiceService {
         userId: billingUserId,
         adminUserId: operatorUser.id,
         content: this.cryptoCipher.encryptDeliveryTarget(
-          `${operatorName}/ ${restoreAmount.toLocaleString()}원 폐기/ 회수/ ${contactNumber} 폐기/ ${now}`,
+          `${operatorName}/ ${historyRestoreAmount.toLocaleString()}원 폐기/ 회수/ ${contactNumber} 폐기/ ${now}`,
         ),
       });
-    }
-
-    // Wallet Cutover Bundle PR4 — wallet-managed 주문이면 wallet_account + wallet ledger 갱신.
-    // legacy 잔액 mirror (위 balance/allSettleAmount UPDATE) 는 그대로 유지 → wallet/legacy 합계 일관.
-    // 멱등키 = discard_refund:{orderId}:{deliveryId}:{attemptId} — attempt cycle 별 멱등.
-    if (isWalletManaged) {
-      latestAttempt =
-        latestAttempt ??
-        (await queryRunner.manager.findOne(OrderDeliveryAttemptEntity, {
-          where: { orderDeliveryId: orderDelivery.id },
-          order: { id: 'DESC' },
-        }));
-      if (!latestAttempt) {
-        throw new Error(
-          `wallet-managed delivery ${orderDelivery.id} missing delivery attempt — drift, aborting discard refund`,
-        );
-      }
-      if (order.isSettleComplete) {
-        return restoreAmount;
-      } else {
-        await this.refundPoolService.refund(
-          {
-            orderId: order.id,
-            eventType: OrderPaymentRefundEventType.DISCARD_REFUND,
-            targetDeliveryIds: [orderDelivery.id],
-            idempotencyKeyPrefix: `discard_refund:${order.id}:${orderDelivery.id}:${latestAttempt.id}`,
-          },
-          queryRunner.manager,
-        );
-      }
     }
 
     return restoreAmount;
@@ -997,6 +1072,7 @@ export class CustomerServiceService {
           ? orderDelivery.choiceSelectProduct.name
           : orderDelivery.orderProductMapping.product.name,
         deliveryTarget: decryptedDeliveryTarget ?? '',
+        memo: orderDelivery.memo,
         barCode: orderDelivery.barCode,
         brandName: displayBrand?.nameKorean ?? '',
         partnerCompanyName: displayPartnerCompany?.businessName ?? '',
@@ -1099,7 +1175,7 @@ export class CustomerServiceService {
     }
 
     // sendContent: order_product_mapping에서 가져오고, 대치문자 처리
-    let sendContent = applyReplaceCharacters(queryBuilder.orderProductMapping.sendContent ?? '', queryBuilder);
+    const sendContent = applyReplaceCharacters(queryBuilder.orderProductMapping.sendContent ?? '', queryBuilder);
 
     // 재고형 PIN 직접 이메일 건이면 §4.1 계약 필드를 덧붙인다. 일반 쿠폰은 null → 기존 응답 그대로.
     const inventoryPinView = await this.inventoryPinCsViewService.getView(queryBuilder);
@@ -1112,6 +1188,7 @@ export class CustomerServiceService {
       sendContent: sendContent,
       sendTitle: queryBuilder.orderProductMapping.sendTitle ?? null,
       deliveryTarget: decryptedDeliveryTarget ?? '',
+      memo: queryBuilder.memo,
       refundStatus: queryBuilder.refundStatus ?? null,
       refundRatio: queryBuilder.refundRatio ?? null,
       sendRequestAt: queryBuilder.sendRequestAt ? format(queryBuilder.sendRequestAt, DateFormatStr) : null,
@@ -1139,9 +1216,7 @@ export class CustomerServiceService {
       emailReceiverPhone: formattedEmailReceiverPhone,
       replacedFromId: queryBuilder.replacedFromId ?? null,
       couponIssuedAt: queryBuilder.couponIssuedAt ? format(queryBuilder.couponIssuedAt, DateFormatStr) : null,
-      ...(inventoryPinView
-        ? { brandCode: displayBrand?.code ?? '', ...inventoryPinView }
-        : {}),
+      ...(inventoryPinView ? { brandCode: displayBrand?.code ?? '', ...inventoryPinView } : {}),
     };
   }
 
@@ -1644,7 +1719,9 @@ export class CustomerServiceService {
     if (couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL) {
       const effectiveRatio = options?.refundRatio ?? orderDelivery.refundRatio;
       if (effectiveRatio == null || effectiveRatio < 1 || effectiveRatio > 100) {
-        throw new BadRequestException('환불폐기 처리를 위해서는 환불율(1~100)이 필요합니다. 정산정보에서 환불율을 먼저 설정해 주세요.');
+        throw new BadRequestException(
+          '환불폐기 처리를 위해서는 환불율(1~100)이 필요합니다. 정산정보에서 환불율을 먼저 설정해 주세요.',
+        );
       }
     }
 
@@ -2567,7 +2644,21 @@ export class CustomerServiceService {
         }
 
         const isSsg = orderDelivery.orderProductMapping.order.type === IOrderType.SSG;
-        const reissuePrice = orderDelivery.orderProductMapping.product.price;
+        // D3-70: 재발행은 원주문 가격을 보존한다 — 주문시점 박제값(snapshotProductPrice) 우선.
+        //  ※ 정책 근거: **실무팀 확인 완료** — "재발행 시에는 원래(주문시점) 값을 쓴다".
+        //    개발 임의 판단이 아니라 업무 규칙이므로, 현재가 기준으로 되돌리지 말 것.
+        //  - 과거엔 live product.price(가변)로 SSG 행사잔액을 재차감해, 주문 후 상품가가 바뀌면
+        //    같은 쿠폰의 재발행이 원주문과 다른 금액을 차감했다(원 차감액 = 주문시점 단가).
+        //  - 재발행은 delivery(라인) 단위라 order.sendAmount(주문 합계, 다회선이면 라인단가와 다름)가
+        //    아니라 라인 박제값을 쓴다. 차감(selectAndDeduct...)과 역복원(reverse...)이 이 한 값을
+        //    공유하므로, 소스를 바꿔도 차감/복원 균형은 그대로 유지된다.
+        const reissuePrice = readLineProductView(orderDelivery.orderProductMapping).price;
+        // ⚠️ expireDay 는 의도적으로 live 를 유지한다(price 와 기준이 다른 것은 혼재가 아니라 분리다).
+        //  - 돈(price) = 원주문 보존 / 유효기간 = "새 쿠폰이므로 새로 계산" — 아래 비-SSG 분기가
+        //    resolveExpireDays(... opm.product.expireDay ...) 로 같은 정책을 명시한다.
+        //  - 게다가 이 값은 SSG 행사 선택의 **정확일치 필터**(ssg.couponExpiration = :couponExpiration)다.
+        //    발행될 쿠폰의 유효기간과 행사 버킷이 같아야 하므로 snapshot 으로 바꾸면 옛 기간 버킷에서
+        //    차감하고 새 기간 쿠폰을 발행(회계 불일치)하거나, 그 기간 행사에 잔액이 없어 정상 재발행이 막힌다.
         const reissueExpireDay = orderDelivery.orderProductMapping.product.expireDay;
         const reissueOrderId = orderDelivery.orderProductMapping.order.id;
 
@@ -2797,6 +2888,10 @@ export class CustomerServiceService {
         newDelivery.deliveryMethod = discardedDelivery.deliveryMethod;
 
         const normalizedTarget = PhoneUtil.normalizeDeliveryTarget(newTarget);
+        const previousTarget = this.cryptoCipher.safeDecryptDeliveryTarget(discardedDelivery.deliveryTarget);
+        const isSameRecipient =
+          previousTarget !== null &&
+          PhoneUtil.normalizeDeliveryTarget(previousTarget) === normalizedTarget;
         const encryptedTarget = this.cryptoCipher.encryptDeliveryTarget(normalizedTarget);
         newDelivery.deliveryTarget = encryptedTarget;
         newDelivery.originalDeliveryTarget = encryptedTarget;
@@ -2805,6 +2900,7 @@ export class CustomerServiceService {
         newDelivery.replaceCharacter1 = discardedDelivery.replaceCharacter1;
         newDelivery.replaceCharacter2 = discardedDelivery.replaceCharacter2;
         newDelivery.replaceCharacter3 = discardedDelivery.replaceCharacter3;
+        newDelivery.memo = isSameRecipient ? discardedDelivery.memo : null;
         newDelivery.replacedFromId = discardedDelivery.id;
         newDelivery.couponStatus = OrderDeliveryCouponStatus.NOT_USED;
         newDelivery.mutationClaimedAt = mutationClaimAt;
@@ -2903,6 +2999,12 @@ export class CustomerServiceService {
         try {
           const ssgEvent = fullDelivery.ssgEvent ?? null;
           let reissueDeductUsed = true;
+          const ssgIssueAuthority = isSsg
+            ? await this.deliveryBatchService.createAndConsumeInitialSsgIssueAuthority(
+                fullDelivery,
+                `cs-reissue:${fullDelivery.id}:${mutationClaimAt.toISOString()}`,
+              )
+            : undefined;
 
           // PIN 발급 — 실패 시 SSG 선차감 역복원 + (미등록 확정이면) 폐기 역전·새 delivery 제거
           try {
@@ -2916,7 +3018,11 @@ export class CustomerServiceService {
               fullDelivery,
               ssgEvent,
               resendDeductionId ?? undefined,
+              ssgIssueAuthority,
             );
+            if (ssgIssueAuthority) {
+              await this.deliveryBatchService.markSsgIssueSucceeded(ssgIssueAuthority, fullDelivery.id);
+            }
             if (isSsg && reissueEvent && resendDeductionId && issueResult?.ssgNewIssue === false) {
               await this.deliveryBatchService.reverseReissueDeductDirect(
                 resendDeductionId,
@@ -2930,6 +3036,9 @@ export class CustomerServiceService {
               }
             }
           } catch (issueError) {
+            if (ssgIssueAuthority) {
+              await this.deliveryBatchService.markSsgIssueOpsReview(ssgIssueAuthority);
+            }
             if (isSsg && reissueEvent && resendDeductionId) {
               const outcome = await this.deliveryBatchService.reverseSsgReissueDeduct(
                 fullDelivery,

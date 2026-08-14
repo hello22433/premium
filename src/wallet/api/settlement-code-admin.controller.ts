@@ -1,6 +1,18 @@
 import { BadRequestException, Body, Controller, Get, ParseIntPipe, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsBoolean, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, MaxLength, Min } from 'class-validator';
+import {
+  IsBoolean,
+  IsIn,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Length,
+  Matches,
+  MaxLength,
+  Min,
+} from 'class-validator';
+import { Transform } from 'class-transformer';
 
 import { User } from '../../auth/api/user.decorator';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
@@ -29,10 +41,16 @@ class IssueCodeReqDto {
   userId: number;
 }
 
-class CreateCodeReqDto {
+export class CreateCodeReqDto {
   @IsInt()
   @Min(1)
   companyId: number;
+
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @Length(1, 50)
+  @Matches(/^[^\u0000-\u001F\u007F]*$/, { message: 'settlementCode 에 제어문자를 사용할 수 없습니다.' })
+  settlementCode: string;
 
   @IsOptional()
   @IsIn(['PRE_PAYMENT', 'POST_PAYMENT'])
@@ -178,9 +196,12 @@ export class SettlementCodeAdminController {
 
   /** 정산코드 키 단위 상세 (정책 + 잔액 + 배정 계정, 회사 걸침 포함 — N:M). */
   @Get('detail')
-  @ApiOperation({ summary: '정산코드 상세 조회 (정책/잔액/배정 계정)' })
-  detail(@Query('settlementCode') settlementCode: string): Promise<SettlementCodeDetail> {
-    return this.walletReadService.getSettlementCodeDetail(settlementCode);
+  @ApiOperation({ summary: '정산코드 상세 조회 (정책/잔액/배정 계정/rename 가능 여부)' })
+  detail(
+    @Query('settlementCode') settlementCode: string,
+    @Query('companyId', new ParseIntPipe()) companyId: number,
+  ): Promise<SettlementCodeDetail> {
+    return this.walletReadService.getSettlementCodeDetail(settlementCode, companyId);
   }
 
   /** 정산코드 정책/여신한도 변경 이력 (activity_log, cursor pagination). 예치금은 GET /deposits. */
@@ -271,13 +292,13 @@ export class SettlementCodeAdminController {
   }
 
   /**
-   * 배정 계정 없이 회사에 정산코드만 생성 (배정 대기 계정 0명인 회사 대응).
-   * 정산조건/정산방법/카드할증/여신한도를 생성과 동일 트랜잭션에 반영한다 (발급 후 정책 설정 2단계 호출 불필요).
+   * 운영자가 지정한 정산코드를 계정 배정 없이 회사에 생성한다.
+   * 정산조건/정산방법/카드할증/여신한도를 생성과 동일 트랜잭션에 반영한다.
    */
   @Post()
-  @ApiOperation({ summary: '정산코드 단독 생성 (계정 배정 없이, company-{id}-{n})' })
+  @ApiOperation({ summary: '사용자 지정 정산코드 생성 (계정 배정 없이)' })
   async create(@Body() body: CreateCodeReqDto): Promise<{ settlementCode: string }> {
-    const settlementCode = await this.adminService.createCodeForCompany(body.companyId, {
+    const settlementCode = await this.adminService.createCodeForCompany(body.companyId, body.settlementCode, {
       settleCondition: body.settleCondition,
       settleMethod: body.settleMethod,
       cardSurchargeApplied: body.cardSurchargeApplied,

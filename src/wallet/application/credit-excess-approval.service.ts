@@ -1,62 +1,128 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { randomBytes } from 'crypto';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
-import { CreditExcessApprovalEntity, CreditExcessApprovalStatus } from '../../entity/credit.excess.approval.entity';
-import { OrderEntity } from '../../entity/order.entity';
+import { DataSource, EntityManager, In, LessThan, Repository } from 'typeorm';
+import {
+  CREDIT_EXCESS_ACTIVE_STATUSES,
+  CreditExcessApprovalEntity,
+  CreditExcessApprovalStatus,
+} from '../../entity/credit.excess.approval.entity';
+import { CreditExcessApprovalExecutionEntity } from '../../entity/credit.excess.approval.execution.entity';
 import { UserEntity } from '../../entity/user.entity';
-import { WalletAccountResolverService } from './wallet-account-resolver.service';
+import {
+  CreditExcessApprovalClaimConflictError,
+  CreditExcessApprovalDriftError,
+} from './credit-excess-approval.errors';
+
+export interface CreateCreditExcessApprovalInput {
+  orderId: number;
+  walletAccountId: string | null;
+  requestedAmount: number;
+  requestedCreditExcessAmount: number;
+  reasonText: string;
+  requestedBy: number;
+  snapshotVersion: number;
+  snapshot: Record<string, unknown>;
+}
+
+export interface CreditExcessApprovalListItem {
+  id: string;
+  orderId: number;
+  requesterName: string;
+  requesterCompanyName: string;
+  requestedAt: string;
+  requestedAmount: number;
+  requestedCreditExcessAmount: number;
+  reasonText: string;
+  status: CreditExcessApprovalStatus;
+  approverName: string | null;
+  rejectReason: string | null;
+  userMessage: string | null;
+  changedFields: string[] | null;
+  /** 운영자 전용 진단 (요청자 조회 시 undefined) */
+  diagnosticCode?: string | null;
+  internalReason?: string | null;
+  processingStartedAt?: string | null;
+  finishedAt?: string | null;
+  attemptCount?: number;
+}
 
 /**
- * 신용초과 4단계 워크플로 (Open Decision 2).
- *  Step A — 기업관리자 발송확정 호출 → message='credit_excess' preview (DB 차감 없음, 별 method 아님)
- *  Step B — request(): reasonText 포함 PENDING row 생성
- *  Step C — approve / reject: 운영관리자 별도 API 호출
- *  Step D — consume(): 발송확정 트랜잭션 안에서 조건부 UPDATE (consumed_at 채움, affectedRows=1 검증)
+ * 신용초과 승인 **상태 저장소**.
+ *
+ * 승인 실행(발송확정 orchestration)은 OrderModule 이 소유한다. 본 서비스는 approval row 의
+ * 상태 전이·선점·실행 표식만 담당하며 OrderService 를 알지 않는다 (모듈 순환 차단).
+ *
+ * 상태 머신:
+ *   PENDING → PROCESSING → COMPLETED | FAILED | RE_REQUEST_REQUIRED
+ *   PENDING → REJECTED | EXPIRED
  */
 @Injectable()
 export class CreditExcessApprovalService {
+  /** PROCESSING lease 기본 수명. 만료 시 복구 작업이 실행 표식으로 결과를 판정한다. */
+  static readonly LEASE_MS = 5 * 60 * 1000;
+
   constructor(
     @InjectRepository(CreditExcessApprovalEntity)
     private readonly approvalRepository: Repository<CreditExcessApprovalEntity>,
+    @InjectRepository(CreditExcessApprovalExecutionEntity)
+    private readonly executionRepository: Repository<CreditExcessApprovalExecutionEntity>,
     @InjectRepository(UserEntity)
     private readonly userRepository: Repository<UserEntity>,
     @InjectDataSource() private readonly dataSource: DataSource,
-    private readonly walletAccountResolver: WalletAccountResolverService,
   ) {}
 
-  /**
-   * Step C — 사전 승인 목록 조회 (운영자). status 기본 PENDING. 요청자/승인자 이름·회사명은 user 조인.
-   */
-  async list(query: { status?: CreditExcessApprovalStatus; page?: number; take?: number }): Promise<{
-    list: Array<{
-      id: string;
-      orderId: number;
-      requesterName: string;
-      requesterCompanyName: string;
-      requestedAt: string;
-      requestedAmount: number;
-      requestedCreditExcessAmount: number;
-      reasonText: string;
-      status: CreditExcessApprovalStatus;
-      approverName: string | null;
-      rejectReason: string | null;
-    }>;
+  // ===== 조회 =====
+
+  /** 운영자 목록 조회. status 기본 PENDING. */
+  async list(
+    query: { status?: CreditExcessApprovalStatus; page?: number; take?: number },
+    scope: { requestedBy?: number; includeDiagnostics: boolean },
+  ): Promise<{
+    list: CreditExcessApprovalListItem[];
     totalCount: number;
     totalPage: number;
     currentPage: number;
   }> {
-    const status = query.status ?? CreditExcessApprovalStatus.PENDING;
     const page = query.page && query.page > 0 ? query.page : 1;
     const take = query.take && query.take > 0 ? query.take : 10;
 
+    const where: Record<string, unknown> = {};
+    if (query.status) where.status = query.status;
+    if (scope.requestedBy != null) where.requestedBy = scope.requestedBy;
+
     const [rows, totalCount] = await this.approvalRepository.findAndCount({
-      where: { status },
+      where,
       order: { requestedAt: 'DESC' },
       skip: (page - 1) * take,
       take,
     });
 
-    // 요청자/승인자 user 조인 (이름 + 회사명). 현재 entity 는 user_id 만 보유.
+    return {
+      list: await this.toListItems(rows, scope.includeDiagnostics),
+      totalCount,
+      totalPage: Math.ceil(totalCount / take),
+      currentPage: page,
+    };
+  }
+
+  async findOne(approvalId: string): Promise<CreditExcessApprovalEntity> {
+    const approval = await this.approvalRepository.findOne({ where: { id: approvalId } });
+    if (!approval) throw new NotFoundException(`approval not found id=${approvalId}`);
+    return approval;
+  }
+
+  async toListItem(
+    approval: CreditExcessApprovalEntity,
+    includeDiagnostics: boolean,
+  ): Promise<CreditExcessApprovalListItem> {
+    return (await this.toListItems([approval], includeDiagnostics))[0];
+  }
+
+  private async toListItems(
+    rows: CreditExcessApprovalEntity[],
+    includeDiagnostics: boolean,
+  ): Promise<CreditExcessApprovalListItem[]> {
     const userIds = [
       ...new Set(rows.flatMap((r) => [r.requestedBy, r.approvedBy].filter((x): x is number => x != null))),
     ];
@@ -65,10 +131,10 @@ export class CreditExcessApprovalService {
       : [];
     const userMap = new Map(users.map((u) => [u.id, u]));
 
-    const list = rows.map((r) => {
+    return rows.map((r) => {
       const requester = userMap.get(r.requestedBy);
       const approver = r.approvedBy != null ? userMap.get(r.approvedBy) : null;
-      return {
+      const base: CreditExcessApprovalListItem = {
         id: r.id,
         orderId: r.orderId,
         requesterName: requester?.personName ?? '',
@@ -80,198 +146,160 @@ export class CreditExcessApprovalService {
         status: r.status,
         approverName: approver?.personName ?? null,
         rejectReason: r.rejectReason,
+        userMessage: r.userMessage,
+        changedFields: r.changedFields,
+      };
+      if (!includeDiagnostics) return base;
+      return {
+        ...base,
+        diagnosticCode: r.diagnosticCode,
+        internalReason: r.internalReason,
+        processingStartedAt: r.processingStartedAt?.toISOString() ?? null,
+        finishedAt: r.finishedAt?.toISOString() ?? null,
+        attemptCount: r.attemptCount,
       };
     });
-
-    return {
-      list,
-      totalCount,
-      totalPage: Math.ceil(totalCount / take),
-      currentPage: page,
-    };
   }
 
+  // ===== 생성 =====
+
   /**
-   * Step B — 사전 승인 요청.
-   *
-   * 검증:
-   *  - reasonText 1~200자.
-   *  - orderId 존재 + requestedBy 가 order 의 billing user (clientUserId ?? userId).
-   *  - walletAccountId 가 order 의 wallet 과 일치.
-   *  - requestedCreditExcessAmount > 0, requestedAmount >= requestedCreditExcessAmount.
-   *  - 동일 orderId 의 PENDING/APPROVED 미사용 row 가 이미 있으면 거절 (중복 요청 차단).
+   * PENDING row 생성. 금액·wallet·스냅샷은 **호출자(OrderModule)가 서버에서 계산한 값**만 받는다.
+   * 같은 주문의 활성 요청은 생성 컬럼 unique key(`uq_credit_excess_active_order`) 로 차단된다.
    */
-  async request(input: {
-    orderId: number;
-    walletAccountId: string;
-    requestedAmount: number;
-    requestedCreditExcessAmount: number;
-    reasonText: string;
-    requestedBy: number;
-  }): Promise<CreditExcessApprovalEntity> {
-    if (!input.reasonText || input.reasonText.trim().length === 0) {
-      throw new BadRequestException('reasonText required');
+  async createPending(
+    input: CreateCreditExcessApprovalInput,
+    manager: EntityManager,
+  ): Promise<CreditExcessApprovalEntity> {
+    const reasonText = input.reasonText?.trim() ?? '';
+    if (reasonText.length === 0) {
+      throw new BadRequestException('요청 사유를 입력해 주세요.');
     }
-    if (input.reasonText.length > 200) {
-      throw new BadRequestException('reasonText must be <= 200 chars');
+    if (reasonText.length > 200) {
+      throw new BadRequestException('요청 사유는 200자 이내여야 합니다.');
     }
-    if (input.requestedCreditExcessAmount <= 0) {
-      throw new BadRequestException('requestedCreditExcessAmount must be > 0');
-    }
-    if (input.requestedAmount < input.requestedCreditExcessAmount) {
+
+    const repo = manager.getRepository(CreditExcessApprovalEntity);
+    const existingActive = await repo.findOne({
+      where: { orderId: input.orderId, status: In(CREDIT_EXCESS_ACTIVE_STATUSES) },
+    });
+    if (existingActive) {
       throw new BadRequestException(
-        `requestedAmount(${input.requestedAmount}) must be >= requestedCreditExcessAmount(${input.requestedCreditExcessAmount})`,
+        `이미 처리 중인 신용초과 승인 요청이 있습니다. (요청 ID=${existingActive.id}, 상태=${existingActive.status})`,
       );
     }
 
-    // 단일 트랜잭션 + order FOR UPDATE 로 동시 요청 직렬화 (race 차단).
-    // app-level findOne + save 만으로는 같은 orderId 의 active approval 2건 동시 INSERT 가능 →
-    // order row lock 으로 같은 주문의 request() 호출 순차 처리.
-    return this.dataSource.transaction(async (manager) => {
-      const order = await manager
-        .getRepository(OrderEntity)
-        .createQueryBuilder('o')
-        .setLock('pessimistic_write')
-        .where('o.id = :id', { id: input.orderId })
-        .getOne();
-      if (!order) {
-        throw new NotFoundException(`order not found id=${input.orderId}`);
+    try {
+      return await repo.save(
+        repo.create({
+          ...input,
+          reasonText,
+          status: CreditExcessApprovalStatus.PENDING,
+          attemptCount: 0,
+        }),
+      );
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ER_DUP_ENTRY') {
+        throw new BadRequestException('이미 처리 중인 신용초과 승인 요청이 있습니다.');
       }
-      const billingUserId = order.clientUserId ?? order.userId;
-      if (billingUserId !== input.requestedBy) {
-        throw new ForbiddenException(
-          `requester(${input.requestedBy}) is not the billing user(${billingUserId}) of order ${input.orderId}`,
-        );
-      }
-      const wallet = await this.walletAccountResolver.resolveForOrder(order, manager);
-      if (String(wallet.id) !== String(input.walletAccountId)) {
-        throw new ForbiddenException(
-          `walletAccountId mismatch (expected=${wallet.id}, actual=${input.walletAccountId}) for order ${input.orderId}`,
-        );
-      }
-
-      // 동일 order 미사용 active approval 중복 차단 — order lock 보유 상태에서 단일 조회.
-      const existingActive = await manager.getRepository(CreditExcessApprovalEntity).findOne({
-        where: [
-          { orderId: input.orderId, status: CreditExcessApprovalStatus.PENDING, consumedAt: IsNull() },
-          { orderId: input.orderId, status: CreditExcessApprovalStatus.APPROVED, consumedAt: IsNull() },
-        ],
-      });
-      if (existingActive) {
-        throw new BadRequestException(
-          `order ${input.orderId} already has active approval (id=${existingActive.id}, status=${existingActive.status})`,
-        );
-      }
-
-      return manager.getRepository(CreditExcessApprovalEntity).save({
-        ...input,
-        status: CreditExcessApprovalStatus.PENDING,
-      });
-    });
+      throw error;
+    }
   }
 
+  // ===== 상태 전이 =====
+
   /**
-   * Step C - approve / reject: 조건부 UPDATE (status=PENDING) + affectedRows=1 검증.
-   * findOne + save 패턴은 approve/reject 동시 호출 시 race — 둘 다 PENDING 을 읽고 마지막 save 가
-   * 최종 상태 덮어쓰는 lost-update 가능. WHERE 절에 status=PENDING 조건 포함 + affectedRows
-   * 확인으로 race-free 보장.
+   * PENDING → PROCESSING CAS 선점 (짧은 독립 트랜잭션).
+   * 새 attempt/fencing token 을 발급해 이후 실행·최종화·복구 판정 기준으로 삼는다.
    */
-  async approve(approvalId: string, approverUserId: number): Promise<CreditExcessApprovalEntity> {
+  async claimForProcessing(
+    approvalId: string,
+    approverUserId: number,
+    leaseMs = CreditExcessApprovalService.LEASE_MS,
+  ): Promise<{ approval: CreditExcessApprovalEntity; attemptToken: string }> {
+    const attemptToken = randomBytes(24).toString('hex');
     const now = new Date();
     const result = await this.approvalRepository
       .createQueryBuilder()
       .update(CreditExcessApprovalEntity)
       .set({
-        status: CreditExcessApprovalStatus.APPROVED,
+        status: CreditExcessApprovalStatus.PROCESSING,
         approvedBy: approverUserId,
         approvedAt: now,
+        attemptToken,
+        attemptCount: () => 'attempt_count + 1',
+        processingStartedAt: now,
+        leaseExpiresAt: new Date(now.getTime() + leaseMs),
+        diagnosticCode: null,
+        userMessage: null,
+        changedFields: null,
+        internalReason: null,
       })
-      .where('id = :id AND status = :pending', {
-        id: approvalId,
-        pending: CreditExcessApprovalStatus.PENDING,
-      })
+      .where('id = :id AND status = :pending', { id: approvalId, pending: CreditExcessApprovalStatus.PENDING })
       .execute();
 
     if (result.affected !== 1) {
-      // 실패 원인 구분 — not found vs status 이미 변경됨
-      const existing = await this.approvalRepository.findOne({ where: { id: approvalId } });
-      if (!existing) {
-        throw new NotFoundException(`approval not found id=${approvalId}`);
-      }
-      throw new BadRequestException(`approval status is ${existing.status}, cannot approve`);
+      // 선점 실패 = 이미 다른 요청/전이가 PENDING 을 소진했다. 최신 상태를 실어 conflict 로 던지면
+      // orchestration 이 400 대신 멱등 응답으로 처리한다.
+      throw new CreditExcessApprovalClaimConflictError(await this.findOne(approvalId));
     }
-
-    return (await this.approvalRepository.findOne({ where: { id: approvalId } }))!;
+    return { approval: await this.findOne(approvalId), attemptToken };
   }
 
-  async reject(approvalId: string, approverUserId: number, rejectReason: string): Promise<CreditExcessApprovalEntity> {
-    if (!rejectReason || rejectReason.trim().length === 0) {
-      throw new BadRequestException('rejectReason required');
+  /** 발송확정 트랜잭션 진입부: approval row FOR UPDATE + PROCESSING/token 검증. */
+  async lockProcessing(
+    manager: EntityManager,
+    approvalId: string,
+    attemptToken: string,
+  ): Promise<CreditExcessApprovalEntity> {
+    const approval = await manager
+      .getRepository(CreditExcessApprovalEntity)
+      .createQueryBuilder('a')
+      .setLock('pessimistic_write')
+      .where('a.id = :id', { id: approvalId })
+      .getOne();
+    if (!approval) {
+      throw new NotFoundException(`approval not found id=${approvalId}`);
     }
-    const now = new Date();
-    const result = await this.approvalRepository
-      .createQueryBuilder()
-      .update(CreditExcessApprovalEntity)
-      .set({
-        status: CreditExcessApprovalStatus.REJECTED,
-        approvedBy: approverUserId,
-        approvedAt: now,
-        rejectReason,
-      })
-      .where('id = :id AND status = :pending', {
-        id: approvalId,
-        pending: CreditExcessApprovalStatus.PENDING,
-      })
-      .execute();
-
-    if (result.affected !== 1) {
-      const existing = await this.approvalRepository.findOne({ where: { id: approvalId } });
-      if (!existing) {
-        throw new NotFoundException(`approval not found id=${approvalId}`);
-      }
-      throw new BadRequestException(`approval status is ${existing.status}, cannot reject`);
+    if (approval.status !== CreditExcessApprovalStatus.PROCESSING || approval.attemptToken !== attemptToken) {
+      throw new ForbiddenException(
+        `approval attempt is not current (status=${approval.status}, tokenMatched=${approval.attemptToken === attemptToken})`,
+      );
     }
-
-    return (await this.approvalRepository.findOne({ where: { id: approvalId } }))!;
+    return approval;
   }
 
   /**
-   * 발송확정 트랜잭션 안에서 호출. 조건부 UPDATE로 1회만 사용 보장.
-   * affectedRows=0 (이미 사용됐거나 status 변동) → ForbiddenException.
-   *
-   * externalManager 지정 시 그 트랜잭션 안에서 실행 (same-tx 보장).
-   * 미지정 시 default repository (별 트랜잭션) — PR1 caller 없음, PR2 이후 발송확정 hook 에서 manager 주입 필수.
+   * 발송확정 트랜잭션 안에서 승인 소비 + 금액 재확인.
+   * 금액이 어긋나면 재요청 필요로 분류되도록 drift 오류를 던진다.
    */
   async consume(
     approvalId: string,
     orderId: number,
     expectedCreditExcessAmount: number,
     expectedRequestedAmount: number,
-    externalManager?: EntityManager,
+    manager: EntityManager,
   ): Promise<void> {
-    const approvalRepo = externalManager
-      ? externalManager.getRepository(CreditExcessApprovalEntity)
-      : this.approvalRepository;
-
-    const approval = await approvalRepo.findOne({
-      where: { id: approvalId, status: CreditExcessApprovalStatus.APPROVED, consumedAt: IsNull() },
-    });
+    const approvalRepo = manager.getRepository(CreditExcessApprovalEntity);
+    const approval = await approvalRepo.findOne({ where: { id: approvalId } });
     if (!approval) {
-      throw new ForbiddenException('approval not APPROVED or already consumed');
+      throw new ForbiddenException(`approval not found id=${approvalId}`);
+    }
+    if (approval.status !== CreditExcessApprovalStatus.PROCESSING || approval.consumedAt != null) {
+      throw new ForbiddenException(`approval not PROCESSING or already consumed (status=${approval.status})`);
     }
     if (approval.orderId !== orderId) {
       throw new ForbiddenException(`approval orderId mismatch (expected=${orderId}, actual=${approval.orderId})`);
     }
-    if (approval.requestedCreditExcessAmount !== expectedCreditExcessAmount) {
-      throw new ForbiddenException(
-        `approval amount mismatch (expected=${expectedCreditExcessAmount}, actual=${approval.requestedCreditExcessAmount})`,
-      );
-    }
-    // 총 청구액 대조 — 포인트/예치금 입력으로 확정 시점 총액이 승인 시점과 달라지면 차단.
-    // requestedCreditExcessAmount 만으로는 "승인받은 분배 ≠ 확정 분배" (총액 변화) 를 못 잡음.
-    if (approval.requestedAmount !== expectedRequestedAmount) {
-      throw new ForbiddenException(
-        `approval requestedAmount mismatch (expected=${expectedRequestedAmount}, actual=${approval.requestedAmount})`,
+
+    const changed: string[] = [];
+    if (approval.requestedCreditExcessAmount !== expectedCreditExcessAmount) changed.push('신용초과 금액');
+    if (approval.requestedAmount !== expectedRequestedAmount) changed.push('결제 금액');
+    if (changed.length > 0) {
+      throw new CreditExcessApprovalDriftError(
+        changed,
+        `amount drift (excess ${approval.requestedCreditExcessAmount}→${expectedCreditExcessAmount}, ` +
+          `payable ${approval.requestedAmount}→${expectedRequestedAmount})`,
       );
     }
 
@@ -281,7 +309,7 @@ export class CreditExcessApprovalService {
       .set({ consumedAt: () => 'NOW(6)' })
       .where('id = :id AND status = :status AND consumed_at IS NULL', {
         id: approvalId,
-        status: CreditExcessApprovalStatus.APPROVED,
+        status: CreditExcessApprovalStatus.PROCESSING,
       })
       .execute();
     if (result.affected !== 1) {
@@ -289,9 +317,185 @@ export class CreditExcessApprovalService {
     }
   }
 
-  private async findOrThrow(approvalId: string): Promise<CreditExcessApprovalEntity> {
-    const approval = await this.approvalRepository.findOne({ where: { id: approvalId } });
-    if (!approval) throw new NotFoundException(`approval not found id=${approvalId}`);
-    return approval;
+  // ===== 실행 표식 =====
+
+  /** 발송확정과 **같은 트랜잭션**에서 1회 기록. 모든 lifecycle 모드 공통. */
+  async recordExecution(
+    manager: EntityManager,
+    input: { approvalId: string; orderId: number; attemptToken: string; lifecycleMode: string },
+  ): Promise<void> {
+    const repo = manager.getRepository(CreditExcessApprovalExecutionEntity);
+    try {
+      await repo.insert(repo.create(input));
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ER_DUP_ENTRY') {
+        throw new ForbiddenException(`approval ${input.approvalId} already executed`);
+      }
+      throw error;
+    }
+  }
+
+  async findExecution(
+    approvalId: string,
+    manager?: EntityManager,
+  ): Promise<CreditExcessApprovalExecutionEntity | null> {
+    const repo = manager ? manager.getRepository(CreditExcessApprovalExecutionEntity) : this.executionRepository;
+    return repo.findOne({ where: { approvalId } });
+  }
+
+  // ===== 최종화 =====
+
+  /** 실행 표식(approvalId + token) 확인 후 PROCESSING → COMPLETED. */
+  async finalizeCompleted(approvalId: string, attemptToken: string, userMessage: string): Promise<void> {
+    await this.dataSource.transaction(async (manager) => {
+      const execution = await this.findExecution(approvalId, manager);
+      if (!execution || execution.attemptToken !== attemptToken) {
+        throw new ForbiddenException(`execution marker missing for approval ${approvalId}`);
+      }
+      await manager
+        .getRepository(CreditExcessApprovalEntity)
+        .createQueryBuilder()
+        .update(CreditExcessApprovalEntity)
+        .set({
+          status: CreditExcessApprovalStatus.COMPLETED,
+          finishedAt: () => 'NOW(6)',
+          leaseExpiresAt: null,
+          userMessage,
+          diagnosticCode: 'DISPATCH_COMPLETED',
+          changedFields: null,
+          internalReason: null,
+        })
+        .where('id = :id AND attempt_token = :token AND status = :processing', {
+          id: approvalId,
+          token: attemptToken,
+          processing: CreditExcessApprovalStatus.PROCESSING,
+        })
+        .execute();
+    });
+  }
+
+  /** PROCESSING → FAILED | RE_REQUEST_REQUIRED (실행 표식이 없을 때만). */
+  async finalizeFailure(input: {
+    approvalId: string;
+    attemptToken: string;
+    status: CreditExcessApprovalStatus.FAILED | CreditExcessApprovalStatus.RE_REQUEST_REQUIRED;
+    diagnosticCode: string;
+    userMessage: string;
+    changedFields: string[] | null;
+    internalReason: string;
+  }): Promise<void> {
+    await this.dataSource.transaction(async (manager) => {
+      const execution = await this.findExecution(input.approvalId, manager);
+      if (execution && execution.attemptToken === input.attemptToken) {
+        // 확정이 실제로 커밋된 뒤 최종화만 실패한 경우 — 실패로 덮어쓰지 않는다.
+        return;
+      }
+      await manager
+        .getRepository(CreditExcessApprovalEntity)
+        .createQueryBuilder()
+        .update(CreditExcessApprovalEntity)
+        .set({
+          status: input.status,
+          finishedAt: () => 'NOW(6)',
+          leaseExpiresAt: null,
+          diagnosticCode: input.diagnosticCode,
+          userMessage: input.userMessage,
+          changedFields: input.changedFields,
+          internalReason: input.internalReason.slice(0, 500),
+        })
+        .where('id = :id AND attempt_token = :token AND status = :processing', {
+          id: input.approvalId,
+          token: input.attemptToken,
+          processing: CreditExcessApprovalStatus.PROCESSING,
+        })
+        .execute();
+    });
+  }
+
+  /** 운영자 명시 거절 (PENDING 만). */
+  async reject(approvalId: string, approverUserId: number, rejectReason: string): Promise<void> {
+    if (!rejectReason || rejectReason.trim().length === 0) {
+      throw new BadRequestException('거절 사유를 입력해 주세요.');
+    }
+    const result = await this.approvalRepository
+      .createQueryBuilder()
+      .update(CreditExcessApprovalEntity)
+      .set({
+        status: CreditExcessApprovalStatus.REJECTED,
+        approvedBy: approverUserId,
+        approvedAt: new Date(),
+        finishedAt: () => 'NOW(6)',
+        rejectReason: rejectReason.trim().slice(0, 200),
+        diagnosticCode: 'REJECTED_BY_OPERATOR',
+        userMessage: '운영자가 신용초과 발송을 거절했습니다.',
+      })
+      .where('id = :id AND status = :pending', { id: approvalId, pending: CreditExcessApprovalStatus.PENDING })
+      .execute();
+
+    if (result.affected !== 1) {
+      const existing = await this.findOne(approvalId);
+      throw new BadRequestException(`현재 상태(${existing.status})에서는 거절할 수 없습니다.`);
+    }
+  }
+
+  // ===== lease 복구 =====
+
+  /** lease 만료된 PROCESSING 후보. 만료만으로 실패 처리하지 않고 복구 작업이 표식으로 판정한다. */
+  async findExpiredProcessing(limit: number): Promise<CreditExcessApprovalEntity[]> {
+    return this.approvalRepository.find({
+      where: { status: CreditExcessApprovalStatus.PROCESSING, leaseExpiresAt: LessThan(new Date()) },
+      order: { leaseExpiresAt: 'ASC' },
+      take: limit,
+    });
+  }
+
+  /**
+   * lease 만료 건 복구. approval row 를 FOR UPDATE 로 잠근 뒤 같은 트랜잭션에서 실행 표식을 다시 조회한다.
+   *  - 동일 token 표식 존재 → COMPLETED 수렴 (재발송 금지)
+   *  - 표식 없음 + PROCESSING + token 동일 → FAILED
+   */
+  async recoverExpired(approvalId: string): Promise<CreditExcessApprovalStatus | null> {
+    return this.dataSource.transaction(async (manager) => {
+      const approval = await manager
+        .getRepository(CreditExcessApprovalEntity)
+        .createQueryBuilder('a')
+        .setLock('pessimistic_write')
+        .where('a.id = :id', { id: approvalId })
+        .getOne();
+      if (!approval || approval.status !== CreditExcessApprovalStatus.PROCESSING) {
+        return null;
+      }
+      if (approval.leaseExpiresAt != null && approval.leaseExpiresAt > new Date()) {
+        // 재선점으로 lease 가 갱신된 건 — 건드리지 않는다.
+        return null;
+      }
+
+      const execution = await this.findExecution(approvalId, manager);
+      const converged = execution != null && execution.attemptToken === approval.attemptToken;
+      const status = converged ? CreditExcessApprovalStatus.COMPLETED : CreditExcessApprovalStatus.FAILED;
+
+      await manager
+        .getRepository(CreditExcessApprovalEntity)
+        .createQueryBuilder()
+        .update(CreditExcessApprovalEntity)
+        .set({
+          status,
+          finishedAt: () => 'NOW(6)',
+          leaseExpiresAt: null,
+          diagnosticCode: converged ? 'DISPATCH_COMPLETED_RECOVERED' : 'DISPATCH_LEASE_EXPIRED',
+          userMessage: converged ? '발송확정이 완료되었습니다.' : '발송확정 처리가 중단되었습니다. 다시 요청해 주세요.',
+          internalReason: converged
+            ? `recovered by execution marker id=${execution!.id}`
+            : 'lease expired without execution marker',
+        })
+        .where('id = :id AND status = :processing AND attempt_token = :token', {
+          id: approvalId,
+          processing: CreditExcessApprovalStatus.PROCESSING,
+          token: approval.attemptToken,
+        })
+        .execute();
+
+      return status;
+    });
   }
 }

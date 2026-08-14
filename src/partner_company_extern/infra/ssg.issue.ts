@@ -196,18 +196,17 @@ export class SsgIssue implements ISsgIssue {
       // ATTEMPTED 유지 → orphan resolver가 SSG check로 확정해야 한다.
       throw new SsgIssueUnknownError(reason ?? 'SSG 등록 응답에서 code를 파싱하지 못했습니다 (응답 schema 비정상).');
     }
+    if (code === '1000') {
+      return resultToJson;
+    }
     if (code === '9999') {
       // 9999 = 중계 서버↔SSG Oracle 통신 실패. INSERT 결과 미확정.
-      // 실측: 9999 후 수동 재발송 성공률 100% — 확정 거절이 아니라 일시적 오류.
-      // ATTEMPTED 유지 → pass 2 재진입 시 classifySsgPin이 등록 여부를 확정한다.
+      // ATTEMPTED 유지 → resolver가 등록 여부를 확정한다.
       throw new SsgIssueUnknownError(reason ?? `SSG 등록 결과 미확정 (code: ${code})`);
     }
-    if (code !== '1000') {
-      // 정상 응답이지만 신세계 측 거절 확정.
-      // 호출자는 이 에러를 catch해 SsgInsertState.FAILED로 마킹하고 SSG 행사 잔액 복구 분기를 탈 수 있다.
-      throw new SsgIssueRejectedError(code, reason ?? `SSG 등록 실패 (code: ${code})`);
-    }
-    return resultToJson;
+    // SSG INSERT의 확정 거절 코드는 현재 코드베이스에 공식 계약으로 증빙되어 있지 않다.
+    // 따라서 1000 이외의 응답은 모두 결과 미확정으로 남긴다.
+    throw new SsgIssueUnknownError(reason ?? `SSG 등록 결과 미확정 (code: ${code})`);
   }
 
   private generateCode(prefix: string, length: number): string {
@@ -251,7 +250,9 @@ export class SsgIssue implements ISsgIssue {
     const code = resultToJson?.response?.result?.[0]?.code?.[0];
     const reason = resultToJson?.response?.result?.[0]?.reason?.[0];
     if (code !== '1001') {
-      throw new SsgCheckNotFoundError(reason ?? `SSG 조회 실패 (code: ${code ?? 'null'})`);
+      // GetSsgStatus의 공식 미존재 코드는 이 코드베이스에 증빙되어 있지 않다.
+      // 9999, 누락, 인증/권한 오류와 그 밖의 코드는 모두 조회 결과 미확정이다.
+      throw new SsgIssueUnknownError(reason ?? `SSG 조회 결과 미확정 (code: ${code ?? 'null'})`);
     }
     return resultToJson;
   }

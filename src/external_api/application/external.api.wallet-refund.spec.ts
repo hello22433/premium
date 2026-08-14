@@ -39,8 +39,15 @@ import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { IOrderType } from '../../order/interface/order.type';
 import { IOrderStatus } from '../../order/interface/order.status';
 import { OrderDeliveryCouponStatus } from '../../delivery/interface/order.delivery.coupon.status';
+import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import { SsgRecoveryResult } from '../../delivery/interface/ssg.recovery.result';
 import { ActivityLogActionType } from '../../activity_log/interface/activity.log.action.type';
+import {
+  SsgIssueAlreadyConfirmedError,
+  SsgIssueAttemptAlreadyActiveError,
+  SsgIssueRejectedError,
+  SsgIssueUnknownError,
+} from '../../partner_company_extern/infra/ssg.issue';
 
 // External API 환불(실패/취소) + 재발송 가드 wallet 정합화 단위 테스트.
 //   - R7-A: phaseC_handleFailure claim 멱등 흡수.
@@ -98,6 +105,13 @@ function refundService(opts: {
   isWalletManaged: boolean;
   claimThrows?: Error;
   allocation?: { depositUsedAmount: number; creditUsedAmount: number; creditExcessAmount: number };
+  refundBreakdown?: {
+    depositAmount: number;
+    creditAmount: number;
+    creditExcessAmount: number;
+    pointAmount?: number;
+    pointSkippedExpiredAmount?: number;
+  };
   attempt?: { id: string } | null;
   recoverResult?: SsgRecoveryResult;
   refundAlreadyRefunded?: boolean;
@@ -125,6 +139,11 @@ function refundService(opts: {
     depositUsedAmount: 30000,
     creditUsedAmount: 0,
     creditExcessAmount: 0,
+  };
+  const refundBreakdown = opts.refundBreakdown ?? {
+    depositAmount: allocation.depositUsedAmount,
+    creditAmount: allocation.creditUsedAmount,
+    creditExcessAmount: allocation.creditExcessAmount,
   };
   const managerFindOne = jest.fn(async (entity: any) => {
     const name = entity?.name ?? '';
@@ -158,7 +177,16 @@ function refundService(opts: {
   const getLedgerId = jest.fn(async () => 991);
   const refund = jest.fn(async () => ({
     ledgerIds: ['l1'],
-    totalRefundedAmount: 30000,
+    totalRefundedAmount:
+      (refundBreakdown.pointAmount ?? 0) +
+      refundBreakdown.depositAmount +
+      refundBreakdown.creditAmount +
+      refundBreakdown.creditExcessAmount,
+    refundedPointAmount: refundBreakdown.pointAmount ?? 0,
+    refundedDepositAmount: refundBreakdown.depositAmount,
+    refundedCreditUsedAmount: refundBreakdown.creditAmount,
+    refundedCreditExcessAmount: refundBreakdown.creditExcessAmount,
+    pointSkippedExpiredAmount: refundBreakdown.pointSkippedExpiredAmount ?? 0,
     alreadyRefunded: opts.refundAlreadyRefunded ?? false,
   }));
   const refundBalance = jest.fn(async () => ({
@@ -225,11 +253,10 @@ describe('phaseC_handleFailure — R7-A claim 멱등 + R2 wallet 환불', () => 
     expect(mocks.transaction).toHaveBeenCalledWith('READ COMMITTED', expect.any(Function));
     expect((mocks.refund.mock.calls[0] as any[])[1]).toBe(mocks.transactionManager);
 
-    // legacy mirror 역복원: company.balance += depositUsed, allSettleAmount -= 0
+    // legacy mirror 역복원: 실제 환불된 예치금만 company.balance에 반영하고 0원 여신 UPDATE는 생략한다.
     const companyUpdate = queries.find((q) => q.sql.includes('user_company SET balance = balance + ?'));
     expect(companyUpdate!.params).toEqual([30000, 9]);
-    const allSettleUpdate = queries.find((q) => q.sql.includes('all_settle_amount = all_settle_amount - ?'));
-    expect(allSettleUpdate!.params).toEqual([0, 42]);
+    expect(queries.some((q) => q.sql.includes('all_settle_amount = all_settle_amount - ?'))).toBe(false);
 
     // wallet path → raw refundBalance 미호출 (이중복원 없음)
     expect(mocks.refundBalance).not.toHaveBeenCalled();
@@ -293,6 +320,43 @@ describe('phaseC_handleFailure — R7-A claim 멱등 + R2 wallet 환불', () => 
 
     expect(mocks.refund).not.toHaveBeenCalled();
     expect(mocks.refundBalance).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['UNKNOWN', new SsgIssueUnknownError('SSG 후보 판정 미확정(UNKNOWN)')],
+    ['MULTIPLE', new SsgIssueUnknownError('SSG 후보 판정 미확정(MULTIPLE_CONFIRMED)')],
+    ['stale active completion', new SsgIssueAttemptAlreadyActiveError(55)],
+    ['stale confirmed completion', new SsgIssueAlreadyConfirmedError(55)],
+  ])('SSG %s는 WAIT/운영 보류를 유지하고 FAIL·환불을 수행하지 않는다', async (_case, error) => {
+    const { svc, mocks } = refundService({ isWalletManaged: true });
+    const order = makeOrder({ type: IOrderType.SSG });
+    const orderDelivery = makeOrderDelivery({ ssgEventId: 7, status: IOrderDeliveryStatus.WAIT });
+
+    await (svc as any).phaseC_handleFailure(order, orderDelivery, makeAccount(), error);
+
+    expect(orderDelivery.status).toBe(IOrderDeliveryStatus.WAIT);
+    expect(mocks.odUpdate).not.toHaveBeenCalled();
+    expect(mocks.claim).not.toHaveBeenCalled();
+    expect(mocks.recoverWithLease).not.toHaveBeenCalled();
+    expect(mocks.refund).not.toHaveBeenCalled();
+    expect(mocks.refundBalance).not.toHaveBeenCalled();
+  });
+
+  it('SSG 확정 거절은 기존 FAIL·환불 경로로 처리한다', async () => {
+    const { svc, mocks } = refundService({ isWalletManaged: true });
+    const order = makeOrder({ type: IOrderType.SSG });
+    const orderDelivery = makeOrderDelivery({ ssgEventId: 7 });
+
+    await (svc as any).phaseC_handleFailure(
+      order,
+      orderDelivery,
+      makeAccount(),
+      new SsgIssueRejectedError('1001', 'SSG INSERT rejected'),
+    );
+
+    expect(mocks.odUpdate).toHaveBeenCalled();
+    expect(mocks.claim).toHaveBeenCalledTimes(1);
+    expect(mocks.recoverWithLease).toHaveBeenCalledTimes(1);
+    expect(mocks.refund).toHaveBeenCalledTimes(1);
   });
 
   it('SSG 발송실패 → recoverWithLease 단일 CAS 게이트 경유 (resolver 직접 호출 안 함, 선체크 isSsgSettled 제거)', async () => {
@@ -401,6 +465,30 @@ describe('processCancelRefund — R2 wallet 환불 (DISCARD_REFUND)', () => {
     expect(mocks.refundBalance).not.toHaveBeenCalled();
     // wallet-managed → legacy 예치금 sync 미호출
     expect(mocks.syncDeposit).not.toHaveBeenCalled();
+  });
+
+  it('WALLET 혼합재원 취소는 allocation 전체가 아니라 개별 환불 결과만 mirror에 반영한다', async () => {
+    const { svc, queries } = refundService({
+      isWalletManaged: true,
+      allocation: { depositUsedAmount: 30000, creditUsedAmount: 20000, creditExcessAmount: 0 },
+      refundBreakdown: {
+        depositAmount: 5000,
+        creditAmount: 3000,
+        creditExcessAmount: 0,
+      },
+    });
+
+    await (svc as any).processCancelRefund(
+      makeOrder(),
+      makeOrderDelivery(),
+      makeAccount({ isCompany: true }),
+      LEASE_TOKEN,
+    );
+
+    const companyUpdate = queries.find((q) => q.sql.includes('user_company SET balance = balance + ?'));
+    expect(companyUpdate!.params).toEqual([5000, 9]);
+    const allSettleUpdate = queries.find((q) => q.sql.includes('all_settle_amount = all_settle_amount - ?'));
+    expect(allSettleUpdate!.params).toEqual([3000, 42]);
   });
 
   it('LEGACY 취소 → 기존 refundBalance 회귀 0', async () => {

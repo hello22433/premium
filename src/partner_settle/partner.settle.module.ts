@@ -20,7 +20,9 @@ import { PartnerSettleObservationService } from './application/partner.settle.ob
 import { PartnerCreditConfigService } from './application/partner.credit.config.service';
 import { PartnerCreditListService } from './application/partner.credit.list.service';
 import { CreditFeatureFlag } from './application/credit.feature.flag';
-import { GalaxiaBalanceInquiryStub, GiftShowBalanceInquiryStub } from './application/partner.balance.inquiry.stub';
+import { GiftShowBalanceInquiry } from './application/giftshow.balance.inquiry';
+import { GiftishowHttp } from '../partner_company_extern/infra/giftishow.http';
+import { HttpModule } from '@nestjs/axios';
 import { PARTNER_BALANCE_INQUIRIES } from './application/partner.balance.inquiry.token';
 import { PartnerSettleFeatureFlag } from './application/partner.settle.feature.flag';
 import { PartnerSettleProducerService } from './application/partner.settle.producer.service';
@@ -59,9 +61,13 @@ import { ActivityLogModule } from '../activity_log/activity.log.module';
 import { PaymentVarianceController } from './api/payment.variance.controller';
 import { PartnerSettlePaymentVarianceService } from './application/partner.settle.payment.variance.service';
 import { PartnerDiscountReservationEntity } from '../entity/partner.discount.reservation.entity';
+import { PartnerSettleAdjustmentProposalEntity } from '../entity/partner.settle.adjustment.proposal.entity';
 import { DiscountReservationController } from './api/discount.reservation.controller';
+import { AdjustmentProposalController } from './api/adjustment.proposal.controller';
 import { PartnerDiscountReservationService } from './application/partner.discount.reservation.service';
 import { PartnerDiscountReservationSchedule } from './application/partner.discount.reservation.schedule';
+import { PartnerSettleAdjustmentProposalService } from './application/partner.settle.adjustment.proposal.service';
+import { PartnerSettleRepriceService } from './application/partner.settle.reprice.service';
 
 /**
  * 협력사 여신관리/정산확정 도메인.
@@ -76,6 +82,7 @@ import { PartnerDiscountReservationSchedule } from './application/partner.discou
 @Module({
   imports: [
     AuthModule,
+    HttpModule.register({ timeout: 30000 }),
     ActivityLogModule,
     TypeOrmModule.forFeature([
       PartnerDiscountHistoryEntity,
@@ -104,6 +111,7 @@ import { PartnerDiscountReservationSchedule } from './application/partner.discou
       PartnerSettlePaymentRequestEntity,
       PartnerSettlePaymentVarianceProposalEntity,
       PartnerDiscountReservationEntity,
+      PartnerSettleAdjustmentProposalEntity,
     ]),
   ],
   controllers: [
@@ -117,6 +125,7 @@ import { PartnerDiscountReservationSchedule } from './application/partner.discou
     BatchController,
     PaymentVarianceController,
     DiscountReservationController,
+    AdjustmentProposalController,
   ],
   providers: [
     PartnerDiscountHistoryService,
@@ -129,12 +138,12 @@ import { PartnerDiscountReservationSchedule } from './application/partner.discou
     PartnerCreditConfigService,
     PartnerCreditListService,
     CreditFeatureFlag,
-    GiftShowBalanceInquiryStub,
-    GalaxiaBalanceInquiryStub,
+    GiftShowBalanceInquiry,
+    GiftishowHttp,
     {
       provide: PARTNER_BALANCE_INQUIRIES,
-      useFactory: (giftShow: GiftShowBalanceInquiryStub, galaxia: GalaxiaBalanceInquiryStub) => [giftShow, galaxia],
-      inject: [GiftShowBalanceInquiryStub, GalaxiaBalanceInquiryStub],
+      useFactory: (giftShow: GiftShowBalanceInquiry) => [giftShow],
+      inject: [GiftShowBalanceInquiry],
     },
     PartnerSettleFeatureFlag,
     PartnerSettleProducerService,
@@ -148,6 +157,8 @@ import { PartnerDiscountReservationSchedule } from './application/partner.discou
     PartnerSettlePaymentVarianceService,
     PartnerDiscountReservationService,
     PartnerDiscountReservationSchedule,
+    PartnerSettleAdjustmentProposalService,
+    PartnerSettleRepriceService,
   ],
   exports: [
     PartnerDiscountHistoryService,
@@ -170,6 +181,8 @@ import { PartnerDiscountReservationSchedule } from './application/partner.discou
     PartnerSettlePaymentService,
     PartnerSettlePaymentVarianceService,
     PartnerDiscountReservationService,
+    PartnerSettleAdjustmentProposalService,
+    PartnerSettleRepriceService,
   ],
 })
 export class PartnerSettleModule {}

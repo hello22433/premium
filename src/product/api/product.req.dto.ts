@@ -1,11 +1,25 @@
 import { ApiProperty, ApiPropertyOptional, PartialType } from '@nestjs/swagger';
-import { IsArray, IsBoolean, IsEnum, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, Max, Min } from 'class-validator';
+import {
+  IsArray,
+  IsBoolean,
+  IsEnum,
+  IsIn,
+  IsInt,
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 import { PagingReqDto } from '../../common/api/dto/pagination.req.dto';
 import { IProductSettleMethod } from '../interface/product.settle.method';
 import { IProductCategory, IProductType } from '../interface/product.type';
 import { IProductUseStatus } from '../interface/product.status';
 import { IsDivisibleBy5000 } from './validator/is-divisible-by-5000.validator';
+import { PRODUCT_MEMO_MAX_LENGTH } from '../domain/ssg.notice';
 
 export class ProductGetTotalListReqQueryDto extends PagingReqDto {
   @ApiPropertyOptional({
@@ -574,6 +588,27 @@ export class ClassificationCreateReqDto {
   // ========================================
   @IsNotEmpty()
   classification: string;
+}
+
+export class ProductSsgNoticeUpdateReqDto {
+  @ApiProperty({
+    description:
+      '신세계 상품 유의사항 전문. 입력한 줄바꿈·빈 줄이 그대로 저장되며, 모든 신세계 권종에 동일하게 적용됩니다.',
+  })
+  // ================================
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(PRODUCT_MEMO_MAX_LENGTH)
+  notice: string;
+
+  @ApiPropertyOptional({
+    description: '수정 사유. 상품 수정 이력에 함께 기록됩니다.',
+  })
+  // ================================
+  @IsOptional()
+  @IsString()
+  @MaxLength(512)
+  reason?: string;
 }
 
 export class ProductGetLinkAverageExpireDayReqQueryDto {

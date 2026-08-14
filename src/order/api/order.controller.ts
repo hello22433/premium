@@ -459,7 +459,7 @@ export class OrderController {
   // ====================================================
   @Post('/order/temp')
   createTemp(@User() user: ILoginUserInfo, @Body() getBody: OrderCreateTempReqDto) {
-    this.logger.log(`createTemp user: ${user.id}, body: ${JSON.stringify(getBody)}`);
+    this.logger.log(`createTemp user: ${user.id}, productCount: ${getBody.orderProductList?.length ?? 0}`);
     return this.orderService.createTemp(user, getBody);
   }
 
@@ -685,14 +685,14 @@ export class OrderController {
   @ApiOperation({
     summary: '주문 테스트 발송 API',
     description:
-      '기업관리자는 상품당 최대 2회까지 테스트 발송할 수 있으며, 운영관리자/최고관리자는 횟수 제한이 없습니다.',
+      '기업관리자는 상품 행당 최대 2회까지 테스트 발송할 수 있으며, 운영관리자/최고관리자는 횟수 제한이 없습니다.',
   })
   @ApiBearerAuth()
   @ApiOkResponse({
     description: '성공적으로 전송한 경우',
   })
   @ApiBadRequestResponse({
-    description: '기업관리자의 테스트발송은 상품당 최대 2회입니다.',
+    description: '기업관리자의 테스트발송은 상품 행당 최대 2회입니다.',
   })
   // ===================================================
   @Post('/order/test-delivery')

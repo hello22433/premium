@@ -87,6 +87,38 @@ export function buildOrderOperationUserSnapshot(
 ): Pick<OrderEntity, 'snapshotOperationPersonName'> {
   return { snapshotOperationPersonName: operationUser?.personName ?? null };
 }
+type ClientAssignmentTransition = OrderClientUserSnapshotPart &
+  Pick<OrderEntity, 'operationUserId' | 'snapshotOperationPersonName'>;
+
+
+// updateTemp 고객사 전이 정책(순수 함수 — 단위 테스트 대상).
+// clientChanged 시에만 스냅샷을 재기록하고, 변경이 없으면 null 을 반환해
+// 호출자가 기존 스냅샷(레거시 NULL 포함)을 그대로 두게 한다.
+export function buildClientAssignmentTransition(params: {
+  previousClientUserId: number | null;
+  nextClientUserId: number | null;
+  nextClientUser: UserEntity | null;
+  operationUser: UserEntity | null;
+}): ClientAssignmentTransition | null {
+  const { previousClientUserId, nextClientUserId, nextClientUser, operationUser } = params;
+  if (previousClientUserId === nextClientUserId) {
+    return null;
+  }
+  // 고객사 해제: client·operation 스냅샷과 operationUserId 모두 초기화.
+  if (nextClientUserId == null) {
+    return {
+      operationUserId: null,
+      ...buildOrderClientUserSnapshot(null),
+      ...buildOrderOperationUserSnapshot(null),
+    };
+  }
+  // 고객사 신규지정/변경: 전환 시점 값으로 재기록 + 현재 관리자를 운영 담당자로 자동 배정.
+  return {
+    operationUserId: operationUser?.id ?? null,
+    ...buildOrderClientUserSnapshot(nextClientUser),
+    ...buildOrderOperationUserSnapshot(operationUser),
+  };
+}
 
 // ────────────────────────────────────────────────────────────
 // Reader: 조회 시 스냅샷 우선, NULL이면 user FK join 결과로 fallback.

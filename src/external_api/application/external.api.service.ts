@@ -47,6 +47,7 @@ import { IPartnerCompanyType } from '../../partner_company/interface/partner.com
 
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { DeliverySendService } from '../../delivery/application/delivery.send.service';
+import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 import { RefundLedgerService } from '../../delivery/application/refund-ledger.service';
 import { DeliveryCutoverGuardService } from '../../delivery/application/delivery-cutover-guard.service';
 import {
@@ -55,6 +56,11 @@ import {
 } from '../../delivery/interface/legacy.delivery.entry.point';
 import { SsgRecoveryService } from '../../delivery/application/ssg-recovery.service';
 import { SsgRecoveryResult } from '../../delivery/interface/ssg.recovery.result';
+import {
+  SsgIssueAlreadyConfirmedError,
+  SsgIssueAttemptAlreadyActiveError,
+  SsgIssueUnknownError,
+} from '../../partner_company_extern/infra/ssg.issue';
 import {
   ExecuteRefundContext,
   RefundAttemptExecutorService,
@@ -113,7 +119,6 @@ import { CreditExcessApprovalRequiredError } from '../../wallet/application/cred
 import { WalletManagedPredicate } from '../../wallet/application/wallet-managed.predicate';
 import { RefundPoolService } from '../../wallet/application/refund-pool.service';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
-import { OrderPaymentAllocationEntity } from '../../entity/order.payment.allocation.entity';
 import { OrderDeliveryAttemptEntity, OrderDeliveryAttemptType } from '../../entity/order.delivery.attempt.entity';
 import { ActivityLogService } from '../../activity_log/application/activity.log.service';
 import { ActivityLogActionType } from '../../activity_log/interface/activity.log.action.type';
@@ -124,6 +129,9 @@ type ExternalRefundBalanceChange = {
   afterBalance: number;
   balanceManagementType: string;
 };
+type PhaseCFailureOutcome =
+  | { kind: 'DEFINITE_FAILURE' }
+  | { kind: 'UNRESOLVED_SSG_DEFERRED'; reason: 'UNKNOWN_OR_MULTIPLE' | 'STALE_COMPLETION' };
 
 /**
  * trId 기반 조회가 로딩하는 관계. 재발송(`resendOrder`)이 `AlimTalkTemplate` 을 태우므로
@@ -168,6 +176,7 @@ export class ExternalApiService {
     private userDiscountRepository: Repository<UserDiscountEntity>,
     private dataSource: DataSource,
     private partnerCompanyExternService: PartnerCompanyExternService,
+    private deliveryBatchService: DeliveryBatchService,
     private deliverySendService: DeliverySendService,
     private ssgEventService: SsgEventService,
     private cryptoCipher: CryptoCipher,
@@ -475,15 +484,6 @@ export class ExternalApiService {
         );
       }
 
-      // R4 차감 mirror 역복원에 쓸 원 차감 총액. RefundPoolService 는 *RestoredAmount 카운터만 증가시키므로
-      // depositUsedAmount/creditUsedAmount/creditExcessAmount 는 원 차감값 그대로 보존된다.
-      const allocation = await manager.findOne(OrderPaymentAllocationEntity, {
-        where: { orderId: order.id },
-      });
-      if (!allocation) {
-        throw new Error(`wallet-managed order ${order.id} missing allocation — drift, aborting external refund`);
-      }
-
       const refundResult = await this.refundPoolService.refund(
         {
           orderId: order.id,
@@ -494,9 +494,7 @@ export class ExternalApiService {
         manager,
       );
 
-      // R4 legacy mirror 역복원 (차감의 정확한 역). RefundPoolService 는 legacy 컬럼 미터치 → 풀 기준 이중복원 없음.
-      // 단, 멱등 retry(alreadyRefunded) 면 refund 는 no-op 인데 mirror 는 무조건 전액 복원해 잔액이 이중 반영된다.
-      // → 신규 환불이 실제 적용된 경우(alreadyRefunded=false)에만 mirror 를 실행한다.
+      // 신규 환불이 실제 적용된 경우에만 이번 개별 환불의 재원별 결과로 legacy mirror를 복원한다.
       if (refundResult.alreadyRefunded) {
         this.logger.warn(
           `[EXTERNAL_REFUND] 멱등 retry — 풀 환불 no-op, legacy mirror skip (이중복원 방지). orderDelivery.id: ${orderDelivery.id}`,
@@ -505,17 +503,19 @@ export class ExternalApiService {
       }
 
       const isCompany = user.company?.balanceManagementType === 'COMPANY';
-      if (isCompany) {
+      if (isCompany && refundResult.refundedDepositAmount > 0) {
         await manager.query('UPDATE user_company SET balance = balance + ? WHERE id = ?', [
-          allocation.depositUsedAmount,
+          refundResult.refundedDepositAmount,
           user.companyId,
         ]);
       }
-      const allSettleDelta = allocation.creditUsedAmount + allocation.creditExcessAmount;
-      await manager.query('UPDATE user SET all_settle_amount = all_settle_amount - ? WHERE id = ?', [
-        allSettleDelta,
-        user.id,
-      ]);
+      const allSettleDelta = refundResult.refundedCreditUsedAmount + refundResult.refundedCreditExcessAmount;
+      if (allSettleDelta > 0) {
+        await manager.query('UPDATE user SET all_settle_amount = all_settle_amount - ? WHERE id = ?', [
+          allSettleDelta,
+          user.id,
+        ]);
+      }
     });
   }
 
@@ -1064,7 +1064,24 @@ export class ExternalApiService {
     const mapping = orderDelivery.orderProductMapping;
     const product = mapping.product;
 
-    await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent);
+    const ssgIssueAuthority =
+      mapping.order.type === IOrderType.SSG
+        ? await this.deliveryBatchService.createAndConsumeInitialSsgIssueAuthority(
+            orderDelivery,
+            `external-api:${orderDelivery.id}:${ulid()}`,
+          )
+        : undefined;
+    try {
+      await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent, undefined, ssgIssueAuthority);
+      if (ssgIssueAuthority) {
+        await this.deliveryBatchService.markSsgIssueSucceeded(ssgIssueAuthority, orderDelivery.id);
+      }
+    } catch (error) {
+      if (ssgIssueAuthority) {
+        await this.deliveryBatchService.markSsgIssueOpsReview(ssgIssueAuthority);
+      }
+      throw error;
+    }
 
     // SSG는 issue() 내부에서 expireAt을 설정하고, 그 외 협력사는 설정하지 않으므로
     // External API에서 직접 산출. partnerCompany.validityStartsNextDay 정책을 따른다.
@@ -1170,6 +1187,21 @@ export class ExternalApiService {
   }
 
   // ─── Phase C: 실패 처리 + 환불 ──────────────────────────
+  private phaseCFailureOutcome(order: OrderEntity, error: unknown): PhaseCFailureOutcome {
+    if (order.type !== IOrderType.SSG) {
+      return { kind: 'DEFINITE_FAILURE' };
+    }
+
+    if (error instanceof SsgIssueUnknownError) {
+      return { kind: 'UNRESOLVED_SSG_DEFERRED', reason: 'UNKNOWN_OR_MULTIPLE' };
+    }
+
+    if (error instanceof SsgIssueAttemptAlreadyActiveError || error instanceof SsgIssueAlreadyConfirmedError) {
+      return { kind: 'UNRESOLVED_SSG_DEFERRED', reason: 'STALE_COMPLETION' };
+    }
+
+    return { kind: 'DEFINITE_FAILURE' };
+  }
 
   private async phaseC_handleFailure(
     order: OrderEntity,
@@ -1177,6 +1209,13 @@ export class ExternalApiService {
     account: ExternalApiAccountEntity,
     error: any,
   ) {
+    const outcome = this.phaseCFailureOutcome(order, error);
+    if (outcome.kind === 'UNRESOLVED_SSG_DEFERRED') {
+      this.logger.warn(
+        `[EXTERNAL_FAIL] unresolved SSG ${outcome.reason} — preserving WAIT and OPS_REVIEW_REQUIRED without refund. orderDelivery.id: ${orderDelivery.id}`,
+      );
+      return;
+    }
     const isCutover = await this.cutoverGuard.isCutover(orderDelivery.id);
     if (!isCutover) {
       await this.phaseC_handleLegacyFailure(order, orderDelivery, account, error);

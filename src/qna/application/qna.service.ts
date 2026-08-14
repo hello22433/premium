@@ -3,6 +3,7 @@ import { parseFilePathList } from '../../util/file.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { QnaEntity } from '../../entity/qna.entity';
+import { UserEntity } from '../../entity/user.entity';
 import {
   QnaAnswerReqDto,
   QnaBulkDeleteReqDto,
@@ -32,7 +33,28 @@ export class QnaService {
   constructor(
     @InjectRepository(QnaEntity)
     private qnaRepository: Repository<QnaEntity>,
+    @InjectRepository(UserEntity)
+    private userRepository: Repository<UserEntity>,
   ) {}
+
+  /**
+   * 문의 작성자 표시값(담당자명·회사명) 결정.
+   * 스냅샷이 기록된 행(판별자 snapshotPersonName != null)은 작성 당시 값으로 동결,
+   * 스냅샷 도입 이전 레거시 행은 user FK join 결과로 fallback 한다.
+   * (연락처 email/phone 은 정책상 동결하지 않고 항상 live 로 노출)
+   */
+  private resolveAuthorDisplay(qna: QnaEntity): { personName: string; businessName: string } {
+    if (qna.snapshotPersonName != null) {
+      return {
+        personName: qna.snapshotPersonName,
+        businessName: qna.snapshotBusinessName ?? '',
+      };
+    }
+    return {
+      personName: qna.user?.personName ?? '',
+      businessName: qna.user?.company?.businessName ?? '',
+    };
+  }
 
   async getList(user: ILoginUserInfo, getQuery: QnaGetListReqDto): Promise<QnaGetListResDto> {
     const { page, take, mainCategory } = getQuery;
@@ -62,12 +84,13 @@ export class QnaService {
     const resultList: QnaViewDto[] = qnaList.map((qna) => {
       const isFile = !!qna.filePath;
       const isAnswer = !!qna.answer;
+      const display = this.resolveAuthorDisplay(qna);
 
       return {
         id: qna.id,
         registerDate: format(qna.createdAt, 'yyyy-MM-dd HH:mm'),
-        businessName: qna.user.company?.businessName ?? '',
-        personName: qna.user.personName,
+        businessName: display.businessName,
+        personName: display.personName,
         title: qna.title,
         isFile,
         isAnswer,
@@ -102,13 +125,15 @@ export class QnaService {
       throw new ForbiddenException();
     }
 
+    const display = this.resolveAuthorDisplay(qna);
+
     return {
       id: qna.id,
       registerDate: format(qna.registerDate, DateDateFormatStr),
-      businessName: qna.user.company?.businessName ?? '',
-      personName: qna.user.personName,
-      userEmail: qna.user.email,
-      userPhone: qna.user.personPhoneNumber,
+      businessName: display.businessName,
+      personName: display.personName,
+      userEmail: qna.user?.email ?? '',
+      userPhone: qna.user?.personPhoneNumber ?? '',
       status: qna.status,
       filePathList: parseFilePathList(qna.filePath),
       title: qna.title,
@@ -187,6 +212,12 @@ export class QnaService {
       throw new BadRequestException('CS접수 시 상세항목을 선택해주세요.');
     }
 
+    // 작성 시점 담당자명·회사명 스냅샷 (계정관리에서 담당자명 변경돼도 과거 문의는 당시 값 유지)
+    const author = await this.userRepository.findOneOrFail({
+      where: { id: user.id },
+      relations: ['company'],
+    });
+
     await this.qnaRepository.insert({
       userId: user.id,
       title,
@@ -196,6 +227,8 @@ export class QnaService {
       status: IQnaStatus.WAIT,
       mainCategory,
       subCategory: subCategory ?? null,
+      snapshotPersonName: author.personName,
+      snapshotBusinessName: author.company?.businessName ?? null,
     });
   }
 

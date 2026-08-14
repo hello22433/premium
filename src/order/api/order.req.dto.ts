@@ -368,23 +368,8 @@ export class OrderDeliveryConfirmedReqDto {
   @IsNumber()
   id: number;
 
-  @ApiPropertyOptional({
-    description: '한도 초과 시 강제 진행 여부',
-  })
-  // ==================================
-  @IsOptional()
-  @IsBoolean()
-  forceConfirm?: boolean;
-
-  @ApiPropertyOptional({
-    description:
-      '신용초과 사전 승인 ID (CreditExcessApprovalService.request/approve 단계에서 발급). ' +
-      'WALLET 모드 + forceConfirm=true 케이스에서 credit_excess_amount > 0 이면 필수. ' +
-      '미주입 시 persistAllocation 가 credit_excess_approval_required 로 throw → TX rollback.',
-  })
-  @IsOptional()
-  @IsString()
-  creditExcessApprovalId?: string;
+  // 신용초과는 사용자 재시도가 아니라 운영자 승인 → 서버 발송확정으로 처리한다.
+  // (forceConfirm / creditExcessApprovalId 재제출 계약 제거)
 
   // ===== Wallet PR3: 운영자 사용액 입력 (WALLET 모드 분배 반영) =====
   @ApiPropertyOptional({

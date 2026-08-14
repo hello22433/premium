@@ -187,6 +187,191 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
     expect(sut.legacyWalletCreditSyncService.syncCredit).not.toHaveBeenCalled();
   });
 
+  it('wallet-managed 회사 모드 혼합 폐기는 wallet 환불 결과만 legacy mirror에 반영한다', async () => {
+    const sut: any = makeSut(false);
+    const latestAttempt = { id: '44', attemptType: OrderDeliveryAttemptType.INITIAL };
+    const company = { id: 11, balanceManagementType: 'COMPANY', balance: 20000, businessName: '테스트회사' };
+    const user = { id: 5, email: 'buyer@test.local', balance: 0, allSettleAmount: 15000, company };
+    const builder: any = {
+      update: jest.fn(() => builder),
+      set: jest.fn(() => builder),
+      where: jest.fn(() => builder),
+      setParameters: jest.fn(() => builder),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+    const queryRunner = {
+      manager: {
+        findOne: jest.fn(async (target: any, opts: any) => {
+          if (opts?.where?.orderDeliveryId === 5001) return latestAttempt;
+          if (target?.name === 'UserCompanyEntity') return { ...company, balance: 25000 };
+          return { ...user, allSettleAmount: 10000 };
+        }),
+        createQueryBuilder: jest.fn(() => builder),
+        save: jest.fn().mockResolvedValue(undefined),
+      },
+    } as any;
+    const walletRefund = {
+      ledgerIds: ['refund-1'],
+      totalRefundedAmount: 10000,
+      refundedPointAmount: 0,
+      refundedDepositAmount: 5000,
+      refundedCreditUsedAmount: 5000,
+      refundedCreditExcessAmount: 0,
+      pointSkippedExpiredAmount: 0,
+      alreadyRefunded: false,
+    };
+    sut.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(true) };
+    sut.refundPoolService = { refund: jest.fn().mockResolvedValue(walletRefund) };
+    sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
+    sut.cryptoCipher = {
+      safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000'),
+      encryptDeliveryTarget: jest.fn((value: string) => value),
+    };
+
+    await sut.restoreBalanceOnDiscard(
+      buildOrderDelivery(IOrderDeliveryStatus.COMPLETE),
+      operator,
+      queryRunner,
+      'operator',
+    );
+
+    expect(sut.refundPoolService.refund.mock.invocationCallOrder[0]).toBeLessThan(
+      sut.refundLedgerService.claimWithManager.mock.invocationCallOrder[0],
+    );
+    expect(builder.setParameters.mock.calls).toEqual(expect.arrayContaining([[{ amount: 5000 }], [{ amount: 5000 }]]));
+    expect(sut.refundLedgerService.claimWithManager).toHaveBeenCalledWith(
+      queryRunner.manager,
+      expect.objectContaining({ refundAmount: 10000, restoreType: 'COMPANY_BALANCE' }),
+    );
+    expect(sut.activityLogService.createLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestParams: expect.objectContaining({
+          restoreBreakdown: {
+            point: 0,
+            deposit: 5000,
+            credit: 5000,
+            creditExcess: 0,
+            pointSkippedExpired: 0,
+          },
+        }),
+      }),
+      queryRunner.manager,
+    );
+  });
+
+  it('wallet-managed 개인 모드 혼합 폐기는 user.balance를 변경하지 않고 여신 mirror만 복구한다', async () => {
+    const sut: any = makeSut(false);
+    const latestAttempt = { id: '44', attemptType: OrderDeliveryAttemptType.INITIAL };
+    const user = { id: 5, email: 'buyer@test.local', balance: 7000, allSettleAmount: 15000, company: null };
+    const builder: any = {
+      update: jest.fn(() => builder),
+      set: jest.fn(() => builder),
+      where: jest.fn(() => builder),
+      setParameters: jest.fn(() => builder),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+    const queryRunner = {
+      manager: {
+        findOne: jest.fn(async (_target: any, opts: any) => {
+          if (opts?.where?.orderDeliveryId === 5001) return latestAttempt;
+          return { ...user, allSettleAmount: 12000 };
+        }),
+        createQueryBuilder: jest.fn(() => builder),
+        save: jest.fn().mockResolvedValue(undefined),
+      },
+    } as any;
+    sut.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(true) };
+    sut.refundPoolService = {
+      refund: jest.fn().mockResolvedValue({
+        ledgerIds: ['refund-1'],
+        totalRefundedAmount: 7000,
+        refundedPointAmount: 0,
+        refundedDepositAmount: 4000,
+        refundedCreditUsedAmount: 3000,
+        refundedCreditExcessAmount: 0,
+        pointSkippedExpiredAmount: 3000,
+        alreadyRefunded: false,
+      }),
+    };
+    sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
+    sut.cryptoCipher = {
+      safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000'),
+      encryptDeliveryTarget: jest.fn((value: string) => value),
+    };
+
+    await sut.restoreBalanceOnDiscard(
+      buildOrderDelivery(IOrderDeliveryStatus.COMPLETE),
+      operator,
+      queryRunner,
+      'operator',
+    );
+
+    expect(builder.set).toHaveBeenCalledTimes(1);
+    expect(builder.set.mock.calls[0][0]).toHaveProperty('allSettleAmount');
+    expect(builder.set.mock.calls[0][0]).not.toHaveProperty('balance');
+    expect(builder.setParameters).toHaveBeenCalledWith({ amount: 3000 });
+    expect(sut.refundLedgerService.claimWithManager).toHaveBeenCalledWith(
+      queryRunner.manager,
+      expect.objectContaining({ refundAmount: 7000 }),
+    );
+    expect(sut.activityLogService.createLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestParams: expect.objectContaining({
+          restoreAmount: 7000,
+          restoreBreakdown: expect.objectContaining({ pointSkippedExpired: 3000 }),
+        }),
+      }),
+      queryRunner.manager,
+    );
+  });
+
+  it('wallet-managed 포인트 단독 복구는 활동로그 restoreTarget을 CREDIT으로 오표기하지 않는다', async () => {
+    const sut: any = makeSut(false);
+    const latestAttempt = { id: '44', attemptType: OrderDeliveryAttemptType.INITIAL };
+    const user = { id: 5, email: 'buyer@test.local', balance: 7000, allSettleAmount: 0, company: null };
+    const queryRunner = {
+      manager: {
+        findOne: jest.fn(async (_target: any, opts: any) => {
+          if (opts?.where?.orderDeliveryId === 5001) return latestAttempt;
+          return user;
+        }),
+        save: jest.fn().mockResolvedValue(undefined),
+      },
+    } as any;
+    sut.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(true) };
+    sut.refundPoolService = {
+      refund: jest.fn().mockResolvedValue({
+        ledgerIds: ['refund-point'],
+        totalRefundedAmount: 10000,
+        refundedPointAmount: 10000,
+        refundedDepositAmount: 0,
+        refundedCreditUsedAmount: 0,
+        refundedCreditExcessAmount: 0,
+        pointSkippedExpiredAmount: 0,
+        alreadyRefunded: false,
+      }),
+    };
+    sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
+    sut.cryptoCipher = {
+      safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000'),
+      encryptDeliveryTarget: jest.fn((value: string) => value),
+    };
+
+    await sut.restoreBalanceOnDiscard(
+      buildOrderDelivery(IOrderDeliveryStatus.COMPLETE),
+      operator,
+      queryRunner,
+      'operator',
+    );
+
+    const requestParams = sut.activityLogService.createLog.mock.calls[0][0].requestParams;
+    expect(requestParams.restoreBreakdown).toEqual(
+      expect.objectContaining({ point: 10000, deposit: 0, credit: 0, creditExcess: 0 }),
+    );
+    expect(requestParams).not.toHaveProperty('restoreTarget');
+    expect(requestParams.memo).toContain('미정산/포인트복구');
+  });
+
   it('레거시 선입금환불(isSettleBalance) 폐기 복구는 wallet deposit 을 DISCARD_REFUND(+restore) 로 동기화한다', async () => {
     const sut: any = makeSut(false); // exists=false → 복구 진행, isWalletManaged=false
     sut.activityLogService = { createLog: jest.fn().mockResolvedValue(undefined) };
@@ -332,7 +517,16 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
     };
     sut.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(true) };
     sut.refundPoolService = {
-      refundSettledDiscardToDeposit: jest.fn().mockResolvedValue({ ledgerIds: ['1'], totalRefundedAmount: 7000 }),
+      refundSettledDiscardToDeposit: jest.fn().mockResolvedValue({
+        ledgerIds: ['1'],
+        totalRefundedAmount: 7000,
+        refundedPointAmount: 0,
+        refundedDepositAmount: 7000,
+        refundedCreditUsedAmount: 0,
+        refundedCreditExcessAmount: 0,
+        pointSkippedExpiredAmount: 3000,
+        alreadyRefunded: false,
+      }),
     };
 
     const orderDelivery = buildOrderDelivery(IOrderDeliveryStatus.COMPLETE);
@@ -349,7 +543,7 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
         sourcePath: 'CS_DISCARD',
       }),
     );
-    expect(builder.setParameters).toHaveBeenCalledWith({ amount: 7000 });
+    expect(builder.setParameters).not.toHaveBeenCalled();
   });
 
   it('정산완료 카드할증 주문의 폐기 복구 ledger는 배송별 카드할증이 아니라 snapshot 배분 금액을 기록한다', async () => {
@@ -637,6 +831,7 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
       expect.objectContaining({
         requestParams: expect.objectContaining({ restoreType: 'ALL_SETTLE_AMOUNT', restoreTarget: 'CREDIT' }),
       }),
+      qr.manager,
     );
   });
 
@@ -659,6 +854,60 @@ describe('CustomerServiceService.restoreBalanceOnDiscard — refunded-proxy read
       expect.objectContaining({
         requestParams: expect.objectContaining({ restoreType: 'BALANCE', restoreTarget: 'DEPOSIT' }),
       }),
+      qr.manager,
     );
+  });
+  it('실제 wallet 환불 이후 claim이 실패하면 같은 QueryRunner 트랜잭션을 rollback한다', async () => {
+    const failure = new Error('claim failed after wallet refund');
+    const claim = jest.fn().mockRejectedValue(failure);
+    const sut: any = makeSut(false, claim);
+    const latestAttempt = { id: '44', attemptType: OrderDeliveryAttemptType.INITIAL };
+    const user = { id: 5, email: 'buyer@test.local', balance: 0, allSettleAmount: 10000, company: null };
+    const queryRunner = {
+      connect: jest.fn().mockResolvedValue(undefined),
+      startTransaction: jest.fn().mockResolvedValue(undefined),
+      commitTransaction: jest.fn().mockResolvedValue(undefined),
+      rollbackTransaction: jest.fn().mockResolvedValue(undefined),
+      release: jest.fn().mockResolvedValue(undefined),
+      manager: {
+        findOne: jest.fn(async (_target: any, opts: any) => {
+          if (opts?.where?.orderDeliveryId === 5001) return latestAttempt;
+          return user;
+        }),
+      },
+    };
+    const refund = jest.fn().mockResolvedValue({
+      ledgerIds: ['refund-1'],
+      totalRefundedAmount: 10000,
+      refundedPointAmount: 0,
+      refundedDepositAmount: 5000,
+      refundedCreditUsedAmount: 5000,
+      refundedCreditExcessAmount: 0,
+      pointSkippedExpiredAmount: 0,
+      alreadyRefunded: false,
+    });
+    sut.dataSource = { createQueryRunner: jest.fn(() => queryRunner) };
+    sut.walletManagedPredicate = { isWalletManaged: jest.fn().mockResolvedValue(true) };
+    sut.refundPoolService = { refund };
+
+    await expect(
+      sut.executeLegacyDiscardRefund(buildOrderDelivery(IOrderDeliveryStatus.COMPLETE), operator),
+    ).rejects.toThrow(failure);
+
+    expect(refund).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'discard_refund',
+        targetDeliveryIds: [5001],
+      }),
+      queryRunner.manager,
+    );
+    expect(refund.mock.invocationCallOrder[0]).toBeLessThan(claim.mock.invocationCallOrder[0]);
+    expect(claim).toHaveBeenCalledWith(
+      queryRunner.manager,
+      expect.objectContaining({ orderDeliveryId: 5001, refundAmount: 10000 }),
+    );
+    expect(queryRunner.commitTransaction).not.toHaveBeenCalled();
+    expect(queryRunner.rollbackTransaction).toHaveBeenCalledTimes(1);
+    expect(queryRunner.release).toHaveBeenCalledTimes(1);
   });
 });

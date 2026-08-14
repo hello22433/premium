@@ -68,6 +68,7 @@ import { DateDateFormatStr, DateFormatStr } from '../../common/domain/date.forma
 import { format } from 'date-fns';
 import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { IOrderStatus } from '../interface/order.status';
+import { IOrderSendMethod } from '../interface/order.send.method';
 import { OrderProductMappingEntity } from '../../entity/order.product.mapping.entity';
 import { Propagation, Transactional, runOnTransactionCommit } from 'typeorm-transactional';
 import { OrderCancelNotificationService } from './order.cancel.notification.service';
@@ -106,6 +107,7 @@ import { UserCompanyEntity } from '../../entity/user.company.entity';
 import {
   buildPartnerSettleSnapshot,
   buildLineProductSnapshot,
+  buildClientAssignmentTransition,
   buildOrderClientUserSnapshot,
   buildOrderOperationUserSnapshot,
   buildOrderUserSnapshot,
@@ -118,6 +120,7 @@ import {
 import {
   assertLineIdsValid,
   OwnedLine,
+  resolveCarriedLineId,
   resolveLineSnapshot,
   resolvePartnerSettleSnapshot as resolvePartnerSettleSnapshotForUpdate,
 } from './order.snapshot.update.helper';
@@ -158,7 +161,6 @@ import { PhoneUtil } from '../../common/utils/phone.util';
 import { DeliveryBatchService } from '../../delivery/application/delivery.batch.service';
 import { IOrderSendingType } from '../interface/order.sending.type';
 import {
-  canForceConfirmDelivery,
   canTransitionDelivery,
   shouldExposeSsgBalanceCheck,
 } from '../domain/order.delivery-transition-authority.helper';
@@ -194,6 +196,10 @@ import { ForbiddenWordMatcher } from '../../forbidden_word/application/forbidden
 import { ForbiddenWordBlockLogEntity } from '../../entity/forbidden.word.block.log.entity';
 import { OrderProductCreateTempDto } from '../api/dto/order.product.create.temp.dto';
 import { OrderConfirmationWalletService } from '../../wallet/application/order-confirmation-wallet.service';
+import { CreditExcessApprovalService } from '../../wallet/application/credit-excess-approval.service';
+import { CreditExcessApprovalDriftError } from '../../wallet/application/credit-excess-approval.errors';
+import { buildCreditExcessSnapshot, CreditExcessSnapshot, diffCreditExcessSnapshot } from './credit-excess-snapshot';
+import { CreditExcessApprovalExecutionContext } from './credit-excess-approval.context';
 import { OrderConfirmationReleaseService } from '../../wallet/application/order-confirmation-release.service';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 import { ShadowMismatchClassifierService } from '../../wallet/application/shadow-mismatch-classifier.service';
@@ -375,6 +381,7 @@ export class OrderService {
     private readonly billingScopeLockService: BillingScopeLockService,
     @InjectRepository(WalletAccountEntity)
     private readonly walletAccountRepository: Repository<WalletAccountEntity>,
+    private readonly creditExcessApprovalService: CreditExcessApprovalService,
   ) {}
 
   /**
@@ -417,6 +424,214 @@ export class OrderService {
       cardSurchargeBase: allocation?.cardSurchargeBase ?? 0,
       cardSurchargeAmount: allocation?.cardSurchargeAmount ?? 0,
       payableSettlementAmount: allocation?.payableSettlementAmount ?? 0,
+    };
+  }
+
+  /**
+   * 사용자 할인 옵션 자동 매칭 (fee/priceAdjustment 미설정 매핑만).
+   * 발송확정은 매칭 결과를 저장하고, 신용초과 승인 요청은 저장 없이 금액 계산에만 사용한다 —
+   * 두 경로가 같은 최종 정산금액을 계산해야 스냅샷 비교가 성립한다.
+   */
+  private applyAutoDiscountMatching(
+    order: OrderEntity,
+    userDiscounts: UserDiscountEntity[],
+  ): {
+    mappingsToUpdate: OrderProductMappingEntity[];
+    mappingPriceAdjustments: Map<number, IPriceAdjustment | null>;
+  } {
+    const mappingsToUpdate: OrderProductMappingEntity[] = [];
+    const mappingPriceAdjustments = new Map<number, IPriceAdjustment | null>();
+
+    for (const mapping of order.orderProductMappings!) {
+      let fee = mapping.fee;
+      let priceAdjustment = mapping.priceAdjustment;
+
+      // fee 또는 priceAdjustment가 설정되지 않은 경우 할인 옵션에서 찾기
+      if (fee === null || priceAdjustment === null) {
+        const matchingDiscount = findMatchingDiscount(
+          {
+            price: mapping.product.price,
+            category: mapping.product.category,
+            classificationId: mapping.product.classificationId,
+            brand: mapping.product.brand,
+          },
+          userDiscounts,
+        );
+
+        if (matchingDiscount) {
+          fee = fee ?? matchingDiscount.pricePercent;
+          priceAdjustment = priceAdjustment ?? matchingDiscount.priceAdjustment;
+
+          mapping.fee = fee;
+          mapping.priceAdjustment = priceAdjustment;
+          mappingsToUpdate.push(mapping);
+        }
+      }
+
+      mappingPriceAdjustments.set(mapping.id, priceAdjustment);
+    }
+
+    return { mappingsToUpdate, mappingPriceAdjustments };
+  }
+
+  /**
+   * 승인 요청 시점 스냅샷과 발송확정 시점 재계산 스냅샷을 비교한다.
+   * 변경 항목이 있으면 발송하지 않고 재요청 필요로 분류되도록 drift 오류를 던진다.
+   */
+  private assertApprovalSnapshotMatches(
+    approvalContext: CreditExcessApprovalExecutionContext,
+    current: CreditExcessSnapshot,
+  ): void {
+    const changed = diffCreditExcessSnapshot(approvalContext.snapshot, current);
+    if (changed.length > 0) {
+      throw new CreditExcessApprovalDriftError(
+        changed,
+        `snapshot mismatch approvalId=${approvalContext.approvalId} fields=${changed.join('/')}`,
+      );
+    }
+  }
+
+  /**
+   * 신용초과 승인 요청 생성을 위한 **서버 계산**. 클라이언트의 금액/계정 값은 받지 않는다.
+   *
+   * 주문 잠금 + billing scope 잠금 안에서 발송확정과 동일한 규칙으로 최종 정산금액과 신용초과액을
+   * 계산하고 PII 최소화 스냅샷을 만든다. 신용초과가 없으면 승인 요청 대상이 아니다.
+   */
+  @Transactional()
+  async buildCreditExcessApprovalRequest(
+    user: ILoginUserInfo,
+    body: { id: number; pointUseAmount?: number; depositUseEnabled?: boolean; depositUseAmount?: number },
+  ): Promise<{
+    orderId: number;
+    billingUserId: number;
+    walletAccountId: string | null;
+    requestedAmount: number;
+    requestedCreditExcessAmount: number;
+    snapshot: CreditExcessSnapshot;
+  }> {
+    const lockedOrder = await this.orderRepository
+      .createQueryBuilder('order')
+      .setLock('pessimistic_write')
+      .where('order.id = :id', { id: body.id })
+      .andWhere('order.status = :status', { status: IOrderStatus.REVIEW_COMPLETE })
+      .getOne();
+
+    if (!lockedOrder) {
+      throw new BadRequestException('해당 주문건은 존재하지 않거나, 검토완료 상태가 아닙니다.');
+    }
+
+    const currentUser = await this.getCurrentDeliveryTransitionUser(user.id);
+    if (!canTransitionDelivery(currentUser, lockedOrder)) {
+      throw new ForbiddenException('해당 주문에 대한 권한이 없습니다.');
+    }
+
+    const order = await this.orderRepository
+      .createQueryBuilder('order')
+      .innerJoinAndSelect('order.orderProductMappings', 'orderProductMappings')
+      .innerJoinAndSelect('orderProductMappings.product', 'product')
+      .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .innerJoinAndSelect('product.brand', 'brand')
+      .leftJoinAndSelect('product.classification', 'classification')
+      .innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries')
+      .where('order.id = :id', { id: body.id })
+      .andWhere('order.status = :status', { status: IOrderStatus.REVIEW_COMPLETE })
+      .getOne();
+
+    if (!order) {
+      throw new BadRequestException('해당 주문건은 존재하지 않거나, 검토완료 상태가 아닙니다.');
+    }
+
+    OrderValidation(order);
+
+    const cutoverMode = this.walletCutoverConfig.pr2DeliveryLifecycleMode;
+    assertWalletOnlyParamsAbsent(cutoverMode, body);
+
+    if (!order.isNewBillingFlow) {
+      throw new BadRequestException('해당 주문은 신용초과 승인 대상이 아닙니다.');
+    }
+
+    const billingUserId = order.clientUserId ?? order.userId;
+    const { user: oneUser, companyUsers } = await this.lockBillingScope(billingUserId);
+
+    const userDiscounts = (await this.userDiscountRepository.find({ where: { userId: billingUserId } })).filter(
+      (discount) => discount.userId === billingUserId,
+    );
+    // 저장하지 않는다 — 발송확정과 동일한 금액을 계산하기 위한 in-memory 적용.
+    this.applyAutoDiscountMatching(order, userDiscounts);
+
+    const hasSettleInput = order.settleMethod != null;
+    const resolvedSettlePolicy = hasSettleInput ? null : await this.resolveSettlePolicy(order, oneUser.company);
+    const effectiveSettleMethod = order.settleMethod ?? resolvedSettlePolicy?.policy ?? 'CASH';
+    const effectiveSurcharge = hasSettleInput
+      ? order.cardSurchargeApplied
+      : effectiveSettleMethod === 'CARD' && (resolvedSettlePolicy?.resolvedWallet?.cardSurchargeApplied ?? true);
+    const finalAmount = calculateOrderSettlementAmount(order, effectiveSurcharge);
+
+    const isCompanyBalanceMode = oneUser.company?.balanceManagementType === 'COMPANY';
+    const effectiveBalance = isCompanyBalanceMode && oneUser.company ? oneUser.company.balance : oneUser.balance;
+    const remainServiceAmount =
+      oneUser.companyId && oneUser.company
+        ? oneUser.company.maximumLimit + effectiveBalance - companyUsers.reduce((sum, u) => sum + u.allSettleAmount, 0)
+        : effectiveBalance - oneUser.allSettleAmount;
+
+    let walletAccountId: string | null = null;
+    let excessAmount: number;
+    let payableSettlementAmount: number;
+    let allocationSnapshot: CreditExcessSnapshot['allocation'] = null;
+
+    if (cutoverMode === WalletCutoverMode.WALLET) {
+      const wallet = await this.walletAccountResolverService.resolveForOrder(order, this.orderRepository.manager);
+      const allocationInput = await this.walletAllocationInputBuilder.build(order, wallet, finalAmount, {
+        requestedPointAmount: body.pointUseAmount,
+        depositUseEnabled: body.depositUseEnabled,
+        depositUseAmount: body.depositUseAmount,
+        companyId: oneUser.companyId,
+        cardSurchargeApplied: effectiveSurcharge,
+      });
+      this.assertUsageWithinLimits(allocationInput, body);
+      const allocation = this.paymentAllocationService.allocate(allocationInput);
+
+      walletAccountId = String(wallet.id);
+      excessAmount = allocation.creditExcessAmount;
+      payableSettlementAmount = allocation.payableSettlementAmount;
+      allocationSnapshot = {
+        pointUsedAmount: allocation.pointUsedAmount,
+        depositUsedAmount: allocation.depositUsedAmount,
+        creditUsedAmount: allocation.creditUsedAmount,
+        creditExcessAmount: allocation.creditExcessAmount,
+        cardSurchargeAmount: allocation.cardSurchargeAmount,
+      };
+    } else {
+      excessAmount = Math.max(0, finalAmount - remainServiceAmount);
+      payableSettlementAmount = finalAmount;
+    }
+
+    if (excessAmount <= 0) {
+      throw new BadRequestException('신용초과가 발생하지 않는 주문입니다. 발송확정을 다시 진행해 주세요.');
+    }
+
+    const snapshot = buildCreditExcessSnapshot({
+      order,
+      lifecycleMode: cutoverMode,
+      billingUserId,
+      walletAccountId,
+      settleMethod: effectiveSettleMethod,
+      cardSurchargeApplied: effectiveSurcharge,
+      finalAmount,
+      remainServiceAmount,
+      excessAmount,
+      payableSettlementAmount,
+      usage: body,
+      allocation: allocationSnapshot,
+    });
+
+    return {
+      orderId: order.id,
+      billingUserId,
+      walletAccountId,
+      requestedAmount: payableSettlementAmount,
+      requestedCreditExcessAmount: excessAmount,
+      snapshot,
     };
   }
 
@@ -610,6 +825,7 @@ export class OrderService {
       entity.replaceCharacter1 = entry.replaceCharacter1 ?? null;
       entity.replaceCharacter2 = entry.replaceCharacter2 ?? null;
       entity.replaceCharacter3 = entry.replaceCharacter3 ?? null;
+      entity.memo = entry.memo ?? null;
       return entity;
     });
   }
@@ -1276,6 +1492,7 @@ export class OrderService {
             replaceCharacter1: orderDelivery.replaceCharacter1,
             replaceCharacter2: orderDelivery.replaceCharacter2,
             replaceCharacter3: orderDelivery.replaceCharacter3,
+            memo: orderDelivery.memo,
             status: orderDelivery.status,
             isResent: orderDelivery.resendAt !== null,
           });
@@ -1368,6 +1585,7 @@ export class OrderService {
       const result = await this.ssgEventService.getSsgBalanceCheckForOrder(order.id);
       ssgBalanceCheck = result ? toSsgBalanceCheckView(result) : undefined;
     }
+    const wallet = await this.walletAccountResolverService.resolveForOrder(order);
 
     return {
       id: order.id,
@@ -1381,7 +1599,7 @@ export class OrderService {
       productList: productList,
       settlePeriodCondition: order.user!.settlePeriodCondition,
       settlePeriodCount: order.user!.settlePeriodCount,
-      isPreSettle: order.user!.settleCondition === IUserSettleCondition.PRE_PAYMENT,
+      isPreSettle: wallet.settleCondition === IUserSettleCondition.PRE_PAYMENT,
       cancelReason: order.cancelReason,
       canceledAt: order.canceledAt ? format(order.canceledAt, DateFormatStr) : null,
       totalFailCount: totalFailCount,
@@ -1705,6 +1923,7 @@ export class OrderService {
     }
 
     const clientView = readClientUserView(order);
+    const wallet = await this.walletAccountResolverService.resolveForOrder(order);
 
     return {
       id: order.id,
@@ -1718,7 +1937,7 @@ export class OrderService {
       productList: productList,
       settlePeriodCondition: order.user!.settlePeriodCondition,
       settlePeriodCount: order.user!.settlePeriodCount,
-      isPreSettle: order.user!.settleCondition === IUserSettleCondition.PRE_PAYMENT,
+      isPreSettle: wallet.settleCondition === IUserSettleCondition.PRE_PAYMENT,
       cancelReason: order.cancelReason,
       canceledAt: order.canceledAt ? format(order.canceledAt, DateFormatStr) : null,
       totalFailCount: 0, // 이벤트 불러오기 시 발송 정보가 없으므로 0
@@ -3989,6 +4208,7 @@ export class OrderService {
         oneOrderDelivery.replaceCharacter1 = orderDelivery.replaceCharacter1 ?? null;
         oneOrderDelivery.replaceCharacter2 = orderDelivery.replaceCharacter2 ?? null;
         oneOrderDelivery.replaceCharacter3 = orderDelivery.replaceCharacter3 ?? null;
+        oneOrderDelivery.memo = orderDelivery.memo ?? null;
         oneOrderDelivery.sendRequestAt = productSendAt;
         orderDeliveryCreateList.push(oneOrderDelivery);
       }
@@ -4012,13 +4232,14 @@ export class OrderService {
     await this.assertPositiveIntegerAmounts(orderProductList);
     await this.assertNoForbiddenWord(user, orderProductList, id, eventName);
 
-    const order = await this.orderRepository.findOne({
-      where: {
-        id: id,
-        // userId: user.id,
-        // status: IOrderStatus.TEMP,
-      },
-    });
+    // 주문 행을 먼저 잠근다. 아래에서 order_product_mapping 도 잠그는데, 락 순서를
+    // order -> order_product_mapping -> test_order_delivery 한 방향으로 통일해야
+    // order 를 먼저 잠그는 경로(deliveryRequest / deliveryConfirmed)와 데드락 사이클을 만들지 않는다.
+    const order = await this.orderRepository
+      .createQueryBuilder('order')
+      .setLock('pessimistic_write')
+      .where('order.id = :id', { id })
+      .getOne();
 
     if (!order) {
       throw new BadRequestException('존재하지 않는 주문입니다.');
@@ -4068,17 +4289,27 @@ export class OrderService {
 
     const orderId: number = order.id;
 
+    // 수신처 암호화는 매핑 id 와 무관하므로 잠금 전에 끝낸다. 락 구간에서 수천 건을 돌리면
+    // 그 시간만큼 테스트 발송의 한도 선점이 대기한다.
+    const encryptedTargetsByLine = orderProductList.map((product) =>
+      product.orderDeliveryList.map((orderDelivery) =>
+        this.cryptoCipher.encryptDeliveryTarget(PhoneUtil.normalizeDeliveryTarget(orderDelivery.deliveryTarget)),
+      ),
+    );
+
     // mapping id 소유권/중복 검증 — 헤더 저장 이전에 실행하여 뮤테이션 전 400 보장
-    const deleteOrderProductMappingList = await this.orderProductMappingRepository.find({
-      where: {
-        orderId: orderId,
-      },
-    });
+    // 행 잠금: 테스트 발송의 한도 선점(test_delivery_count + 1)과 겹치면 승계 과정에서 증가분이 유실된다
+    const deleteOrderProductMappingList = await this.orderProductMappingRepository
+      .createQueryBuilder('orderProductMapping')
+      .setLock('pessimistic_write')
+      .where('orderProductMapping.orderId = :orderId', { orderId })
+      .getMany();
     const ownedMap = new Map<number, OwnedLine>(
       deleteOrderProductMappingList.map((m) => [
         m.id,
         {
           productId: m.productId,
+          testDeliveryCount: m.testDeliveryCount,
           snapshot: {
             snapshotProductPrice: m.snapshotProductPrice,
             snapshotProductName: m.snapshotProductName,
@@ -4111,11 +4342,30 @@ export class OrderService {
     order.sendAmount = sendAmount;
     order.settleAmount = sendAmount;
 
-    // 대행주문 관련 정보 업데이트
+    // 대행주문 관련 정보 업데이트 — 고객사 변경을 감지해 스냅샷을 재기록한다.
+    // 변경이 없으면 기존 스냅샷을 유지한다(계정정보 변경 후 일반수정만으로 덮어쓰지 않음).
+    // 레거시 NULL 스냅샷은 여기서 자동 보정하지 않는다(별도 백필/탐지 대상).
+    const previousClientUserId = order.clientUserId ?? null;
+    const clientChanged = previousClientUserId !== clientUserId;
     order.clientUserId = clientUserId;
-    if (clientUserId) {
-      // 대행주문인 경우 현재 관리자를 운영 담당자로 자동 배정 (createTemp와 동일 로직)
-      order.operationUserId = user.id;
+
+    if (clientChanged) {
+      const nextClientUser =
+        clientUserId != null
+          ? await this.userRepository.findOneOrFail({ where: { id: clientUserId }, relations: ['company'] })
+          : null;
+      const operationUser =
+        clientUserId != null ? await this.userRepository.findOneOrFail({ where: { id: user.id } }) : null;
+
+      const transition = buildClientAssignmentTransition({
+        previousClientUserId,
+        nextClientUserId: clientUserId,
+        nextClientUser,
+        operationUser,
+      });
+      if (transition) {
+        Object.assign(order, transition);
+      }
     }
 
     await this.orderRepository.save(order);
@@ -4130,7 +4380,7 @@ export class OrderService {
     // 3. 신규 order delivery, product 생성
     const orderDeliveryCreateList: OrderDeliveryEntity[] = [];
 
-    for (const product of orderProductList) {
+    for (const [lineIndex, product] of orderProductList.entries()) {
       const orderProduct = new OrderProductMappingEntity();
 
       orderProduct.orderId = orderId;
@@ -4180,30 +4430,79 @@ export class OrderService {
         ),
       );
 
+      const carriedLineId = resolveCarriedLineId(product, ownedMap);
+
+      // 초기화하면 저장할 때마다 상품 행당 2회 제한이 풀린다
+      orderProduct.testDeliveryCount =
+        carriedLineId != null ? (ownedMap.get(carriedLineId)?.testDeliveryCount ?? 0) : 0;
+
       await this.orderProductMappingRepository.save(orderProduct);
+
+      // 테스트 발송 이력을 신규 매핑으로 승계 (매핑 id 가 바뀌어도 조회가 끊기지 않도록)
+      // soft-delete 된 이력도 함께 옮긴다. 조회는 deleted_at IS NULL 이라 되살아나지 않는다.
+      if (carriedLineId != null) {
+        await this.testOrderDeliveryRepository.update(
+          { orderProductMappingId: carriedLineId },
+          { orderProductMappingId: orderProduct.id },
+        );
+      }
 
       // 상품별 발신 수단 사용
       const deliverySendMethod = orderProduct.sendMethod!;
 
-      for (const orderDelivery of product.orderDeliveryList) {
+      const encryptedTargets = encryptedTargetsByLine[lineIndex];
+
+      product.orderDeliveryList.forEach((orderDelivery, deliveryIndex) => {
         const oneOrderDelivery = new OrderDeliveryEntity();
         oneOrderDelivery.orderProductMappingId = orderProduct.id;
         oneOrderDelivery.status = IOrderDeliveryStatus.TEMP;
         oneOrderDelivery.deliveryMethod = deliverySendMethod;
-        const encryptedTarget = this.cryptoCipher.encryptDeliveryTarget(
-          PhoneUtil.normalizeDeliveryTarget(orderDelivery.deliveryTarget),
-        );
+        const encryptedTarget = encryptedTargets[deliveryIndex];
         oneOrderDelivery.deliveryTarget = encryptedTarget;
         oneOrderDelivery.originalDeliveryTarget = encryptedTarget;
         oneOrderDelivery.replaceCharacter1 = orderDelivery.replaceCharacter1 ?? null;
         oneOrderDelivery.replaceCharacter2 = orderDelivery.replaceCharacter2 ?? null;
         oneOrderDelivery.replaceCharacter3 = orderDelivery.replaceCharacter3 ?? null;
+        oneOrderDelivery.memo = orderDelivery.memo ?? null;
         oneOrderDelivery.sendRequestAt = productSendAt;
         orderDeliveryCreateList.push(oneOrderDelivery);
-      }
+      });
     }
 
     await this.orderDeliveryRepository.insert(orderDeliveryCreateList);
+
+    // 삭제되거나 상품이 교체된 라인의 이력은 승계처가 없다. 남겨두면 조회 불가능한 행으로 누적된다
+    const carriedLineIds = new Set(
+      orderProductList
+        .map((product) => resolveCarriedLineId(product, ownedMap))
+        .filter((lineId): lineId is number => lineId != null),
+    );
+    const orphanedLineIds = [...ownedMap.keys()].filter((lineId) => !carriedLineIds.has(lineId));
+    if (orphanedLineIds.length) {
+      // WAIT 은 외부 발송이 이미 나갔을 수 있어 지우지 않는다(ERP 197-15 방침).
+      // 매핑이 곧 삭제되면 discardStaleTestDeliveries 가 이 행에 도달할 수 없으므로
+      // 아직 매핑 id 로 특정 가능한 지금 경보를 남긴다.
+      const escalated = await this.testOrderDeliveryRepository
+        .createQueryBuilder()
+        .update()
+        .set({ opsEscalatedAt: () => 'NOW()' })
+        .where('order_product_mapping_id IN (:...orphanedLineIds)', { orphanedLineIds })
+        .andWhere('status = :wait', { wait: IOrderDeliveryStatus.WAIT })
+        .andWhere('deleted_at IS NULL')
+        .andWhere('ops_escalated_at IS NULL')
+        .execute();
+
+      if ((escalated.affected ?? 0) > 0) {
+        this.logger.error(
+          `테스트 발송 여부 불명 ${escalated.affected}건이 매핑 삭제로 고아가 됨 — 운영 확인 필요 (orderId: ${orderId}, orderProductMappingIds: ${orphanedLineIds.join(',')})`,
+        );
+      }
+
+      await this.testOrderDeliveryRepository.softDelete({
+        orderProductMappingId: In(orphanedLineIds),
+        status: Not(IOrderDeliveryStatus.WAIT),
+      });
+    }
 
     // 수기등록 원본 데이터 재생성
     if (getBody.manualEntryList?.length) {
@@ -4288,6 +4587,7 @@ export class OrderService {
       replaceCharacter1: entry.replaceCharacter1,
       replaceCharacter2: entry.replaceCharacter2,
       replaceCharacter3: entry.replaceCharacter3,
+      memo: entry.memo,
     }));
   }
 
@@ -4514,12 +4814,28 @@ export class OrderService {
     return;
   }
 
+  /**
+   * 발송확정 공통 command.
+   *
+   * 사용자 호출(컨트롤러)과 신용초과 승인 실행(CreditExcessApprovalDispatchService)이 같은 경로를 쓴다.
+   * `approvalContext` 가 있으면 서버 승인 실행이며, 트랜잭션 시작 시 approval row 를 FOR UPDATE 로
+   * 잠그고 PROCESSING/fencing token 을 검증한 뒤 스냅샷 재검증·실행 표식 기록까지 같은 트랜잭션에서 수행한다.
+   */
   @Transactional()
   async deliveryConfirmed(
     user: ILoginUserInfo,
     getBody: OrderDeliveryConfirmedReqDto,
+    approvalContext?: CreditExcessApprovalExecutionContext,
   ): Promise<OrderDeliveryConfirmed> {
     const { id } = getBody;
+
+    if (approvalContext) {
+      await this.creditExcessApprovalService.lockProcessing(
+        this.orderRepository.manager,
+        approvalContext.approvalId,
+        approvalContext.attemptToken,
+      );
+    }
 
     const lockedOrder = await this.orderRepository
       .createQueryBuilder('order')
@@ -4536,10 +4852,6 @@ export class OrderService {
     const currentUser = await this.getCurrentDeliveryTransitionUser(user.id);
     if (!canTransitionDelivery(currentUser, lockedOrder)) {
       throw new ForbiddenException('해당 주문에 대한 권한이 없습니다.');
-    }
-
-    if (getBody.forceConfirm && !canForceConfirmDelivery(currentUser)) {
-      throw new ForbiddenException('강제 발송확정 권한이 없습니다.');
     }
 
     const order = await this.orderRepository
@@ -4608,35 +4920,11 @@ export class OrderService {
     // 각 매핑별 할인/할증 상태 저장 (중복번호 체크에 사용)
     const mappingPriceAdjustments = new Map<number, IPriceAdjustment | null>();
 
-    for (const mapping of order.orderProductMappings!) {
-      let fee = mapping.fee;
-      let priceAdjustment = mapping.priceAdjustment;
-
-      // fee 또는 priceAdjustment가 설정되지 않은 경우 할인 옵션에서 찾기
-      if (fee === null || priceAdjustment === null) {
-        const matchingDiscount = findMatchingDiscount(
-          {
-            price: mapping.product.price,
-            category: mapping.product.category,
-            classificationId: mapping.product.classificationId,
-            brand: mapping.product.brand,
-          },
-          userDiscounts,
-        );
-
-        if (matchingDiscount) {
-          fee = fee ?? matchingDiscount.pricePercent;
-          priceAdjustment = priceAdjustment ?? matchingDiscount.priceAdjustment;
-
-          // 매핑에 할인 정보 저장
-          mapping.fee = fee;
-          mapping.priceAdjustment = priceAdjustment;
-          mappingsToUpdate.push(mapping);
-        }
-      }
-
-      // 할인/할증 상태 저장
-      mappingPriceAdjustments.set(mapping.id, priceAdjustment);
+    const { mappingsToUpdate: autoMatched, mappingPriceAdjustments: matchedAdjustments } =
+      this.applyAutoDiscountMatching(order, userDiscounts);
+    mappingsToUpdate.push(...autoMatched);
+    for (const [mappingId, adjustment] of matchedAdjustments) {
+      mappingPriceAdjustments.set(mappingId, adjustment);
     }
 
     // 업데이트할 매핑이 있으면 저장
@@ -4796,38 +5084,50 @@ export class OrderService {
         this.assertUsageWithinLimits(allocationInput, getBody);
         const allocation = this.paymentAllocationService.allocate(allocationInput);
 
+        // 승인 실행이면 요청 시점 스냅샷과 현재 재계산 결과를 같은 잠금 범위에서 비교한다.
+        if (approvalContext) {
+          this.assertApprovalSnapshotMatches(
+            approvalContext,
+            buildCreditExcessSnapshot({
+              order,
+              lifecycleMode: cutoverMode,
+              billingUserId,
+              walletAccountId: String(wallet.id),
+              settleMethod: effectiveSettleMethod,
+              cardSurchargeApplied: effectiveSurcharge,
+              finalAmount,
+              remainServiceAmount,
+              excessAmount: allocation.creditExcessAmount,
+              payableSettlementAmount: allocation.payableSettlementAmount,
+              usage: getBody,
+              allocation: {
+                pointUsedAmount: allocation.pointUsedAmount,
+                depositUsedAmount: allocation.depositUsedAmount,
+                creditUsedAmount: allocation.creditUsedAmount,
+                creditExcessAmount: allocation.creditExcessAmount,
+                cardSurchargeAmount: allocation.cardSurchargeAmount,
+              },
+            }),
+          );
+        }
+
         // 신용초과 판정 = allocation.creditExcessAmount 기준 (finalAmount 아님)
         if (allocation.creditExcessAmount > 0) {
-          // 1차/2차 공통 신용초과 응답 빌더. 두 응답이 동일 필드를 내려야 함 —
-          // walletAccountId/requestedAmount/requestedCreditExcessAmount 는 신용초과 사전 승인
-          // (POST /credit-excess-approvals) 요청 body 로 그대로 전달되며, 누락 시 승인 API 400 회귀(요청4).
-          const buildCreditExcessResponse = (message: 'credit_excess' | 'credit_excess_pending_approval') =>
-            ({
-              message,
+          if (!approvalContext) {
+            // 사용자 호출: 신용초과 승인 요청 안내 응답 (SSG confirmEventBalance 미실행, DB 차감 없음).
+            // 사용자 재시도 발송확정은 없다 — 운영자 승인 시 서버가 직접 확정한다.
+            return {
+              message: 'credit_excess',
               creditExcess: true,
               excessAmount: allocation.creditExcessAmount,
               remainServiceAmount,
               finalAmount: allocation.payableSettlementAmount,
-              walletAccountId: String(wallet.id),
-              requestedAmount: allocation.payableSettlementAmount,
-              requestedCreditExcessAmount: allocation.creditExcessAmount,
               ...this.allocationDetail(allocation),
-            }) as OrderDeliveryConfirmed;
-
-          if (!getBody.forceConfirm) {
-            // 1차 호출: 신용초과 미리보기 응답 (SSG confirmEventBalance 미실행, DB 차감 없음)
-            return buildCreditExcessResponse('credit_excess');
-          }
-          // 2차 호출 (forceConfirm=true) + 사전 승인 ID 미주입 → 승인 대기 응답 (SSG side effect 차단).
-          if (!getBody.creditExcessApprovalId) {
-            this.logger.warn(
-              `신용초과 사전 승인 누락: orderId=${order.id}, 초과액=${allocation.creditExcessAmount.toLocaleString()}원`,
-            );
-            return buildCreditExcessResponse('credit_excess_pending_approval');
+            } as OrderDeliveryConfirmed;
           }
           order.isCreditExcess = true;
           this.logger.warn(
-            `신용초과 발송확정: orderId=${order.id}, 초과액=${allocation.creditExcessAmount.toLocaleString()}원, 결제=${allocation.payableSettlementAmount.toLocaleString()}원`,
+            `신용초과 발송확정(승인 실행): orderId=${order.id}, approvalId=${approvalContext.approvalId}, 초과액=${allocation.creditExcessAmount.toLocaleString()}원, 결제=${allocation.payableSettlementAmount.toLocaleString()}원`,
           );
         }
 
@@ -4836,9 +5136,8 @@ export class OrderService {
           await this.ssgEventService.confirmEventBalance(order.id);
         }
 
-        // 신용초과 사전 승인 ID 전달 (CreditExcessApprovalService 4단계 워크플로 Step D).
-        // 신용초과 미발생 시 null. 발생 시 운영자가 사전 발급한 approvalId 필수 — 미주입 시
-        // persistAllocation 가 credit_excess_approval_required 로 throw → TX rollback.
+        // 신용초과 승인 실행이면 approvalId 를 넘겨 persistAllocation 안에서 same-tx 로 consume 한다.
+        // 사용자 호출은 항상 null — 신용초과가 남아 있으면 위에서 이미 승인 요청 안내로 반환된다.
         const deliveryIdsForAttempt: number[] = [];
         for (const mapping of order.orderProductMappings!) {
           for (const delivery of mapping.orderDeliveries) {
@@ -4854,12 +5153,43 @@ export class OrderService {
             hasDiscountSnapshot: allocation.hasDiscount,
             settleMethodSnapshot: effectiveSettleMethod,
             deliveryIdsForAttempt,
-            creditExcessApprovalId: getBody.creditExcessApprovalId ?? null,
+            creditExcessApprovalId: approvalContext?.approvalId ?? null,
           },
           externalManager,
         );
         // persistAllocation 이 lock 후 재계산한 최종 allocation 사용 (pre-lock allocation 은 stale 가능).
         const finalAllocation = persistResult.finalAllocation;
+
+        // persistAllocation 이 lock 후 예치금 부족분을 credit/credit_excess 로 재분배할 수 있다.
+        // consume() 는 총 결제액·신용초과액만 비교하므로, "총액·excess 는 동일하지만 deposit↓/credit↑"
+        // 같은 재분배는 걸러내지 못한다 → 승인받은 배분과 다른 배분으로 확정될 수 있다.
+        // 최종 allocation 으로 스냅샷을 다시 구성해 전체(재원 배분 포함)를 재비교하고, drift 면 같은
+        // 트랜잭션을 통째로 롤백해 RE_REQUEST_REQUIRED 로 분류되게 한다.
+        if (approvalContext) {
+          this.assertApprovalSnapshotMatches(
+            approvalContext,
+            buildCreditExcessSnapshot({
+              order,
+              lifecycleMode: cutoverMode,
+              billingUserId,
+              walletAccountId: String(wallet.id),
+              settleMethod: effectiveSettleMethod,
+              cardSurchargeApplied: effectiveSurcharge,
+              finalAmount,
+              remainServiceAmount,
+              excessAmount: finalAllocation.creditExcessAmount,
+              payableSettlementAmount: finalAllocation.payableSettlementAmount,
+              usage: getBody,
+              allocation: {
+                pointUsedAmount: finalAllocation.pointUsedAmount,
+                depositUsedAmount: finalAllocation.depositUsedAmount,
+                creditUsedAmount: finalAllocation.creditUsedAmount,
+                creditExcessAmount: finalAllocation.creditExcessAmount,
+                cardSurchargeAmount: finalAllocation.cardSurchargeAmount,
+              },
+            }),
+          );
+        }
 
         // 4'. legacy mirror (same TX, user.balance 제외)
         order.settleAmount = finalAllocation.payableSettlementAmount;
@@ -4880,20 +5210,42 @@ export class OrderService {
         walletAllocation = finalAllocation;
       } else {
         // === LEGACY 또는 SHADOW: finalAmount 기준 신용초과 판정 유지 ===
-        if (finalAmount > remainServiceAmount) {
-          if (!getBody.forceConfirm) {
-            // 1차 호출: 초과 정보 응답 반환 (SSG confirmEventBalance 미실행)
+        const legacyExcessAmount = Math.max(0, finalAmount - remainServiceAmount);
+
+        if (approvalContext) {
+          this.assertApprovalSnapshotMatches(
+            approvalContext,
+            buildCreditExcessSnapshot({
+              order,
+              lifecycleMode: cutoverMode,
+              billingUserId,
+              walletAccountId: null,
+              settleMethod: effectiveSettleMethod,
+              cardSurchargeApplied: effectiveSurcharge,
+              finalAmount,
+              remainServiceAmount,
+              excessAmount: legacyExcessAmount,
+              payableSettlementAmount: finalAmount,
+              usage: getBody,
+              allocation: null,
+            }),
+          );
+        }
+
+        if (legacyExcessAmount > 0) {
+          if (!approvalContext) {
+            // 사용자 호출: 신용초과 승인 요청 안내 응답 (SSG confirmEventBalance 미실행)
             return {
               message: 'credit_excess',
               creditExcess: true,
-              excessAmount: finalAmount - remainServiceAmount,
+              excessAmount: legacyExcessAmount,
               remainServiceAmount,
               finalAmount,
             };
           }
           order.isCreditExcess = true;
           this.logger.warn(
-            `신용초과 발송확정: orderId=${order.id}, 초과액=${(finalAmount - remainServiceAmount).toLocaleString()}원, 필요=${finalAmount.toLocaleString()}원, 가능=${remainServiceAmount.toLocaleString()}원`,
+            `신용초과 발송확정(승인 실행): orderId=${order.id}, approvalId=${approvalContext.approvalId}, 초과액=${legacyExcessAmount.toLocaleString()}원, 필요=${finalAmount.toLocaleString()}원, 가능=${remainServiceAmount.toLocaleString()}원`,
           );
         }
 
@@ -5099,6 +5451,34 @@ export class OrderService {
 
     order.status = IOrderStatus.DELIVERY_CONFIRMED;
     await this.orderRepository.save(order);
+    if (approvalContext) {
+      // 실행 표식 — 발송확정과 **같은 트랜잭션**에서 1회만 기록. 최종화·lease 복구의 공통 진실 원천.
+      await this.creditExcessApprovalService.recordExecution(this.orderRepository.manager, {
+        approvalId: approvalContext.approvalId,
+        orderId: order.id,
+        attemptToken: approvalContext.attemptToken,
+        lifecycleMode: this.walletCutoverConfig.pr2DeliveryLifecycleMode,
+      });
+      await this.activityLogService.createLog({
+        userId: approvalContext.approverUserId,
+        userEmail: approvalContext.approverEmail,
+        method: 'POST',
+        requestUrl: `/credit-excess-approvals/${approvalContext.approvalId}/approve`,
+        actionType: 'CREDIT_EXCESS_APPROVAL_DISPATCH',
+        ipAddress: approvalContext.ipAddress,
+        statusCode: 200,
+        result: ActivityLogResult.SUCCESS,
+        responseTime: 0,
+        requestParams: {
+          approvalId: approvalContext.approvalId,
+          orderId: order.id,
+          approverUserId: approvalContext.approverUserId,
+          requesterUserId: approvalContext.requesterUserId,
+          attemptToken: approvalContext.attemptToken,
+          executedBy: 'SERVER_DISPATCH',
+        },
+      });
+    }
     if (!hasSettleInput) {
       await this.logSettleDiscountChange({
         user,
@@ -5740,22 +6120,23 @@ export class OrderService {
       );
     }
 
-    // 한도 용량 원자 선점: count < 2 인 경우에만 +1. affected=0 이면 한도 초과(동시 요청 포함)로 차단한다.
-    // 락+검사 대신 조건부 UPDATE 로 선점해 동시 요청의 한도 초과를 구조적으로 막는다.
-    // 발송 전에 선점하므로, 이후 발송이 실패하면 보상(-1)한다.
+    // 한도 사전 확인. 실제 선점은 이미지 생성 이후 이력 INSERT 와 한 트랜잭션에서 수행한다.
+    // 여기서 미리 막는 이유는 한도 초과가 확실한 요청에 쿠폰 이미지 생성(외부 I/O) 비용을 쓰지 않기 위해서다.
+    // 이 확인만으로는 동시 요청을 막지 못한다(TOCTOU). 실제 차단은 선점 트랜잭션의 조건부 UPDATE 가 담당한다.
     //
-    // 운영관리자/최고관리자는 무제한이라 카운트를 아예 건드리지 않는다. 여기서 +1 하면 관리자 발송이
-    // 기업관리자 한도(상품당 2회)를 대신 소진해 "기업관리자만 2회 제한" 정책과 어긋난다.
+    // 카운트는 반드시 다시 읽는다. 위 잔류 정리가 한도를 회수했을 수 있는데, 앞서 조회한 엔티티는
+    // 정리 이전 값이라 회수분이 반영되지 않아 쓸 수 있는 요청을 막게 된다.
     if (!canBypassTestDeliveryLimit) {
-      const claim = await this.orderProductMappingRepository
-        .createQueryBuilder()
-        .update()
-        .set({ testDeliveryCount: () => 'test_delivery_count + 1' })
-        .where('id = :id', { id: orderProductMappingId })
-        .andWhere('test_delivery_count < :maxLimitCount', { maxLimitCount })
-        .execute();
-      if ((claim.affected ?? 0) === 0) {
-        throw new BadRequestException('테스트발송은 상품당 최대 2회입니다.');
+      const current = await this.orderProductMappingRepository.findOne({
+        where: { id: orderProductMappingId },
+        select: { id: true, testDeliveryCount: true },
+      });
+      // 매핑이 이미 사라졌으면(저장으로 재생성) 한도 초과가 아니라 매핑 소실로 안내한다.
+      if (!current) {
+        throw new BadRequestException('주문이 저장되어 테스트 발송이 취소되었습니다. 다시 시도해주세요.');
+      }
+      if (current.testDeliveryCount >= maxLimitCount) {
+        throw new BadRequestException('테스트발송은 상품 행당 최대 2회입니다.');
       }
     }
 
@@ -5765,6 +6146,8 @@ export class OrderService {
     let isSent = false;
     // 잔류 정리가 이미 이력·한도를 회수한 경우. 보상을 중복 적용하지 않기 위해 구분한다.
     let isStaleClaim = false;
+    // 선점 트랜잭션이 실제로 커밋됐는지. 커밋 전 실패(이미지 생성·매핑 소실)는 보상 대상이 아니다.
+    let hasClaimedLimit = false;
     try {
       const firstDelivery = await this.orderDeliveryRepository.findOne({
         where: { orderProductMappingId },
@@ -5790,23 +6173,25 @@ export class OrderService {
         orderProductMapping.product.type,
       );
 
-      // test_order_delivery 저장 (oneSend에서 테스트 발송 여부를 판단하여 PIN 재발급 스킵)
-      // 발송 전에는 TEMP 로 저장한다. COMPLETE 를 미리 넣으면 발송 중/실패 건이 성공 이력으로 노출된다.
-      const testOrderDelivery = new TestOrderDeliveryEntity();
-      testOrderDelivery.status = IOrderDeliveryStatus.TEMP;
-      testOrderDelivery.orderProductMappingId = orderProductMapping.id;
-      testOrderDelivery.deliveryMethod = deliveryMethod;
-      testOrderDelivery.deliveryTarget = encryptedDeliveryTarget;
-      testOrderDelivery.imagePath = imagePath;
-      testOrderDelivery.sendRequestAt = new Date();
-      testOrderDelivery.expireAt = expireAt;
-      testOrderDelivery.barCode = barCode;
-      testOrderDelivery.personalCode = barCode;
-      // 이 건이 한도를 선점했는지 남긴다. 관리자 발송(false)은 카운트를 올리지 않았으므로
-      // 잔류 정리 시에도 회수 대상이 아니다. 행만 보고 회수 여부를 판단할 수 있어야 한다.
-      testOrderDelivery.limitClaimed = !canBypassTestDeliveryLimit;
-      const savedTestOrderDelivery = await this.testOrderDeliveryRepository.save(testOrderDelivery);
-      testOrderDeliveryId = savedTestOrderDelivery.id;
+      // 한도 선점과 이력 INSERT 를 한 트랜잭션으로 묶는다. 선점만 커밋되고 이력이 없는 상태가 생기면
+      // 그 선점은 회수할 근거가 사라진다(잔류 정리는 이력 행을 기준으로 회수한다). 둘을 함께 커밋해
+      // "선점했으면 반드시 이력이 있다"를 보장하고, 이후 실패는 이력 기준으로 회수 가능하게 만든다.
+      //
+      // 매핑 행에 잠금을 걸어 updateTemp 의 잠금 읽기(재생성)와 직렬화한다. 이미지 생성(외부 I/O)은
+      // 이미 끝났으므로 이 트랜잭션은 짧고, 외부 I/O 를 트랜잭션 안에 넣지 않는다.
+      const claimed = await this.claimTestDeliveryLimitWithHistory({
+        orderProductMappingId,
+        canBypassTestDeliveryLimit,
+        maxLimitCount,
+        deliveryMethod,
+        encryptedDeliveryTarget,
+        imagePath,
+        expireAt,
+        barCode,
+      });
+      testOrderDeliveryId = claimed.testOrderDeliveryId;
+      // 여기까지 왔으면 선점(+1)과 이력이 함께 커밋됐다. 이후 실패는 보상 대상이다.
+      hasClaimedLimit = true;
 
       const orderDelivery = new OrderDeliveryEntity();
       orderDelivery.deliveryMethod = deliveryMethod;
@@ -5831,14 +6216,22 @@ export class OrderService {
         .where('id = :id', { id: testOrderDeliveryId })
         .andWhere('status = :temp', { temp: IOrderDeliveryStatus.TEMP })
         .andWhere('deleted_at IS NULL')
+        // 승계로 매핑이 바뀌었으면 발송 payload 가 낡은 설정이라 중단한다.
+        .andWhere('order_product_mapping_id = :orderProductMappingId', { orderProductMappingId })
         .execute();
       if ((sendClaim.affected ?? 0) !== 1) {
-        // 잔류 정리가 이미 이력 삭제와 한도 회수(-1)를 마친 상태다. 여기서 또 보상하면 다른 건의
-        // 한도까지 깎으므로, 이력만 정리(멱등)하고 한도는 건드리지 않은 채 중단한다.
+        // 0행 원인이 둘이라 구분한다. 이력이 살아있으면 승계로 매핑만 바뀐 것이라 선점이 새 행에
+        // 남아 있어 보상해야 하고, 이력이 없으면 잔류 정리가 한도까지 회수한 뒤라 보상하면 이중 차감이다.
+        const survived = await this.testOrderDeliveryRepository.findOne({
+          where: { id: testOrderDeliveryId },
+          select: { id: true },
+        });
+        isStaleClaim = survived === null;
         this.logger.error(
-          `테스트 발송 WAIT 전환이 0행 (testOrderDeliveryId: ${testOrderDeliveryId}) — 잔류 정리로 이력이 이미 회수됨. 발송하지 않고 중단`,
+          `테스트 발송 WAIT 전환이 0행 (testOrderDeliveryId: ${testOrderDeliveryId}) — ${
+            isStaleClaim ? '잔류 정리로 이력이 이미 회수됨' : '저장으로 매핑이 재생성됨'
+          }. 발송하지 않고 중단`,
         );
-        isStaleClaim = true;
         throw new BadRequestException('테스트 발송 요청이 만료되었습니다. 다시 시도해주세요.');
       }
 
@@ -5873,10 +6266,10 @@ export class OrderService {
         );
         throw error;
       }
-      // 준비 단계 실패 시에는 아직 이력이 없을 수 있으므로 testOrderDeliveryId 는 null 일 수 있다.
-      // 관리자 발송은 한도를 선점하지 않았으므로 보상 차감도 하지 않는다(하면 기업관리자 한도를 깎는다).
+      // 선점 트랜잭션이 커밋되지 않았으면 되돌릴 선점 자체가 없다(이미지 생성 실패, 매핑 소실, 한도 초과).
+      // 관리자 발송은 한도를 선점하지 않으므로 보상 차감도 하지 않는다(하면 기업관리자 한도를 깎는다).
       // 잔류 정리가 이미 회수한 건(isStaleClaim)도 같은 이유로 보상 대상에서 제외한다.
-      const shouldCompensate = !canBypassTestDeliveryLimit && !isStaleClaim;
+      const shouldCompensate = hasClaimedLimit && !canBypassTestDeliveryLimit && !isStaleClaim;
       try {
         await this.rollbackTestDelivery(testOrderDeliveryId, orderProductMappingId, shouldCompensate);
       } catch (rollbackError) {
@@ -5898,6 +6291,91 @@ export class OrderService {
   }
 
   /**
+   * 테스트 발송 한도 선점(+1)과 이력 INSERT 를 한 트랜잭션으로 처리한다.
+   *
+   * 선점만 커밋되고 이력이 없는 상태를 만들지 않는 것이 목적이다. 잔류 정리(discardStaleTestDeliveries)는
+   * 이력 행을 기준으로 한도를 회수하므로, 이력 없는 선점은 회수 근거가 없어 영구 누수가 된다.
+   * 둘을 함께 커밋하면 이후 어떤 실패든 이력 행을 통해 회수할 수 있다.
+   *
+   * 매핑 행을 먼저 잠가 updateTemp 의 잠금 읽기와 직렬화한다. updateTemp 가 먼저 잠갔다면 재생성이
+   * 끝난 뒤 이 잠금이 잡히고, 그때 옛 id 는 사라져 있으므로 매핑 소실로 판정된다. 반대 순서면
+   * updateTemp 가 이 트랜잭션의 커밋된 +1 을 승계하므로 선점이 유실되지 않는다.
+   *
+   * 락 순서는 order_product_mapping -> test_order_delivery 로, updateTemp 와 같은 방향이다.
+   * 외부 I/O(쿠폰 이미지 생성)는 호출 전에 끝나므로 이 트랜잭션 안에 들어오지 않는다.
+   */
+  @Transactional({ propagation: Propagation.REQUIRES_NEW })
+  private async claimTestDeliveryLimitWithHistory(params: {
+    orderProductMappingId: number;
+    canBypassTestDeliveryLimit: boolean;
+    maxLimitCount: number;
+    deliveryMethod: IOrderSendMethod;
+    encryptedDeliveryTarget: string;
+    imagePath: string;
+    expireAt: Date | null;
+    barCode: string;
+  }): Promise<{ testOrderDeliveryId: number }> {
+    const {
+      orderProductMappingId,
+      canBypassTestDeliveryLimit,
+      maxLimitCount,
+      deliveryMethod,
+      encryptedDeliveryTarget,
+      imagePath,
+      expireAt,
+      barCode,
+    } = params;
+
+    // 매핑 생존 확인 + 행 잠금. updateTemp 가 재생성했으면 이 id 는 없다.
+    // 잠금을 먼저 잡으므로, updateTemp 가 진행 중이면 재생성이 끝난 뒤에 이 조회가 수행된다.
+    const aliveMapping = await this.orderProductMappingRepository
+      .createQueryBuilder('orderProductMapping')
+      .setLock('pessimistic_write')
+      .where('orderProductMapping.id = :id', { id: orderProductMappingId })
+      .getOne();
+    if (!aliveMapping) {
+      throw new BadRequestException('주문이 저장되어 테스트 발송이 취소되었습니다. 다시 시도해주세요.');
+    }
+    // 잠금 대기 중 매핑이 삭제(승계 없는 라인 삭제)됐을 수도 있다. 위 조회가 그 경우를 잡는다.
+    // 아래 선점 UPDATE 의 affected=0 은 이제 한도 초과만 의미한다.
+
+    // 한도 용량 원자 선점: count < 2 인 경우에만 +1. affected=0 이면 한도 초과(동시 요청 포함)로 차단한다.
+    // 운영관리자/최고관리자는 무제한이라 카운트를 아예 건드리지 않는다. 여기서 +1 하면 관리자 발송이
+    // 기업관리자 한도(상품당 2회)를 대신 소진해 "기업관리자만 2회 제한" 정책과 어긋난다.
+    if (!canBypassTestDeliveryLimit) {
+      const claim = await this.orderProductMappingRepository
+        .createQueryBuilder()
+        .update()
+        .set({ testDeliveryCount: () => 'test_delivery_count + 1' })
+        .where('id = :id', { id: orderProductMappingId })
+        .andWhere('test_delivery_count < :maxLimitCount', { maxLimitCount })
+        .execute();
+      if ((claim.affected ?? 0) === 0) {
+        throw new BadRequestException('테스트발송은 상품 행당 최대 2회입니다.');
+      }
+    }
+
+    // test_order_delivery 저장 (oneSend에서 테스트 발송 여부를 판단하여 PIN 재발급 스킵)
+    // 발송 전에는 TEMP 로 저장한다. COMPLETE 를 미리 넣으면 발송 중/실패 건이 성공 이력으로 노출된다.
+    const testOrderDelivery = new TestOrderDeliveryEntity();
+    testOrderDelivery.status = IOrderDeliveryStatus.TEMP;
+    testOrderDelivery.orderProductMappingId = orderProductMappingId;
+    testOrderDelivery.deliveryMethod = deliveryMethod;
+    testOrderDelivery.deliveryTarget = encryptedDeliveryTarget;
+    testOrderDelivery.imagePath = imagePath;
+    testOrderDelivery.sendRequestAt = new Date();
+    testOrderDelivery.expireAt = expireAt;
+    testOrderDelivery.barCode = barCode;
+    testOrderDelivery.personalCode = barCode;
+    // 이 건이 한도를 선점했는지 남긴다. 관리자 발송(false)은 카운트를 올리지 않았으므로
+    // 잔류 정리 시에도 회수 대상이 아니다. 행만 보고 회수 여부를 판단할 수 있어야 한다.
+    testOrderDelivery.limitClaimed = !canBypassTestDeliveryLimit;
+    const saved = await this.testOrderDeliveryRepository.save(testOrderDelivery);
+
+    return { testOrderDeliveryId: saved.id };
+  }
+
+  /**
    * 크래시나 확정 실패로 rollbackTestDelivery 가 실행되지 못해 남은 이력을 정리한다.
    *
    * TEMP 는 oneSend 호출 전에 죽은 경우라 확실한 미발송이다. 이력을 지우고 선점한 한도를 회수한다.
@@ -5916,6 +6394,15 @@ export class OrderService {
   @Transactional({ propagation: Propagation.REQUIRES_NEW })
   private async discardStaleTestDeliveries(orderProductMappingId: number): Promise<void> {
     const graceSeconds = 600;
+
+    // 이력에 손대기 전에 매핑 행을 먼저 잠근다. 락 순서를 order_product_mapping -> test_order_delivery 로
+    // updateTemp 와 맞춰야 데드락 사이클이 생기지 않는다.
+    await this.orderProductMappingRepository
+      .createQueryBuilder('orderProductMapping')
+      .setLock('pessimistic_write')
+      .where('orderProductMapping.id = :id', { id: orderProductMappingId })
+      .getOne();
+
     // 한도를 선점한 건(limit_claimed = 1)만 대상으로 한다. affected 를 그대로 회수량으로 쓰므로
     // 관리자 발송(선점 없음)이 섞이면 올리지도 않은 한도를 깎게 된다.
     const stale = await this.testOrderDeliveryRepository
@@ -5998,6 +6485,15 @@ export class OrderService {
     orderProductMappingId: number,
     limitClaimed: boolean,
   ): Promise<void> {
+    // 이력에 손대기 전에 매핑 행을 먼저 잠근다. 락 순서를 order_product_mapping -> test_order_delivery 로
+    // updateTemp 와 맞춰야 데드락 사이클이 생기지 않는다(이력 먼저 잠그면 서로 반대 방향이 된다).
+    // 매핑이 이미 사라졌으면 잠글 대상이 없고, 그때는 아래 보상 대상 재조회가 승계된 새 매핑을 찾는다.
+    await this.orderProductMappingRepository
+      .createQueryBuilder('orderProductMapping')
+      .setLock('pessimistic_write')
+      .where('orderProductMapping.id = :id', { id: orderProductMappingId })
+      .getOne();
+
     // 살아있는 행을 이 요청이 실제로 지웠을 때만 보상한다.
     // 발송 실패를 처리하는 사이 다른 인스턴스의 잔류 정리가 같은 행을 지우며 한도까지 회수했을 수 있는데,
     // 여기서 또 -1 하면 그 회수분과 겹쳐 앞선 성공 건의 선점까지 깎여 2회 제한을 넘겨 발송할 수 있다.
@@ -6024,14 +6520,39 @@ export class OrderService {
       return;
     }
 
+    // 보상 대상은 인자로 받은 id 가 아니라 이력 행이 현재 가리키는 매핑 id 다.
+    // updateTemp 가 매핑을 재생성했다면 승계 UPDATE 가 이력의 orderProductMappingId 를 새 id 로 옮겨 놨고,
+    // 선점분(+1)도 그 새 행에 승계돼 있다. 인자(옛 id)로 차감하면 affected=0 이 되어 한도가 영구 누수된다.
+    let compensateTargetId = orderProductMappingId;
+    if (testOrderDeliveryId !== null) {
+      const history = await this.testOrderDeliveryRepository.findOne({
+        where: { id: testOrderDeliveryId },
+        withDeleted: true,
+        select: { id: true, orderProductMappingId: true },
+      });
+      if (history && history.orderProductMappingId !== orderProductMappingId) {
+        this.logger.warn(
+          `테스트 발송 보상 대상이 승계된 매핑으로 변경됨 (testOrderDeliveryId: ${testOrderDeliveryId}, ${orderProductMappingId} -> ${history.orderProductMappingId})`,
+        );
+        compensateTargetId = history.orderProductMappingId;
+      }
+    }
+
     // 발송 전 +1 한 선점을 되돌린다. 0 미만으로 내려가지 않도록 조건부 차감.
-    await this.orderProductMappingRepository
+    const compensated = await this.orderProductMappingRepository
       .createQueryBuilder()
       .update()
       .set({ testDeliveryCount: () => 'test_delivery_count - 1' })
-      .where('id = :id', { id: orderProductMappingId })
+      .where('id = :id', { id: compensateTargetId })
       .andWhere('test_delivery_count > 0')
       .execute();
+
+    // 여기까지 왔는데 0행이면 매핑이 승계 없이 사라진 경우다(라인 삭제 등). 승계처가 없어 회수할 대상이 없다.
+    if ((compensated.affected ?? 0) === 0) {
+      this.logger.warn(
+        `테스트 발송 한도 보상 대상 없음 (orderProductMappingId: ${compensateTargetId}) — 매핑이 승계 없이 삭제된 것으로 보인다`,
+      );
+    }
   }
 
   /**

@@ -94,11 +94,10 @@ import { SettleOtherProductDetailDto } from '../api/dto/settle.other.product.dto
 import { OrderDeliveryCouponStatus, couponStatusToKorean } from '../../delivery/interface/order.delivery.coupon.status';
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import {
-  calculateSettlementPrice,
   calculateMappingSettlementBaseAmount,
   buildSettlementDisplayLines,
+  computeSettleNetAmountByOrder,
 } from '../../util/settle-fee.util';
-import { applyCardSurcharge } from '../../order/domain/order.fee.calculator';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.entity';
 import { UserDiscountEntity } from '../../entity/user.discount.entity';
@@ -1265,10 +1264,15 @@ export class SettleService {
     const nowString = format(now, 'yyyyMMdd');
 
     // 동일 필터를 id수집 QB와 graph QB 양쪽에 동일 적용
-    const applyPartnerFilters = <T extends SelectQueryBuilder<any>>(qb: T): T => {
-      qb.where('order.status IN (:...status)', { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] }).andWhere(
-        'orderDelivery.actualSendAt IS NOT NULL',
-      );
+    const applyPartnerFilters = <T extends SelectQueryBuilder<any>>(qb: T, append = false): T => {
+      const statusCondition = 'order.status IN (:...status)';
+      const statusParams = { status: ['DELIVERY_CONFIRMED', 'DELIVERY_COMPLETE'] };
+      if (append) {
+        qb.andWhere(statusCondition, statusParams);
+      } else {
+        qb.where(statusCondition, statusParams);
+      }
+      qb.andWhere('orderDelivery.actualSendAt IS NOT NULL');
 
       if (settleMethod) {
         qb.andWhere('partnerCompany.settleMethod LIKE :settleMethod', {
@@ -1360,7 +1364,7 @@ export class SettleService {
     for (let i = 0; i < ids.length; i += CHUNK) {
       const chunkIds = ids.slice(i, i + CHUNK);
 
-      const chunkList = await this.orderDeliveryRepository
+      let chunkQueryBuilder = this.orderDeliveryRepository
         .createQueryBuilder('orderDelivery')
         .innerJoinAndSelect('orderDelivery.orderProductMapping', 'orderProductMapping')
         .innerJoinAndSelect('orderProductMapping.order', 'order')
@@ -1374,9 +1378,10 @@ export class SettleService {
         .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
         .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
         .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceBrand')
-        .whereInIds(chunkIds)
-        .orderBy('orderDelivery.id', 'DESC')
-        .getMany();
+        .whereInIds(chunkIds);
+
+      chunkQueryBuilder = applyPartnerFilters(chunkQueryBuilder, true);
+      const chunkList = await chunkQueryBuilder.orderBy('orderDelivery.id', 'DESC').getMany();
 
       // chunkIds 순서대로 정렬 (whereInIds는 순서를 보장하지 않음)
       const chunkMap = new Map(chunkList.map((d) => [d.id, d]));
@@ -2734,6 +2739,55 @@ export class SettleService {
    * - 동일 회사의 모든 계정이 한도를 공유함
    */
   async getRemainServiceAmountByUserId(userId: number): Promise<SettleGetRemainServiceAmountResDto> {
+    const { userEntity, overdueAmount, legacyResult } = await this.computeLegacyRemainServiceAmount(userId);
+
+    // Wallet Cutover Bundle — 잔여 한도 read 경로 mode 전환.
+    //  - LEGACY: legacy 그대로.
+    //  - SHADOW: legacy 반환 + wallet 계산 비교 로그 (wallet write 없으므로 MIRROR_LAG 예상).
+    //  - WALLET: wallet_account (SoT) 기준 반환. fail-closed (wallet 미존재 시 throw).
+    const mode = this.walletCutoverConfig.pr3SettleMode;
+    if (mode === WalletCutoverMode.LEGACY) {
+      return legacyResult;
+    }
+
+    if (mode === WalletCutoverMode.SHADOW) {
+      try {
+        const walletResult = await this.computeWalletRemainServiceAmount(userEntity, overdueAmount);
+        if (walletResult.remainServiceAmount !== legacyResult.remainServiceAmount) {
+          this.logger.warn(
+            `wallet_shadow_mismatch_remain userId=${userEntity.id} ` +
+              `wallet=${walletResult.remainServiceAmount} legacy=${legacyResult.remainServiceAmount} ` +
+              `delta=${walletResult.remainServiceAmount - legacyResult.remainServiceAmount}`,
+          );
+        }
+      } catch (err) {
+        // shadow 비교 실패는 legacy 응답을 막지 않음
+        this.logger.warn(
+          `wallet_shadow_remain_failed userId=${userEntity.id} err=${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      return legacyResult;
+    }
+
+    // WALLET mode: wallet_account 기준 (SoT 전환)
+    return this.computeWalletRemainServiceAmount(userEntity, overdueAmount);
+  }
+
+  /**
+   * cutover mode 와 무관하게 legacy(회사 한도/잔액/allSettleAmount) 기준 잔여 한도만 계산한다.
+   * wallet_account 조회와 Wallet resolver 를 전혀 타지 않으므로, 정산코드 미부여 계정처럼
+   * wallet SoT 자체가 없는 화면 표시 경로에서 fail-closed 없이 기존 값을 그대로 보여줄 때 쓴다.
+   */
+  async getLegacyRemainServiceAmountByUserId(userId: number): Promise<SettleGetRemainServiceAmountResDto> {
+    const { legacyResult } = await this.computeLegacyRemainServiceAmount(userId);
+    return legacyResult;
+  }
+
+  private async computeLegacyRemainServiceAmount(userId: number): Promise<{
+    userEntity: UserEntity;
+    overdueAmount: number;
+    legacyResult: SettleGetRemainServiceAmountResDto;
+  }> {
     // 사용자 정보 조회
     const userEntity = await this.userRepository.findOne({
       where: { id: userId },
@@ -2778,36 +2832,7 @@ export class SettleService {
       creditExcessAmount: Math.max(0, -remainServiceAmount),
     };
 
-    // Wallet Cutover Bundle — 잔여 한도 read 경로 mode 전환.
-    //  - LEGACY: legacy 그대로.
-    //  - SHADOW: legacy 반환 + wallet 계산 비교 로그 (wallet write 없으므로 MIRROR_LAG 예상).
-    //  - WALLET: wallet_account (SoT) 기준 반환. fail-closed (wallet 미존재 시 throw).
-    const mode = this.walletCutoverConfig.pr3SettleMode;
-    if (mode === WalletCutoverMode.LEGACY) {
-      return legacyResult;
-    }
-
-    if (mode === WalletCutoverMode.SHADOW) {
-      try {
-        const walletResult = await this.computeWalletRemainServiceAmount(userEntity, overdueAmount);
-        if (walletResult.remainServiceAmount !== legacyResult.remainServiceAmount) {
-          this.logger.warn(
-            `wallet_shadow_mismatch_remain userId=${userEntity.id} ` +
-              `wallet=${walletResult.remainServiceAmount} legacy=${legacyResult.remainServiceAmount} ` +
-              `delta=${walletResult.remainServiceAmount - legacyResult.remainServiceAmount}`,
-          );
-        }
-      } catch (err) {
-        // shadow 비교 실패는 legacy 응답을 막지 않음
-        this.logger.warn(
-          `wallet_shadow_remain_failed userId=${userEntity.id} err=${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-      return legacyResult;
-    }
-
-    // WALLET mode: wallet_account 기준 (SoT 전환)
-    return this.computeWalletRemainServiceAmount(userEntity, overdueAmount);
+    return { userEntity, overdueAmount, legacyResult };
   }
 
   /**
@@ -3355,7 +3380,7 @@ export class SettleService {
   private async getOrderSettlementSummary(
     orderIds: number[],
   ): Promise<Map<number, { netAmount: number; hasPending: boolean }>> {
-    const map = new Map<number, { netAmount: number; hasPending: boolean; cardSurchargeApplied?: boolean }>();
+    const map = new Map<number, { netAmount: number; hasPending: boolean }>();
     if (orderIds.length === 0) return map;
 
     for (const id of orderIds) {
@@ -3375,6 +3400,8 @@ export class SettleService {
       withDeleted: true,
     });
 
+    const netByOrder = computeSettleNetAmountByOrder(deliveries);
+
     for (const d of deliveries) {
       const orderId = d.orderProductMapping.order.id;
       const entry = map.get(orderId);
@@ -3382,20 +3409,11 @@ export class SettleService {
 
       if (d.status === IOrderDeliveryStatus.WAIT || d.status === IOrderDeliveryStatus.TEMP) {
         entry.hasPending = true;
-        continue;
       }
-
-      const isComplete = d.status === IOrderDeliveryStatus.COMPLETE || d.status === IOrderDeliveryStatus.COMPLETE_SMS;
-      // CANCEL(고객사 폐기 요청)만 정산 제외. REFUND_CANCEL(수령 고객 환불)은 고객사 정산 100% 유지
-      if (!isComplete || d.couponStatus === OrderDeliveryCouponStatus.CANCEL) continue;
-
-      entry.cardSurchargeApplied = d.orderProductMapping.order.cardSurchargeApplied;
-      entry.netAmount += calculateSettlementPrice(d.orderProductMapping, false, d);
     }
 
-    for (const entry of map.values()) {
-      entry.netAmount = applyCardSurcharge(entry.netAmount, entry.cardSurchargeApplied ?? false);
-      delete entry.cardSurchargeApplied;
+    for (const [orderId, entry] of map) {
+      entry.netAmount = netByOrder.get(orderId) ?? 0;
     }
     return map;
   }

@@ -87,4 +87,16 @@ describe('ProductService.findOrCreateSsgProductByPrice — 동시 생성 멱등(
 
     await expect(sut.findOrCreateSsgProductByPrice(PRICE)).rejects.toThrow('connection lost');
   });
+
+  it('신규 SSG 상품은 신세계 모바일 교환권 명칭으로 저장한다', async () => {
+    const saved = { id: 100 };
+    const reloaded = { id: 100, name: '신세계 모바일 교환권 7,000원' };
+    const save = jest.fn().mockResolvedValue(saved);
+    const sut = makeSut([null, template, latest, reloaded], save);
+
+    const result = await sut.findOrCreateSsgProductByPrice(PRICE);
+
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ name: '신세계 모바일 교환권 7,000원' }));
+    expect(result).toBe(reloaded);
+  });
 });

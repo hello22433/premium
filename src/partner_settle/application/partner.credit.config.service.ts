@@ -1,9 +1,4 @@
-import {
-  BadRequestException,
-  ConflictException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
@@ -11,20 +6,14 @@ import { PartnerCreditConfigEntity } from '../../entity/partner.credit.config.en
 import { PartnerCreditConfigHistoryEntity } from '../../entity/partner.credit.config.history.entity';
 import { PartnerCompanyEntity } from '../../entity/partner.company.entity';
 import { IPartnerCompanyType } from '../../partner_company/interface/partner.company.type';
-import {
-  CreditAmountFormatError,
-  parseNonNegativeAmount,
-  serializeAmount,
-} from '../domain/credit.amount.string';
+import { CreditAmountFormatError, parseNonNegativeAmount, serializeAmount } from '../domain/credit.amount.string';
 import {
   calculateMonthlyLimit,
   isSupportedCreditPartnerType,
   UnsupportedCreditPartnerTypeError,
 } from '../domain/credit.monthly.limit';
-import {
-  ConfigVersionConflictError,
-  decideConfigMutation,
-} from '../domain/credit.config.decision';
+import { ConfigVersionConflictError, decideConfigMutation } from '../domain/credit.config.decision';
+import { isValidCreditSubItemKey } from '../domain/credit.row.axis';
 import { isDuplicateKeyError } from './partner.settle.raw.insert';
 
 /** GET 응답 1행 (금액은 canonical 문자열). */
@@ -92,7 +81,7 @@ export class PartnerCreditConfigService {
         insuranceAmount: serializeAmount(amounts.insuranceAmount),
         prepaidAmount: serializeAmount(amounts.prepaidAmount),
         etcAmount: serializeAmount(amounts.etcAmount),
-        monthlyLimit: serializeAmount(this.monthlyLimit(partnerType, amounts)),
+        monthlyLimit: serializeAmount(this.monthlyLimit(partnerType, amounts, row.subItemKey)),
         version: row.version,
       };
     });
@@ -118,6 +107,15 @@ export class PartnerCreditConfigService {
       throw new BadRequestException('items 는 1건 이상이어야 합니다.');
     }
     const parsed = this.parseItems(items);
+    if (partnerType === IPartnerCompanyType.GALAXIA) {
+      for (const item of parsed) {
+        if (!isValidCreditSubItemKey(partnerType, item.subItemKey)) {
+          throw new BadRequestException(
+            `여신 표 하위항목이 아닙니다 (type=${partnerType}, subItemKey=${item.subItemKey})`,
+          );
+        }
+      }
+    }
     const changedAt = new Date();
 
     const results: CreditConfigPutResult[] = [];
@@ -239,9 +237,10 @@ export class PartnerCreditConfigService {
   private monthlyLimit(
     partnerType: IPartnerCompanyType,
     amounts: { insuranceAmount: bigint; prepaidAmount: bigint; etcAmount: bigint },
+    subItemKey?: string,
   ): bigint {
     try {
-      return calculateMonthlyLimit(partnerType, amounts);
+      return calculateMonthlyLimit(partnerType, amounts, subItemKey);
     } catch (error) {
       if (error instanceof UnsupportedCreditPartnerTypeError) throw new BadRequestException(error.message);
       throw error;

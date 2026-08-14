@@ -42,10 +42,20 @@ export interface SettlementCodeAssignedAccount {
   companyName: string | null;
 }
 
+export type SettlementCodeRenameBlockReason =
+  | 'CROSS_COMPANY_REFERENCE'
+  | 'COMPANYLESS_REFERENCE'
+  | 'NOT_OWNER_COMPANY'
+  | 'OWNER_COMPANY_MISSING'
+  | 'WALLET_MISSING';
+
 export interface SettlementCodeDetail {
   settlementCode: string;
   walletAccountId: string | null;
   walletStatus: WalletStatus;
+  ownerCompanyId: number | null;
+  renameAllowed: boolean;
+  renameBlockReason: SettlementCodeRenameBlockReason | null;
   depositBalance: number;
   creditLimit: number;
   creditUsedAmount: number;
@@ -310,12 +320,15 @@ export class WalletReadService {
   }
 
   /**
-   * settlement_code 키 단위 상세 조회 (회사 스코프 아님 — N:M 대응).
-   * 코드에 배정된 전체 계정을 회사 걸침 포함해 반환한다. 코드 자체가 존재하지 않으면 NotFound.
+   * settlement_code 키 단위 상세 조회 (N:M 대응).
+   * 요청 회사 기준 rename 가능 여부를 실제 서버 규칙과 함께 반환한다.
    */
-  async getSettlementCodeDetail(settlementCode: string): Promise<SettlementCodeDetail> {
+  async getSettlementCodeDetail(settlementCode: string, companyId: number): Promise<SettlementCodeDetail> {
     if (!settlementCode || settlementCode.trim() === '') {
       throw new BadRequestException('settlementCode 는 필수입니다.');
+    }
+    if (!Number.isInteger(companyId) || companyId < 1) {
+      throw new BadRequestException('companyId 는 1 이상의 정수여야 합니다.');
     }
     const wallet = await this.findWalletBySettlementCode(settlementCode);
     const rows = await this.userRepository
@@ -346,6 +359,9 @@ export class WalletReadService {
         settlementCode,
         walletAccountId: null,
         walletStatus: 'MISSING',
+        ownerCompanyId: null,
+        renameAllowed: false,
+        renameBlockReason: 'WALLET_MISSING',
         depositBalance: 0,
         creditLimit: 0,
         creditUsedAmount: 0,
@@ -358,10 +374,25 @@ export class WalletReadService {
       };
     }
 
+    const ownerCompanyId = wallet.ownerCompanyId != null ? Number(wallet.ownerCompanyId) : null;
+    let renameBlockReason: SettlementCodeRenameBlockReason | null = null;
+    if (ownerCompanyId === null) {
+      renameBlockReason = 'OWNER_COMPANY_MISSING';
+    } else if (ownerCompanyId !== companyId) {
+      renameBlockReason = 'NOT_OWNER_COMPANY';
+    } else if (assignedAccounts.some((account) => account.companyId === null)) {
+      renameBlockReason = 'COMPANYLESS_REFERENCE';
+    } else if (assignedAccounts.some((account) => account.companyId !== ownerCompanyId)) {
+      renameBlockReason = 'CROSS_COMPANY_REFERENCE';
+    }
+
     return {
       settlementCode,
       walletAccountId: wallet.id,
       walletStatus: 'ACTIVE',
+      ownerCompanyId,
+      renameAllowed: renameBlockReason === null,
+      renameBlockReason,
       depositBalance: wallet.depositBalance,
       creditLimit: wallet.creditLimit,
       creditUsedAmount: wallet.creditUsedAmount,

@@ -52,6 +52,8 @@ export interface HistoryPage {
 const SETTLE_COMPLETE = 'SETTLE_COMPLETE';
 /** 변경 게이트 400 응답에 실릴 대표 차단 주문 수 상한. */
 const OUTSTANDING_REP_LIMIT = 20;
+const SETTLEMENT_CODE_MAX_LENGTH = 50;
+const SETTLEMENT_CODE_CONTROL_CHAR = /[\u0000-\u001F\u007F]/;
 
 /** 게이트 차단 주문 1건 (운영자가 원인 상태를 즉시 식별하도록 status/settleStatus 동봉). */
 export interface BlockingOrderInfo {
@@ -141,6 +143,29 @@ export class SettlementCodeAdminService {
     if (affectedRows === 0) {
       this.logger.warn(`settlement_code wallet already exists — skip create (companyId=${companyId}, code=${code})`);
     }
+  }
+
+  /** 운영자 지정 코드는 중복을 성공 처리하지 않고 DB unique 충돌을 호출자에게 노출한다. */
+  private async createSettlementCodeWallet(
+    companyId: number,
+    code: string,
+    creditLimit: number,
+    manager: EntityManager,
+    settleCondition: 'PRE_PAYMENT' | 'POST_PAYMENT',
+    settleMethod: 'CARD' | 'CASH',
+    cardSurchargeApplied?: boolean,
+  ): Promise<void> {
+    const withSurcharge = cardSurchargeApplied !== undefined;
+    await manager.query(
+      `INSERT INTO wallet_account
+         (owner_type, owner_id, owner_company_id, deposit_balance, credit_limit, credit_used_amount, credit_excess_amount, settle_condition, settle_method${
+           withSurcharge ? ', card_surcharge_applied' : ''
+         })
+       VALUES ('SETTLEMENT_CODE', ?, ?, 0, ?, 0, 0, ?, ?${withSurcharge ? ', ?' : ''})`,
+      withSurcharge
+        ? [code, companyId, creditLimit, settleCondition, settleMethod, cardSurchargeApplied ? 1 : 0]
+        : [code, companyId, creditLimit, settleCondition, settleMethod],
+    );
   }
 
   /**
@@ -274,15 +299,14 @@ export class SettlementCodeAdminService {
   }
 
   /**
-   * 운영자: 배정 계정 없이 회사에 정산코드만 생성한다 (company-{id}-{n}).
+   * 운영자: 지정한 정산코드를 계정 배정 없이 회사에 생성한다.
    *
-   * issueNewCode 와 달리 어떤 user.settlement_code 도 건드리지 않으므로 계정 이동/자금 이동이 없고,
-   * 따라서 변경 게이트(assertChangeGate) 대상이 아니다. 배정 대기 계정이 0명인 회사도 코드를 선발급할 수 있다.
-   * 회사 row FOR UPDATE(lockByCompany)로 같은 회사의 동시 채번을 직렬화하고, 정책/한도를 wallet 생성과
-   * 단일 TX 로 반영한다(생성 후 별도 정책 설정 호출의 비원자성 제거).
+   * 어떤 user.settlement_code 도 건드리지 않으므로 계정 이동/자금 이동 및 변경 게이트 대상이 아니다.
+   * 회사 row FOR UPDATE 후 전역 코드 중복을 확인하고 정책/한도와 함께 wallet 을 단일 TX 로 생성한다.
    */
   async createCodeForCompany(
     companyId: number,
+    settlementCode: string,
     options: {
       settleCondition?: 'PRE_PAYMENT' | 'POST_PAYMENT';
       settleMethod?: 'CARD' | 'CASH';
@@ -290,36 +314,42 @@ export class SettlementCodeAdminService {
       creditLimit?: number;
     } = {},
   ): Promise<string> {
+    const code = this.validateCustomSettlementCode(settlementCode);
     const creditLimit = options.creditLimit ?? 0;
     if (!Number.isInteger(creditLimit) || creditLimit < 0) {
       throw new BadRequestException('여신 한도(creditLimit)는 0 이상의 정수여야 합니다.');
     }
-    return this.runWithRetry(() =>
-      this.dataSource.transaction(async (manager) => {
-        const company = await manager.getRepository(UserCompanyEntity).findOne({ where: { id: companyId } });
-        if (!company) {
-          throw new BadRequestException(`회사(companyId=${companyId})를 찾을 수 없습니다.`);
-        }
-        // 채번 직렬화 — issueNewCode 와 동일한 회사 row FOR UPDATE 경계를 공유한다.
-        await this.billingScopeLock.lockByCompany(companyId, manager);
 
-        const newCode = await this.nextIssuedCode(manager, companyId);
-        await this.ensureSettlementCodeWallet(
-          companyId,
-          newCode,
-          creditLimit,
-          manager,
-          options.settleCondition ?? 'POST_PAYMENT',
-          options.settleMethod ?? 'CASH',
-          options.cardSurchargeApplied,
-        );
-        this.logger.log(
-          `createCodeForCompany companyId=${companyId} -> ${newCode} (creditLimit=${creditLimit}, ` +
-            `settleCondition=${options.settleCondition ?? 'POST_PAYMENT'}, settleMethod=${options.settleMethod ?? 'CASH'}, ` +
-            `cardSurchargeApplied=${options.cardSurchargeApplied ?? '(default)'})`,
-        );
-        return newCode;
-      }),
+    return this.runWithRetry(
+      () =>
+        this.dataSource.transaction(async (manager) => {
+          const company = await manager.getRepository(UserCompanyEntity).findOne({ where: { id: companyId } });
+          if (!company) {
+            throw new BadRequestException(`회사(companyId=${companyId})를 찾을 수 없습니다.`);
+          }
+
+          await this.billingScopeLock.lockByCompany(companyId, manager);
+          if (await this.lockWalletByCode(manager, code, 'pessimistic_write')) {
+            throw this.settlementCodeConflict(code);
+          }
+
+          await this.createSettlementCodeWallet(
+            companyId,
+            code,
+            creditLimit,
+            manager,
+            options.settleCondition ?? 'POST_PAYMENT',
+            options.settleMethod ?? 'CASH',
+            options.cardSurchargeApplied,
+          );
+          this.logger.log(
+            `createCodeForCompany companyId=${companyId} -> ${code} (creditLimit=${creditLimit}, ` +
+              `settleCondition=${options.settleCondition ?? 'POST_PAYMENT'}, settleMethod=${options.settleMethod ?? 'CASH'}, ` +
+              `cardSurchargeApplied=${options.cardSurchargeApplied ?? '(default)'})`,
+          );
+          return code;
+        }),
+      code,
     );
   }
 
@@ -1079,17 +1109,63 @@ export class SettlementCodeAdminService {
     return `${prefix}${max + 1}`;
   }
 
-  /** lock-conflict(NOWAIT) / uq_wallet_owner 충돌 시 1회 재시도. */
-  private async runWithRetry<T>(fn: () => Promise<T>): Promise<T> {
+  /** lock-conflict(NOWAIT) / 자동 채번 uq 충돌 시 1회 재시도. 지정 코드 uq 충돌은 즉시 409. */
+  private async runWithRetry<T>(fn: () => Promise<T>, duplicateCode?: string): Promise<T> {
+    const execute = async (): Promise<T> => {
+      try {
+        return await fn();
+      } catch (e) {
+        if (duplicateCode && this.isDuplicateEntry(e)) {
+          throw this.settlementCodeConflict(duplicateCode);
+        }
+        throw e;
+      }
+    };
+
     try {
-      return await fn();
+      return await execute();
     } catch (e) {
       if (this.isRetryableConflict(e)) {
         this.logger.warn(`settlement-code mutation conflict — retry once (${(e as Error)?.message ?? e})`);
-        return fn();
+        return execute();
       }
       throw e;
     }
+  }
+
+  private validateCustomSettlementCode(value: unknown): string {
+    if (typeof value !== 'string') {
+      throw new BadRequestException('정산코드(settlementCode)는 문자열이어야 합니다.');
+    }
+    const code = value.trim();
+    if (code.length < 1 || code.length > SETTLEMENT_CODE_MAX_LENGTH) {
+      throw new BadRequestException(`정산코드(settlementCode)는 1~${SETTLEMENT_CODE_MAX_LENGTH}자여야 합니다.`);
+    }
+    if (SETTLEMENT_CODE_CONTROL_CHAR.test(code)) {
+      throw new BadRequestException('정산코드(settlementCode)에 제어문자를 사용할 수 없습니다.');
+    }
+    return code;
+  }
+
+  private settlementCodeConflict(code: string): ConflictException {
+    return new ConflictException({
+      code: 'SETTLEMENT_CODE_ALREADY_EXISTS',
+      message: `정산코드('${code}')가 이미 존재합니다.`,
+      settlementCode: code,
+    });
+  }
+
+  private isDuplicateEntry(e: unknown): boolean {
+    const err = e as {
+      code?: string;
+      errno?: number;
+      message?: string;
+      driverError?: { code?: string; errno?: number; message?: string };
+    };
+    const code = err?.code ?? err?.driverError?.code ?? '';
+    const errno = err?.errno ?? err?.driverError?.errno;
+    const message = `${err?.message ?? ''} ${err?.driverError?.message ?? ''}`;
+    return errno === 1062 || /ER_DUP_ENTRY|Duplicate entry/i.test(`${code} ${message}`);
   }
 
   private isRetryableConflict(e: unknown): boolean {
@@ -1102,7 +1178,7 @@ export class SettlementCodeAdminService {
     const code = err?.code ?? err?.driverError?.code ?? '';
     const errno = err?.errno ?? err?.driverError?.errno;
     const message = err?.message ?? '';
-    // 3572 ER_LOCK_NOWAIT, 1205 lock wait timeout, 1213 ER_LOCK_DEADLOCK, 1062 ER_DUP_ENTRY(uq_wallet_owner).
+    // 자동 채번 경로의 1062는 재채번을 위해 재시도한다. 지정 코드 경로는 execute()에서 먼저 409로 변환한다.
     if (errno === 3572 || errno === 1205 || errno === 1213 || errno === 1062) return true;
     return /NOWAIT|ER_LOCK_NOWAIT|ER_DUP_ENTRY|Duplicate entry|lock wait timeout|Deadlock/i.test(`${code} ${message}`);
   }

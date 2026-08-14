@@ -12,7 +12,14 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBadRequestResponse, ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBadRequestResponse,
+  ApiBearerAuth,
+  ApiInternalServerErrorResponse,
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 import { UserManagementService } from '../application/user.management.service';
 import {
   UserManagementChargeBalanceReqDto,
@@ -37,6 +44,7 @@ import {
   UserManagementGetCompanyListResDto,
   UserManagementGetMaximumLimitHistoryResDto,
   UserManagementGetWalletHistoryResDto,
+  WalletAccountIntegrityErrorResDto,
 } from './user.management.res.dto';
 import {
   CreateCustomerMappingReqDto,
@@ -118,6 +126,10 @@ export class UserManagementController {
   })
   @ApiBadRequestResponse({
     description: '해당 계정이 존재하지 않는 경우',
+  })
+  @ApiInternalServerErrorResponse({
+    type: WalletAccountIntegrityErrorResDto,
+    description: 'WALLET 모드에서 정산코드는 있으나 wallet_account 가 없는 경우 (code=WALLET_ACCOUNT_INTEGRITY_ERROR)',
   })
   // ====================================
   @UseGuards(AuthUserAuthorizationGuard)

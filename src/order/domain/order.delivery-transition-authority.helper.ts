@@ -51,10 +51,3 @@ export function shouldExposeSsgBalanceCheck(
     order.type === IOrderType.SSG && order.status === IOrderStatus.REVIEW_COMPLETE && canTransitionDelivery(user, order)
   );
 }
-
-export function canForceConfirmDelivery(user: DeliveryTransitionUser): boolean {
-  return (
-    user.status === IUserStatus.USED &&
-    (user.authority === IUserAuthority.SUPER_ADMIN || user.authority === IUserAuthority.OPERATION_ADMIN)
-  );
-}
