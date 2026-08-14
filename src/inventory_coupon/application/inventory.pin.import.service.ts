@@ -7,14 +7,31 @@ import { InventoryPinItemEntity } from '../../entity/inventory.pin.item.entity';
 import { InventoryCouponProductConfigEntity } from '../../entity/inventory.coupon.product.config.entity';
 import { InventoryPinCryptoService, EncryptionAAD } from './inventory.pin.crypto.service';
 import { PIN_INVENTORY_ERROR } from '../domain/inventory.pin.error.codes';
+import { INVALID_EXPIRES_ON, normalizeExpiresOn, todayInKst } from '../domain/inventory.pin.expires';
 import { ulid } from 'ulid';
 import { createHash } from 'crypto';
 
 export interface ImportRowInput {
-  productCode: string;
+  /**
+   * 엑셀 실제 행 번호. 반려 사유를 운영자가 파일에서 바로 찾을 수 있어야 하므로
+   * 빈 행을 건너뛴 파서가 원본 행 번호를 그대로 넘긴다. 없으면 배열 순서로 계산한다.
+   */
+  rowNumber?: number;
+  /**
+   * 상품 식별 열. 확정 양식(코드/유효기간)에는 없으므로 **선택**이다.
+   * 공급사 파일에 들어 있으면 오업로드 방지용으로 대상 상품과 대조한다.
+   */
+  productCode?: string | null;
   primaryCode: string;
   secondaryCode?: string | null;
   expiresOn?: string | null;
+}
+
+/** 파싱 단계에서 확정된 행 오류. 배치 반려 사유로 그대로 저장한다. */
+export interface ImportRowError {
+  rowNumber: number;
+  field: string;
+  errorCode: string;
 }
 
 export interface ImportMetadata {
@@ -25,18 +42,46 @@ export interface ImportMetadata {
   idempotencyKey: string;
   importedByUserId: number;
   originalFileName: string;
+  /**
+   * 업로드 원본 바이트의 SHA-256. 엑셀 업로드는 같은 파일이면 같은 값이어야 하므로
+   * 파싱 결과가 아니라 파일 자체로 계산해 넘긴다. 수동 등록은 생략한다(행 기준 계산).
+   */
+  fileChecksum?: Buffer;
+}
+
+/**
+ * 멱등 재요청 판정에 쓰는 canonical 입력.
+ *
+ * 확정 양식에는 파일 안에 상품 정보가 없다. productId 를 빼면 **같은 파일을 다른 상품에**
+ * 올렸을 때 충돌로 막히지 않고 첫 번째 배치 결과가 그대로 돌아온다(입고된 것으로 착각).
+ * 배치 결과에 영향을 주는 메타를 모두 넣고, 길이 안전하게 JSON 으로 직렬화한다(null/빈문자열 구분).
+ */
+export function canonicalRequest(
+  meta: Pick<ImportMetadata, 'supplierName' | 'sourcePartnerCompanyId' | 'purchaseReference' | 'purchasedAt'>,
+  productId: number,
+): string {
+  return JSON.stringify([
+    'v1',
+    productId,
+    meta.supplierName,
+    meta.sourcePartnerCompanyId ?? null,
+    meta.purchaseReference ?? null,
+    meta.purchasedAt ?? null,
+  ]);
 }
 
 /**
  * productCode 행 검증 순수 함수.
- * 서비스 내부에서도 호출하고, 테스트에서도 직접 import하여 검증한다.
+ *
+ * 확정 양식에는 상품 열이 없고 대상 상품은 업로드 화면에서 고른다. 따라서 값이 없으면 통과다.
+ * 값이 있으면 다른 상품 파일을 잘못 올린 것이므로 반드시 대조해서 막는다.
  */
 export function validateProductCode(
   rowProductCode: string | null | undefined,
   targetProductId: number,
 ): { valid: boolean; errorType?: string } {
   if (!rowProductCode) {
-    return { valid: false, errorType: 'REQUIRED' };
+    return { valid: true };
   }
   if (rowProductCode !== String(targetProductId)) {
     return { valid: false, errorType: 'PRODUCT_MISMATCH' };
@@ -76,15 +121,11 @@ export class InventoryPinImportService {
     rows: ImportRowInput[],
     meta: ImportMetadata,
     productId: number,
+    parseErrors: ImportRowError[] = [],
   ): Promise<{ batchId: string; status: 'COMMITTED' | 'REJECTED'; errors: InventoryPinImportErrorEntity[] }> {
-    // 파일 checksum
-    const content = JSON.stringify(rows);
-    const fileChecksum = createHash('sha256').update(content).digest();
-    const requestHash = createHash('sha256')
-      .update(fileChecksum)
-      .update(meta.supplierName)
-      .update(meta.purchaseReference ?? '')
-      .digest();
+    // 파일 checksum. 엑셀 업로드는 원본 바이트 해시를 쓰고, 수동 등록은 행 내용으로 계산한다.
+    const fileChecksum = meta.fileChecksum ?? createHash('sha256').update(JSON.stringify(rows)).digest();
+    const requestHash = createHash('sha256').update(fileChecksum).update(canonicalRequest(meta, productId)).digest();
 
     // 멱등성 확인
     const existingBatch = await this.batchRepo.findOne({
@@ -122,18 +163,22 @@ export class InventoryPinImportService {
       status: 'VALIDATING',
       ownerToken: ulid(),
       leaseUntil: new Date(now.getTime() + 10 * 60 * 1000),
-      totalCount: rows.length,
+      totalCount: rows.length + parseErrors.length,
       importedByUserId: meta.importedByUserId,
     });
     const savedBatch = await this.batchRepo.save(batch);
 
     // 검증
-    const errors: InventoryPinImportErrorEntity[] = [];
+    const errors: InventoryPinImportErrorEntity[] = parseErrors.map((e) =>
+      this.createError(savedBatch.id, e.rowNumber, e.field, e.errorCode),
+    );
     const seenPrimary = new Set<string>();
+    // 정규화된 유효기간. INSERT 단계가 원본 문자열을 다시 쓰면 검증과 저장값이 갈라진다.
+    const normalizedExpiresOn = new Map<number, string | null>();
 
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
-      const rowNum = i + 2; // 1-based + header
+      const rowNum = row.rowNumber ?? i + 2; // 1-based + header
 
       // canonicalize
       const primaryCode = this.canonicalize(row.primaryCode);
@@ -150,6 +195,21 @@ export class InventoryPinImportService {
         errors.push(this.createError(savedBatch.id, rowNum, 'productCode', productCheck.errorType!));
         continue;
       }
+
+      // 유효기간은 엑셀·수동 등록 양쪽 모두 여기서 정규화한다.
+      // 수동 API 는 `2026-8-1` 같은 값을 보낼 수 있어 문자열 비교만으로는 만료 판정이 깨진다.
+      const expiresOn = normalizeExpiresOn(row.expiresOn);
+      if (expiresOn === INVALID_EXPIRES_ON) {
+        errors.push(this.createError(savedBatch.id, rowNum, 'expiresOn', 'INVALID_FORMAT'));
+        continue;
+      }
+
+      // 이미 지난 유효기간은 할당 대상이 될 수 없다. 재고로 쌓지 않고 입고 시점에 되돌린다.
+      if (expiresOn && expiresOn < todayInKst()) {
+        errors.push(this.createError(savedBatch.id, rowNum, 'expiresOn', 'EXPIRED'));
+        continue;
+      }
+      normalizedExpiresOn.set(i, expiresOn);
 
       // secondary 구조 정합
       if (config.secondaryCodeLabel && !secondaryCode) {
@@ -207,7 +267,8 @@ export class InventoryPinImportService {
       }
 
       const items: InventoryPinItemEntity[] = [];
-      for (const row of rows) {
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
         const primaryCode = this.canonicalize(row.primaryCode);
         const secondaryCode = row.secondaryCode ? this.canonicalize(row.secondaryCode) : null;
         const cryptoContextId = ulid();
@@ -244,7 +305,7 @@ export class InventoryPinImportService {
           primaryCodeMasked: this.cryptoService.mask(primaryCode),
           secondaryCodeMasked: secondaryCode ? this.cryptoService.mask(secondaryCode) : null,
           status: 'AVAILABLE',
-          expiresOn: row.expiresOn ?? null,
+          expiresOn: normalizedExpiresOn.get(i) ?? null,
         });
         items.push(item);
       }
