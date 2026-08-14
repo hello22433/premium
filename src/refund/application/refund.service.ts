@@ -84,6 +84,17 @@ export class RefundService {
       await this.recordPiiSearchLog(trimmedDeliveryTarget, auditContext);
     }
 
+    // COALESCE 순서와 반올림 없음은 아래 행 계산이 쓰는 readLineProductView(스냅샷 → live product → 0)를
+    // SQL 로 복제한 것이다. 한쪽만 바뀌면 화면의 행 합과 상단 총합이 조용히 어긋난다.
+    const sumResult = await queryBuilder
+      .clone()
+      .select(
+        'SUM(COALESCE(orderProductMapping.snapshotProductPrice, product.price, 0) * orderDelivery.refundRatio / 100)',
+        'totalRefundPrice',
+      )
+      .getRawOne();
+    const totalRefundPrice = Number(sumResult?.totalRefundPrice) || 0;
+
     // 정렬: 접수일자 최신순(refundRegisterAt DESC), 동률 시 id DESC 보조키로 안정적 페이지네이션 보장
     // (MySQL은 DESC 정렬에서 NULL을 자동으로 뒤로 정렬하므로 NULLS LAST 절 불요)
     queryBuilder.orderBy('orderDelivery.refundRegisterAt', 'DESC').addOrderBy('orderDelivery.id', 'DESC');
@@ -122,7 +133,13 @@ export class RefundService {
       };
     });
 
-    return { list: resultList, totalPage: Math.ceil(totalCount / take), totalCount, currentPage: page };
+    return {
+      list: resultList,
+      totalPage: Math.ceil(totalCount / take),
+      totalCount,
+      currentPage: page,
+      totalRefundPrice,
+    };
   }
 
   private async recordPiiSearchLog(rawKeyword: string, auditContext: RefundGetListAuditContext): Promise<void> {
