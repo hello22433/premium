@@ -79,6 +79,7 @@ describe('실패내역 화면 SoT 렌더', () => {
       addSelect: jest.fn().mockReturnThis(),
       select: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
       skip: jest.fn().mockReturnThis(),
       take: jest.fn().mockReturnThis(),
       getManyAndCount: jest.fn().mockResolvedValue([rows, rows.length]),
@@ -172,6 +173,209 @@ describe('실패내역 화면 SoT 렌더', () => {
 
     const conditions = qb.andWhere.mock.calls.map((call) => String(call[0]));
     expect(conditions).toContain('`wf`.`cutover_migrated_at` IS NULL');
+  });
+
+  /**
+   * 목록 기준 일시(LIST_DATE_EXPR / legacyDisplayDate) 회귀.
+   *
+   * updated_at 이 사실상의 기준이던 시절, 발송 후 180일 PII 파기 배치가 옛 실패 건의 updated_at 을
+   * 갱신하면서 "6개월 전 건이 오늘 실패로 목록 맨 위에 뜨는" 사고가 있었다(order_delivery 98182).
+   * 되돌아가면 돈·CS 화면에서 운영자가 당일 장애로 오인하므로 칸 순서를 테스트로 고정한다.
+   */
+  describe('목록 기준 일시 — 파기 배치가 옛 건을 당일로 되살리지 않는다', () => {
+    const 표시일시 = async (overrides: Partial<OrderDeliveryEntity>) => {
+      const { sut } = await buildSut([makeDelivery(overrides)], new Map());
+      return (await sut.getHistoryList({ page: 1, take: 20 } as never)).list[0].createdAt;
+    };
+
+    it('② actual_send_at 이 있으면 그것을 쓴다', async () => {
+      const at = await 표시일시({
+        actualSendAt: new Date('2026-02-11T16:31:25'),
+        failedAt: new Date('2026-02-11T16:10:21'),
+        sendRequestAt: new Date('2026-02-11T15:38:00'),
+        updatedAt: new Date('2026-08-10T00:00:03'),
+      });
+      expect(at).toBe('2026-02-11T16:31:25');
+    });
+
+    it('③ actual_send_at 이 없으면 failed_at 을 쓴다', async () => {
+      const at = await 표시일시({
+        actualSendAt: null,
+        failedAt: new Date('2026-02-11T16:10:21'),
+        sendRequestAt: new Date('2026-02-11T15:38:00'),
+        updatedAt: new Date('2026-08-10T00:00:03'),
+      });
+      expect(at).toBe('2026-02-11T16:10:21');
+    });
+
+    // ⭐ 98182 의 실제 조합. failed_at 은 2026-02-25 신설이라 그 이전 실패 건은 영구 NULL 이다.
+    it('④ 둘 다 없으면 send_request_at 을 쓴다 — updated_at 으로 떨어지지 않는다', async () => {
+      const at = await 표시일시({
+        actualSendAt: null,
+        failedAt: null,
+        sendRequestAt: new Date('2026-02-11T15:38:00'),
+        updatedAt: new Date('2026-08-10T00:00:03'), // 파기 배치가 새로 찍은 값
+      });
+      expect(at).toBe('2026-02-11T15:38:00');
+      expect(at).not.toContain('2026-08-10');
+    });
+
+    // ⭐ 실제로 **도달 가능한** 무효값. 제로날짜는 mysql2 가 Invalid Date 로 돌려주는데 그 값은
+    //   null 이 아니라 `??` 를 그대로 통과한다. 막지 않으면 format() 이 던져서 이 행 하나가 아니라
+    //   **페이지 전체가 500** 이 된다(리뷰 HIGH-1). 아래 ⑤ 테스트는 도달 불가 케이스라 이걸 못 대신한다.
+    it('④ 가 무효한 날짜면 건너뛴다 — 한 행 때문에 목록 전체가 죽지 않는다', async () => {
+      const at = await 표시일시({
+        actualSendAt: null,
+        failedAt: null,
+        sendRequestAt: new Date('0000-00-00T00:00:00'), // mysql2 가 제로날짜에 주는 값
+        updatedAt: new Date('2026-08-10T00:00:03'),
+      });
+      expect(at).toBe('2026-08-10T00:00:03');
+    });
+
+    // SQL 의 NULLIF 는 정확히 '0000-00-00 00:00:00' 하나만 걷어낸다. 부분 제로는 SQL 을 통과하므로
+    // TS 쪽 방어가 리터럴 비교가 아니라 **값 유효성**이어야 하는 근거다.
+    it('부분 제로날짜도 건너뛴다 — SQL 의 NULLIF 로는 못 걷어내는 값이다', async () => {
+      const at = await 표시일시({
+        actualSendAt: null,
+        failedAt: null,
+        sendRequestAt: new Date('2026-00-00T00:00:00'),
+        updatedAt: new Date('2026-08-10T00:00:03'),
+      });
+      expect(at).toBe('2026-08-10T00:00:03');
+    });
+
+    // ⑤ 는 send_request_at 이 NOT NULL 이라 정상 경로에서 도달할 수 없다. 도달 자체가
+    // "④ 를 못 채운 다른 버그"의 신호이므로, 날짜를 비우는 대신 값은 채운다는 결정을 고정한다.
+    it('⑤ send_request_at 마저 없으면 updated_at 으로 떨어진다 (안전망, 정상 경로 도달 불가)', async () => {
+      const at = await 표시일시({
+        actualSendAt: null,
+        failedAt: null,
+        sendRequestAt: null as never,
+        updatedAt: new Date('2026-08-10T00:00:03'),
+      });
+      expect(at).toBe('2026-08-10T00:00:03');
+    });
+
+    // 동률 행의 LIMIT/OFFSET 순서는 MySQL 이 보장하지 않는다. 한 상품의 모든 발송건이 같은
+    // send_request_at 을 가지므로 보조키가 빠지면 페이지 간 중복·누락이 난다(리뷰 HIGH-2).
+    it('정렬에 id 보조키를 걸어 동률 행의 페이지 순서를 고정한다', async () => {
+      const { sut, qb } = await buildSut([makeDelivery()], new Map());
+
+      await sut.getHistoryList({ page: 1, take: 20 } as never);
+
+      expect(qb.orderBy).toHaveBeenCalledWith('sortDate', 'DESC');
+      expect(qb.addOrderBy).toHaveBeenCalledWith('orderDelivery.id', 'DESC');
+
+      // ⚠️ 순서까지 봐야 한다. TypeORM 의 orderBy() 는 기존 정렬을 **통째로 갈아치운다**
+      //   (SelectQueryBuilder: `this.expressionMap.orderBys = { [sort]: order }`).
+      //   그래서 addOrderBy 를 먼저 부르면 보조키가 조용히 사라지는데, 호출 여부만 보는
+      //   단언은 그걸 통과시킨다.
+      expect(qb.orderBy.mock.invocationCallOrder[0]).toBeLessThan(qb.addOrderBy.mock.invocationCallOrder[0]);
+    });
+
+    // ⚠️ 이 테스트는 **SQL 쪽만** 본다. 표시 쪽 순서는 위 ②③④ 가 동작으로 고정한다 — 이름이
+    //   "둘을 비교한다" 처럼 읽히면 한쪽만 보고도 안심하게 되므로 범위를 이름에 밝힌다.
+    //   ⚠️ 하드코딩 5칸 배열이라 **칸 삽입**은 못 잡는다(순서만 본다). 새 칸을 넣을 때는
+    //     이 배열과 legacyDisplayDate 를 **둘 다** 손댈 것.
+    // ── 무효 날짜가 닿는 칸은 하나가 아니다 ─────────────────────────────────────
+    // 종전에는 칸마다 `x ? format(x) : null` 을 따로 썼고 그 truthy 검사는 Invalid Date 를 통과시킨다.
+    // 그래서 한 칸만 막으면 옆 칸이 그대로 남았다. 아래 세 개가 그 비대칭을 고정한다.
+
+    it('앞 칸(actual_send_at)이 무효여도 목록이 죽지 않고 다음 칸을 쓴다', async () => {
+      const at = await 표시일시({
+        actualSendAt: new Date('0000-00-00T00:00:00'),
+        failedAt: new Date('2026-02-11T16:10:21'),
+        sendRequestAt: new Date('2026-02-11T15:38:00'),
+        updatedAt: new Date('2026-08-10T00:00:03'),
+      });
+      expect(at).toBe('2026-02-11T16:10:21');
+    });
+
+    it('실패일(failed_at)이 무효여도 목록이 죽지 않고 다음 칸을 쓴다', async () => {
+      const at = await 표시일시({
+        actualSendAt: null,
+        failedAt: new Date('0000-00-00T00:00:00'),
+        sendRequestAt: new Date('2026-02-11T15:38:00'),
+        updatedAt: new Date('2026-08-10T00:00:03'),
+      });
+      expect(at).toBe('2026-02-11T15:38:00');
+    });
+
+    // 재발송일시는 표시 전용 칸이라 폴백이 없다 — 무효면 그냥 비운다. 막지 않으면 이 한 칸 때문에
+    // 페이지 전체가 500 이 된다(리뷰 CRITICAL).
+    it('재발송일시가 무효면 그 칸만 비고 목록은 정상이다', async () => {
+      const { sut } = await buildSut([makeDelivery({ resendAt: new Date('0000-00-00T00:00:00') })], new Map());
+
+      const res = await sut.getHistoryList({ page: 1, take: 20 } as never);
+
+      expect(res.list[0].resendAt).toBeNull();
+      expect(res.list[0].createdAt).toBe('2026-08-01T10:00:00');
+    });
+
+    // 마지막 안전망까지 무효면 날짜 칸이 빈다. 보기엔 나쁘지만 대안이 페이지 전체 500 이다.
+    it('마지막 칸(updated_at)까지 무효면 날짜를 비우되 목록은 뜬다', async () => {
+      const at = await 표시일시({
+        actualSendAt: null,
+        failedAt: null,
+        sendRequestAt: new Date('0000-00-00T00:00:00'),
+        updatedAt: new Date('0000-00-00T00:00:00'),
+      });
+      expect(at).toBe('');
+    });
+
+    // 조용히 폴백만 하면 화면에 updated_at(파기 배치가 오늘로 찍은 값)이 떠서, 이 파일이 없애려던
+    // 착시로 되돌아간다. 그래서 도달을 센다.
+    it('무효 날짜 도달을 응답에 숫자로 남긴다', async () => {
+      const { sut } = await buildSut(
+        [
+          makeDelivery({ id: 100, actualSendAt: null, failedAt: null, sendRequestAt: new Date('0000-00-00T00:00:00') }),
+          makeDelivery({ id: 101 }),
+        ],
+        new Map(),
+      );
+
+      const res = await sut.getHistoryList({ page: 1, take: 20 } as never);
+
+      expect(res.invalidDateCount).toBe(1);
+    });
+
+    it('무효 날짜가 없으면 카운터는 0 이다', async () => {
+      const { sut } = await buildSut([makeDelivery()], new Map());
+
+      const res = await sut.getHistoryList({ page: 1, take: 20 } as never);
+
+      expect(res.invalidDateCount).toBe(0);
+    });
+
+    it('필터·정렬용 SQL 의 칸 순서를 고정한다 (표시 쪽은 위 ②③④ 가 동작으로 고정)', async () => {
+      const { sut, qb } = await buildSut([makeDelivery()], new Map());
+
+      await sut.getHistoryList({ page: 1, take: 20 } as never);
+
+      const [expr, alias] = qb.addSelect.mock.calls[0] as [string, string];
+      expect(alias).toBe('sortDate');
+
+      // 한쪽만 고치면 "필터에는 걸리는데 화면 날짜는 다른" 상태가 되므로 순서까지 본다.
+      const 칸순서 = ['state_entered_at', 'actual_send_at', 'failed_at', 'send_request_at', 'updated_at'].map((c) =>
+        expr.indexOf(c),
+      );
+      expect(칸순서.every((i) => i >= 0)).toBe(true);
+      expect(칸순서).toEqual([...칸순서].sort((a, b) => a - b));
+
+      // SQL 과 TS 가 **같은 기준**을 쓰는지 고정한다. 리터럴 비교(NULLIF)로는 2026-00-00 같은
+      // 부분 제로날짜를 못 걷어내고, 그러면 필터는 그 값을 쓰고 화면은 다음 칸을 써서 갈라진다.
+      // 한 칸이라도 이 검사가 빠지면 그 칸에서 갈라지므로 다섯 칸 전부 본다.
+      for (const col of [
+        '`wf`.`state_entered_at`',
+        '`orderDelivery`.`actual_send_at`',
+        '`orderDelivery`.`failed_at`',
+        '`orderDelivery`.`send_request_at`',
+        '`orderDelivery`.`updated_at`',
+      ]) {
+        expect(expr).toContain(`YEAR(${col}) > 0 AND MONTH(${col}) > 0 AND DAY(${col}) > 0`);
+      }
+    });
   });
 });
 
