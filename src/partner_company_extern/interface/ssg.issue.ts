@@ -86,13 +86,26 @@ export enum SsgPinVerdict {
   REGISTRATION_FAILED = 'REGISTRATION_FAILED', // result 등록실패(01XX≠00) → 새 PIN INSERT
 }
 /**
- * SSG PIN 후보 조회와 고아 복구가 공유하는 보수적 판정 결과.
- * NOT_ISSUED는 SSG의 공식 미존재 계약이 증명될 때만 사용한다.
+ * SSG PIN 후보 조회와 고아 복구가 공유하는 보수적 판정 결과 (EP-P30 §5-1).
+ *
+ * `tryYn` 은 **정확히 'N'** 일 때만 부재 증거다. 그 외 값·조회 실패는 부재가 아니라 미확인이며
+ * `LOOKUP_FAILED` 로 분리한다. 어떤 판정값도 그 자체로 신규 INSERT 를 승인하지 않는다 —
+ * 승인은 `canExecuteOrdinal` 게이트가 한다(§6-B-3).
  */
 export enum SsgPinResolution {
+  /** 등록 + 사용 가능 → 기존 PIN 재사용 */
   CONFIRMED = 'CONFIRMED',
+  /** ssg_issue_log 후보 0행 = INSERT 이력 없음 (tombstone 포함 전체 행 기준) */
+  NOT_ATTEMPTED = 'NOT_ATTEMPTED',
+  /** tryYn='N' 확정 — cust_info 에 없다 */
   NOT_ISSUED = 'NOT_ISSUED',
+  /** 조회하지 못했다(호출·파싱 실패) → 재조회 대상 */
+  LOOKUP_FAILED = 'LOOKUP_FAILED',
+  /** tryYn='Y' 인데 resultCd 가 사용가능 집합 밖 → 운영 확인. 재조회·재발급 대상 아님 */
+  REGISTERED_UNSENDABLE = 'REGISTERED_UNSENDABLE',
+  /** 협력사 처리 대기 (durable 잔존값 호환용. 신규 판정기는 반환하지 않는다) */
   PROCESSING = 'PROCESSING',
+  /** 계약 이상 응답 → 운영 확인 + 경보 */
   UNKNOWN = 'UNKNOWN',
   MULTIPLE_CONFIRMED = 'MULTIPLE_CONFIRMED',
 }

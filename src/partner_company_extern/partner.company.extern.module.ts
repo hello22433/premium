@@ -29,6 +29,8 @@ import { GiftielPushController } from './api/giftiel.push.controller';
 import { GiftielIpGuard } from './api/giftiel.ip.guard';
 import { GiftishowBalanceController } from './api/giftishow.balance.controller';
 import { SsgInsertStateModule } from '../delivery/ssg.insert.state.module';
+import { SsgAutoResolveModule } from './ssg.autoresolve.module';
+import { SsgPinObservationSweepService } from './application/ssg.pin.observation.sweep.service';
 import { PartnerSettleModule } from '../partner_settle/partner.settle.module';
 
 @Module({
@@ -48,8 +50,10 @@ import { PartnerSettleModule } from '../partner_settle/partner.settle.module';
     ]),
     SsgInsertStateModule,
     PartnerSettleModule,
+    SsgAutoResolveModule,
   ],
   providers: [
+    SsgPinObservationSweepService,
     {
       provide: 'IGalaxia',
       useClass: GalaxiaHttp,
@@ -91,6 +95,6 @@ import { PartnerSettleModule } from '../partner_settle/partner.settle.module';
     GiftielPushController,
     GiftishowBalanceController,
   ],
-  exports: [PartnerCompanyExternService],
+  exports: [PartnerCompanyExternService, SsgPinObservationSweepService],
 })
 export class PartnerCompanyExternModule {}

@@ -498,9 +498,7 @@ describe('§9 컷오버 — legacy 진입점 12곳 거부', () => {
 
       await service.claim({ ...baseInput, refundExecution: fencing });
 
-      expect(attemptFindOne).toHaveBeenCalledWith(
-        expect.objectContaining({ lock: { mode: 'pessimistic_write' } }),
-      );
+      expect(attemptFindOne).toHaveBeenCalledWith(expect.objectContaining({ lock: { mode: 'pessimistic_write' } }));
     });
 
     it('게이트를 통과하면 attempt id와 외부 멱등키를 ledger에 기록한다', async () => {

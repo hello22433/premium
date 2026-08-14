@@ -32,6 +32,7 @@ import { OrderRealProductMappingEntity } from '../entity/order.real.product.mapp
 import { UserEntity } from '../entity/user.entity';
 import { SsgEventEntity } from '../entity/ssg.event.entity';
 import { SsgIssueLogEntity } from '../entity/ssg.issue.log.entity';
+import { SsgAutoResolveModule } from '../partner_company_extern/ssg.autoresolve.module';
 import { PartnerCompanyExternModule } from '../partner_company_extern/partner.company.extern.module';
 import { SsgEventModule } from '../ssg_event/ssg.event.module';
 import { UserManagementModule } from '../user_management/user.management.module';
@@ -84,6 +85,7 @@ import { DeliveryCancelIntentService } from './application/delivery-cancel-inten
     MailModule,
     SmsModule,
     FileModule,
+    SsgAutoResolveModule,
     PartnerCompanyExternModule,
     SsgEventModule,
     forwardRef(() => UserManagementModule),

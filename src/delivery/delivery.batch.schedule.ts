@@ -5,6 +5,7 @@ import { SsgRecoverySweepService } from './application/ssg-recovery-sweep.servic
 import { SsgResendDeductRecoveryService } from './application/ssg-resend-deduct-recovery.service';
 import { MessageResultReconcileService } from './application/message-result-reconcile.service';
 import { MessageResendExecutorService } from './application/message-resend-executor.service';
+import { SsgPinObservationSweepService } from '../partner_company_extern/application/ssg.pin.observation.sweep.service';
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 
@@ -23,6 +24,7 @@ export class DeliveryBatchSchedule {
     private ssgResendDeductRecoveryService: SsgResendDeductRecoveryService,
     private messageResultReconcileService: MessageResultReconcileService,
     private messageResendExecutorService: MessageResendExecutorService,
+    private ssgPinObservationSweepService: SsgPinObservationSweepService,
   ) {}
 
   // 부팅 stale claim 해제는 main.ts(listen() 전)에서만 수행한다. lifecycle 훅은 migration
@@ -41,6 +43,7 @@ export class DeliveryBatchSchedule {
   private resultReconcileStartedAt: number | null = null;
   private trackingSlaStartedAt: number | null = null;
   private dueResendStartedAt: number | null = null;
+  private pinObservationStartedAt: number | null = null;
 
   /**
    * 실행 중 플래그를 체크한다. 진행 중이면 true 반환(skip).
@@ -250,6 +253,27 @@ export class DeliveryBatchSchedule {
       this.logger.error(e);
     } finally {
       this.ssgRecoverySweepStartedAt = null;
+    }
+  }
+
+  // EP-P30 관측 sweep. **운영 sweep 과 같은 cron 에 넣지 않는다** — 관측은 claim 하지 않으므로
+  // 운영 sweep 과 같은 command 를 동시에 읽어도 안전하고, 반대로 운영 sweep 이 느려질 때
+  // 관측이 함께 밀리면 §5-4 의 "서로 다른 버킷 연속 3회" 표본 간격이 왜곡된다.
+  // mode=off 면 observeOnce 가 capability 검사에서 전량 skip 하므로 사실상 no-op 이다.
+  // 5분 주기, 다른 5분 cron 과 동시 trigger 회피를 위해 35초 offset.
+  @Cron('35 */5 * * * *')
+  async handleSsgPinObservationSweep() {
+    if (this.isStillRunning(this.pinObservationStartedAt, 'handleSsgPinObservationSweep')) {
+      this.logger.log('[BATCH] 이전 handleSsgPinObservationSweep 진행 중 — skip');
+      return;
+    }
+    this.pinObservationStartedAt = Date.now();
+    try {
+      await this.ssgPinObservationSweepService.observeOnce();
+    } catch (e) {
+      this.logger.error(e);
+    } finally {
+      this.pinObservationStartedAt = null;
     }
   }
 

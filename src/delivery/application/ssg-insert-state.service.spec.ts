@@ -280,7 +280,9 @@ describe('SsgInsertStateService', () => {
         flat.code = 'ER_DUP_ENTRY';
         (issueLogRepository.insert as jest.Mock).mockRejectedValue(flat);
 
-        await expect(sut.markAttempted(123, samplePayload, sampleAuthority)).rejects.toBeInstanceOf(SsgIssueLogKeyCollisionError);
+        await expect(sut.markAttempted(123, samplePayload, sampleAuthority)).rejects.toBeInstanceOf(
+          SsgIssueLogKeyCollisionError,
+        );
       });
     });
   });
