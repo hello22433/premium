@@ -64,3 +64,20 @@ export function buildContentDispositionAttachment(fileName: string): string {
   const encoded = encodeURIComponent(fileName);
   return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`;
 }
+
+/**
+ * 첨부 URL 배열을 저장용 문자열로 직렬화해도 원래 배열 그대로 복원되는지 확인한다.
+ *
+ * ★ 왜 필요한가 — 저장은 join(',') 이고 복원은 parseFilePathList 인데, 이 둘의 "URL 경계" 판단이
+ *   검증 단계(new URL)와 다르다. 그래서 배열 원소 하나에 `,https://...` 를 심으면
+ *   쓰기 검증은 URL 1개로 보고 통과시키지만 저장 후에는 2개로 복원된다(=검증 안 거친 첨부가 생김).
+ *   실측: `https://{버킷}/private/5/a.png?x=,https://{버킷}/private/77/secret.pdf` 1개 →
+ *   저장·복원 후 2개(private/5/a.png, private/77/secret.pdf), 개수 상한도 10 → 20 으로 우회됐다.
+ *
+ *   파일명에 정상적으로 콤마가 들어간 경우는 parseFilePathList 가 다시 이어붙이므로 왕복이 보존된다.
+ *   즉 이 검사는 정상 입력을 막지 않고 밀반입만 걸러낸다.
+ */
+export function isFilePathListRoundTripSafe(urls: string[]): boolean {
+  const restored = parseFilePathList(urls.join(','));
+  return restored.length === urls.length && restored.every((url, i) => url === urls[i]);
+}

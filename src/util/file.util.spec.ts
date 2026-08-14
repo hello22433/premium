@@ -4,6 +4,7 @@ import {
   resolveDownloadExtension,
   buildContentDispositionAttachment,
   parseFilePathList,
+  isFilePathListRoundTripSafe,
 } from './file.util';
 
 /**
@@ -94,5 +95,59 @@ describe('parseFilePathList (콤마 재조립)', () => {
   it('null/빈문자 → 빈 배열', () => {
     expect(parseFilePathList(null)).toEqual([]);
     expect(parseFilePathList('')).toEqual([]);
+  });
+});
+
+describe('isFilePathListRoundTripSafe — 저장·복원 왕복 동일성', () => {
+  const HOST = 'epopkon-premium.s3.ap-northeast-2.amazonaws.com';
+
+  it('일반 첨부 목록은 통과한다', () => {
+    expect(
+      isFilePathListRoundTripSafe([`https://${HOST}/private/5/uuid-a.png`, `https://${HOST}/private/5/uuid-b.pdf`]),
+    ).toBe(true);
+  });
+
+  it('빈 배열도 통과한다', () => {
+    expect(isFilePathListRoundTripSafe([])).toBe(true);
+  });
+
+  // ★ 정상 사용을 막지 않는다는 것까지 고정한다. parseFilePathList 가 URL 로 시작하지 않는 조각을
+  //   앞 URL 에 되붙이므로, 파일명 안의 콤마는 왕복이 보존된다.
+  it('파일명에 콤마가 들어간 정상 첨부는 통과한다', () => {
+    expect(isFilePathListRoundTripSafe([`https://${HOST}/private/5/uuid-보고서,최종.pdf`])).toBe(true);
+  });
+
+  it('파일명 콤마 + 여러 첨부 조합도 통과한다', () => {
+    expect(
+      isFilePathListRoundTripSafe([`https://${HOST}/private/5/uuid-a,b.png`, `https://${HOST}/private/5/uuid-c.pdf`]),
+    ).toBe(true);
+  });
+
+  // ★ 밀반입: 원소 1개가 저장·복원 후 2개가 된다 → 소유 검증을 안 거친 첨부가 생긴다.
+  it('원소 안에 `,https://` 를 심으면 거부한다 (쿼리스트링으로 가린 형태)', () => {
+    expect(
+      isFilePathListRoundTripSafe([`https://${HOST}/private/5/a.png?x=,https://${HOST}/private/77/secret.pdf`]),
+    ).toBe(false);
+  });
+
+  it('쿼리 없이 경로에 바로 이어붙인 형태도 거부한다', () => {
+    expect(isFilePathListRoundTripSafe([`https://${HOST}/private/5/a,https://${HOST}/private/77/secret.pdf`])).toBe(
+      false,
+    );
+  });
+
+  it('http:// 로 심어도 거부한다 (parseFilePathList 는 http 도 URL 시작으로 본다)', () => {
+    expect(isFilePathListRoundTripSafe([`https://${HOST}/private/5/a.png?x=,http://${HOST}/private/77/s.pdf`])).toBe(
+      false,
+    );
+  });
+
+  it('정상 첨부 사이에 밀반입 원소가 하나만 섞여도 거부한다', () => {
+    expect(
+      isFilePathListRoundTripSafe([
+        `https://${HOST}/private/5/uuid-a.png`,
+        `https://${HOST}/private/5/b.png?x=,https://${HOST}/private/77/secret.pdf`,
+      ]),
+    ).toBe(false);
   });
 });
