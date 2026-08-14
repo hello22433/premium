@@ -5,6 +5,7 @@ import {
   buildContentDispositionAttachment,
   parseFilePathList,
   isFilePathListRoundTripSafe,
+  maskStorageKeyForLog,
 } from './file.util';
 
 /**
@@ -142,6 +143,13 @@ describe('isFilePathListRoundTripSafe — 저장·복원 왕복 동일성', () =
     );
   });
 
+  // ★ 길이만 비교하면 통과하는 입력이 실재한다 — 원소별 비교(every)를 지워도 안 빨개지던 자리.
+  //   입력 2개 → 복원 2개인데 경계가 밀려 내용이 다르다.
+  it('길이는 같은데 경계가 밀린 입력을 거부한다 (원소별 비교가 필요한 이유)', () => {
+    const shifted = [`https://${HOST}/private/10/f,https://${HOST}/private/99/s.pdf`, 'tail'];
+    expect(isFilePathListRoundTripSafe(shifted)).toBe(false);
+  });
+
   it('정상 첨부 사이에 밀반입 원소가 하나만 섞여도 거부한다', () => {
     expect(
       isFilePathListRoundTripSafe([
@@ -149,5 +157,28 @@ describe('isFilePathListRoundTripSafe — 저장·복원 왕복 동일성', () =
         `https://${HOST}/private/5/b.png?x=,https://${HOST}/private/77/secret.pdf`,
       ]),
     ).toBe(false);
+  });
+});
+
+describe('maskStorageKeyForLog — 로그용 key 축약', () => {
+  // 접근 로그에서 첨부 URL 을 통째로 가리는 대신, 애플리케이션 로그에는 '객체는 식별하되 이름은 없는'
+  // 형태를 남긴다. 여기서 원본명이 새면 한쪽만 가린 꼴이 된다.
+  it('원본 파일명을 남기지 않는다', () => {
+    const out = maskStorageKeyForLog('private/5/0123456789abcdef-해지 신청서.pdf');
+    expect(out).toBe('private/5/01234567…');
+    expect(out).not.toContain('해지');
+    expect(out).not.toContain('.pdf');
+  });
+
+  it('업로더 경로는 남겨 추적이 되게 한다', () => {
+    expect(maskStorageKeyForLog('private/5/abc-a.png')).toContain('private/5/');
+  });
+
+  it('식별자-이름 규격이 아니면 통째로 가린다', () => {
+    expect(maskStorageKeyForLog('private/5/README')).toBe('private/5/***');
+  });
+
+  it('레거시 공개 key 도 이름을 남기지 않는다', () => {
+    expect(maskStorageKeyForLog('image/abcdef0123-사업자등록증.png')).toBe('image/abcdef01…');
   });
 });

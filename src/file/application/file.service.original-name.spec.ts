@@ -29,3 +29,48 @@ describe('FileService.extractOriginalFileName — key 에서 원본명 복원', 
     expect(sut.extractOriginalFileName(url)).toBe('정산내역.xlsx');
   });
 });
+
+/**
+ * getOriginalName 의 catch 회귀.
+ *
+ * 이 catch 는 원래 '메타데이터 조회 실패 → key 폴백' 을 아무 로그 없이 삼켰다. 그러면 IAM 권한 상실·
+ * 버킷 오설정·자격증명 만료로 원본명 기능이 통째로 꺼져도 응답은 200 이고 로그가 0줄이라 아무도 모른다
+ * (화면엔 sanitize 된 이름이 나와 "이름이 좀 이상한데요" CS 만 남는다).
+ * 객체가 없는 것(NotFound/NoSuchKey)만 정상 폴백으로 조용히 넘기고 나머지는 남긴다.
+ */
+describe('FileService.getOriginalName — 메타데이터 조회 실패 처리', () => {
+  const url = 'https://b.s3.amazonaws.com/private/5/0123456789abcdef-해지 신청서.pdf';
+
+  const makeSut = (headImpl: jest.Mock) => {
+    const sut = new FileService({ headOriginalName: headImpl } as any);
+    (sut as any).logger = { warn: jest.fn(), error: jest.fn(), log: jest.fn() };
+    return sut;
+  };
+
+  it('메타데이터가 있으면 그 값을 그대로 쓴다', async () => {
+    const sut = makeSut(jest.fn().mockResolvedValue('해지 신청서.pdf'));
+    expect(await sut.getOriginalName(url)).toBe('해지 신청서.pdf');
+    expect((sut as any).logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('객체 없음(NotFound) → 조용히 key 복원 (레거시 첨부의 정상 폴백)', async () => {
+    const sut = makeSut(jest.fn().mockRejectedValue(Object.assign(new Error('nf'), { name: 'NotFound' })));
+    expect(await sut.getOriginalName(url)).toBe('해지 신청서.pdf');
+    expect((sut as any).logger.warn).not.toHaveBeenCalled();
+  });
+
+  // ★ 이게 없으면 warn 을 지워도 초록이다.
+  it('★권한 상실(AccessDenied) → key 복원 + 경고 1회 (조용히 죽지 않는다)', async () => {
+    const sut = makeSut(jest.fn().mockRejectedValue(Object.assign(new Error('denied'), { name: 'AccessDenied' })));
+    expect(await sut.getOriginalName(url)).toBe('해지 신청서.pdf');
+    expect((sut as any).logger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('경고에 원본 파일명을 남기지 않는다 (접근로그에선 가려놓고 여기서 새면 안 된다)', async () => {
+    const sut = makeSut(jest.fn().mockRejectedValue(Object.assign(new Error('boom'), { name: 'NoSuchBucket' })));
+    await sut.getOriginalName(url);
+    const logged = (sut as any).logger.warn.mock.calls[0][0] as string;
+    expect(logged).not.toContain('해지');
+    expect(logged).toContain('private/5/');
+  });
+});

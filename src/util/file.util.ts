@@ -81,3 +81,20 @@ export function isFilePathListRoundTripSafe(urls: string[]): boolean {
   const restored = parseFilePathList(urls.join(','));
   return restored.length === urls.length && restored.every((url, i) => url === urls[i]);
 }
+
+/**
+ * S3 key 를 로그에 남길 수 있는 형태로 줄인다 — 객체는 식별하되 원본 파일명은 남기지 않는다.
+ *
+ * 접근 로그에서 첨부 URL 을 통째로 가리면(logger.middleware) 장애가 났을 때 "어느 파일이었나" 를
+ * 되짚을 단서가 0개가 된다. 그렇다고 애플리케이션 로그에 key 를 그대로 쓰면 `{uuid}-{원본명}` 의
+ * 원본명이 다시 새어 같은 값을 한쪽에서만 가리는 꼴이 된다. 그래서 식별자 앞부분만 남긴다.
+ *   private/5/0123456789abcdef-해지 신청서.pdf  →  private/5/01234567…
+ */
+export function maskStorageKeyForLog(key: string): string {
+  const segments = key.split('/');
+  const base = segments.pop() ?? '';
+  const dash = base.indexOf('-');
+  // `{식별자}-{원본명}` 규격이 아니면 통째로 가린다(이름만 있는 형태일 수 있다).
+  const masked = dash > 0 ? `${base.slice(0, Math.min(dash, 8))}…` : '***';
+  return [...segments, masked].join('/');
+}
