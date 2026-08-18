@@ -20,6 +20,7 @@ import { ILoginUserInfo } from '../../auth/interface/login.user';
 import { User } from '../../auth/api/user.decorator';
 import { AuthService } from '../../auth/application/auth.service';
 import { UserAuthSubEnum } from '../../user_management/domain/user.auth.enum';
+import { buildContentDispositionAttachment } from '../../util/file.util';
 
 @ApiTags('order-receipt')
 @Controller('')
@@ -81,13 +82,12 @@ export class OrderReceiptController {
     const { fileName, filePath } = await this.orderReceiptService.downloadFile(user, getParam.id, getQuery.fileUrl);
 
     // 한글 등 비ASCII 는 RFC5987 filename* 로, 구형 클라이언트용 ASCII filename 도 함께 둔다.
-    const asciiFallback = fileName.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '');
-    const encodedFileName = encodeURIComponent(fileName);
+    // ※ 인라인으로 조립하던 것을 공용 헬퍼로 옮겼다(문서함 컨트롤러와 같은 코드였다). 두 가지가 같이 닫힌다:
+    //   ① ASCII 폴백이 역슬래시를 안 지워, 이름이 역슬래시로 끝나면 quoted-pair 로 읽혀 헤더가 깨졌다.
+    //   ② encodeURIComponent 가 안 바꾸는 `'()*` 가 RFC5987 attr-char 에 없어, `계약서(최종).pdf` 같은
+    //      이름에서 엄격한 클라이언트가 filename* 를 통째로 무시하고 밑줄 폴백으로 떨어졌다.
     res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodedFileName}`,
-    );
+    res.setHeader('Content-Disposition', buildContentDispositionAttachment(fileName));
 
     const fileStream = fs.createReadStream(filePath);
     // pipeline은 성공/스트림오류/클라이언트 조기 종료(res close) 등 '모든' 종료 경로에서 콜백을 1회 호출하고
