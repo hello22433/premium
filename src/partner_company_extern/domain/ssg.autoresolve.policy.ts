@@ -30,12 +30,12 @@ export function parseSsgAutoResolveMode(raw: string | null | undefined): SsgAuto
  * 연속 N ·해당 ordinal 로그 부재·live claim 증거는 여기 어디에도 없다. 그 증거는
  * `evaluateOrdinal2Execution` 이 별도로 검사하며, 게이트는 **둘 다** 통과해야 열린다.
  *
- * - P0(현재): 판정 레이어와 관측만 배포. 자동 INSERT 는 두 차수 모두 닫혀 있다.
- * - P1: `ORDINAL_1_INITIAL_ISSUE` → true **+** 최초발급 증거(claim 재획득) 구현
+ * - P0: 판정 레이어와 관측만 배포.
+ * - P1(현재): `ORDINAL_1_INITIAL_ISSUE` → true **+** 최초발급 증거(claim 재획득) 구현
  * - P3: `ORDINAL_2_REISSUE` → true **+** `SsgOrdinal2Evidence` 수집경로 구현
  */
 export const SSG_AUTORESOLVE_PHASE = {
-  ORDINAL_1_INITIAL_ISSUE: false,
+  ORDINAL_1_INITIAL_ISSUE: true,
   ORDINAL_2_REISSUE: false,
   /**
    * `tryYn='N'` 만으로 orphan resolver 가 state 를 FAILED 로 내려 SSG 행사 잔액 복구(환불)를

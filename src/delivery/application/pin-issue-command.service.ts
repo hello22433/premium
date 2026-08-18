@@ -254,6 +254,148 @@ export class PinIssueCommandService {
     return this.transitionOwned(authority, PinIssueCommandStatus.OPS_REVIEW_REQUIRED, resolution);
   }
 
+  /**
+   * §7-1 NOT_ATTEMPTED 권한 재점유 CAS.
+   *
+   * 앱 재시작 후 delivery claim 이 NULL 로 풀려 claimPinCommand 가 실패한 frozen command 를
+   * STARTED+count=1 로 복원한다. 새 권한을 소비하는 게 아니라 **이미 소비한 1회를 회수**한다.
+   *
+   * 3중 증인: (1) ssg_issue_log 0행 (tombstone 포함) → INSERT 시도 없음
+   *          (2) insert_state ATTEMPTED/CONFIRMED 없음 → 외부 PIN 미기록
+   *          (3) order_delivery PIN payload 없음 → 최종 기록 미반영
+   *
+   * 성공 후 `hasConsumedSsgIssueAuthority(STARTED, 1) = true` 이므로 markAttempted 가 작동한다.
+   * 반환값이 true 면 반드시 `reacquireDeliveryClaim` 으로 delivery claim 을 확보한 뒤에만
+   * 외부 부작용(INSERT)을 실행한다.
+   */
+  async reclaimNotAttemptedAuthority(
+    authority: PinIssueCommandAuthority,
+    orderDeliveryId: number,
+    leaseExpiresAt: Date,
+    externalManager?: import('typeorm').EntityManager,
+  ): Promise<boolean> {
+    const mgr = externalManager ?? this.repository.manager;
+    const result = await mgr
+      .createQueryBuilder()
+      .update(PinIssueCommandEntity)
+      .set({
+        status: PinIssueCommandStatus.STARTED,
+        resolution: null,
+        leaseExpiresAt,
+        stateEnteredAt: new Date(),
+        autoresolveVersion: 1,
+      })
+      .where('id = :commandId', { commandId: authority.commandId })
+      .andWhere('owner_token = :ownerToken', { ownerToken: authority.ownerToken })
+      .andWhere('generation = :generation', { generation: authority.generation })
+      .andWhere('workflow_version = :workflowVersion', { workflowVersion: authority.workflowVersion })
+      .andWhere('status IN (:...reclaimableStatuses)', {
+        reclaimableStatuses: [
+          PinIssueCommandStatus.STARTED,
+          PinIssueCommandStatus.RETRY_PENDING,
+          PinIssueCommandStatus.RETRYING,
+        ],
+      })
+      .andWhere('external_issue_count = 1')
+      .andWhere(
+        `NOT EXISTS (
+           SELECT 1 FROM ssg_issue_log l WHERE l.order_delivery_id = :odId
+           UNION ALL
+           SELECT 1 FROM ssg_issue_log_ops_archive a WHERE a.order_delivery_id = :odId
+         )`,
+        { odId: orderDeliveryId },
+      )
+      .andWhere(
+        `NOT EXISTS (SELECT 1 FROM order_delivery_ssg_insert_state s
+           WHERE s.order_delivery_id = :odId2 AND s.state IN ('ATTEMPTED','CONFIRMED'))`,
+        { odId2: orderDeliveryId },
+      )
+      .andWhere(
+        `EXISTS (SELECT 1 FROM order_delivery od
+           WHERE od.id = :odId3 AND od.bar_code IS NULL
+             AND od.personal_code IS NULL AND od.ssg_transaction_id IS NULL)`,
+        { odId3: orderDeliveryId },
+      )
+      .execute();
+    return result.affected === 1;
+  }
+
+  /**
+   * §6-B-1 delivery claim 재획득.
+   *
+   * frozen command 의 delivery 는 `releaseStaleBatchClaims` 로 claimed_at = NULL 이 된 상태다.
+   * 5분 미만 크래시 시 `mutation_claimed_at` 은 남아 있을 수 있으므로(①의 stale 조건 미충족),
+   * claimed_at IS NULL + (mutation_claimed_at IS NULL OR mutation_claimed_at = :priorToken) 으로
+   * 원자적 회수한다. priorToken 은 command 의 기존 deliveryClaimToken 이다.
+   */
+  async reacquireDeliveryClaim(
+    authority: PinIssueCommandAuthority,
+    orderDeliveryId: number,
+    priorClaimToken?: string | null,
+    externalManager?: import('typeorm').EntityManager,
+  ): Promise<{ deliveryClaimToken: string } | null> {
+    const now = new Date();
+    const claimToken = now.toISOString();
+    const claimDate = new Date(claimToken);
+
+    const priorClaimDate = priorClaimToken ? new Date(priorClaimToken) : null;
+    const validPrior =
+      priorClaimDate && !Number.isNaN(priorClaimDate.getTime()) && priorClaimDate.toISOString() === priorClaimToken;
+
+    const execute = async (manager: import('typeorm').EntityManager) => {
+      const qb = manager
+          .createQueryBuilder()
+          .update(OrderDeliveryEntity)
+          .set({ claimedAt: claimDate, mutationClaimedAt: claimDate })
+          .where('id = :id', { id: orderDeliveryId })
+          .andWhere('claimed_at IS NULL')
+          .andWhere('status = :wait', { wait: 'WAIT' })
+          .andWhere('destroyed_at IS NULL')
+          .andWhere('discarded_at IS NULL')
+          .andWhere('refunded_at IS NULL');
+
+        if (validPrior) {
+          qb.andWhere('(mutation_claimed_at IS NULL OR mutation_claimed_at = :priorMutation)', {
+            priorMutation: priorClaimDate,
+          });
+        } else {
+          qb.andWhere('mutation_claimed_at IS NULL');
+        }
+
+        const claimed = await qb.execute();
+        if (claimed.affected !== 1) return null;
+
+        const synced = await manager
+          .createQueryBuilder()
+          .update(PinIssueCommandEntity)
+          .set({ deliveryClaimToken: claimToken })
+          .where('id = :commandId', { commandId: authority.commandId })
+          .andWhere('owner_token = :ownerToken', { ownerToken: authority.ownerToken })
+          .andWhere('generation = :generation', { generation: authority.generation })
+          .andWhere('workflow_version = :workflowVersion', { workflowVersion: authority.workflowVersion })
+          .andWhere('status = :status', { status: PinIssueCommandStatus.STARTED })
+          .execute();
+        if (synced.affected !== 1) throw new PinIssueCommandClaimReacquireConflictError();
+
+        return { deliveryClaimToken: claimToken };
+      };
+
+    if (externalManager) {
+      try {
+        return await execute(externalManager);
+      } catch (error) {
+        if (error instanceof PinIssueCommandClaimReacquireConflictError) return null;
+        throw error;
+      }
+    }
+    try {
+      return await this.repository.manager.transaction(async (manager) => execute(manager));
+    } catch (error) {
+      if (error instanceof PinIssueCommandClaimReacquireConflictError) return null;
+      throw error;
+    }
+  }
+
   /** Best-effort audit only. It must never be used to authorize an SSG call. */
   async recordAttemptAudit(params: {
     orderDeliveryId: number;
@@ -320,3 +462,4 @@ function toIsoDeliveryClaimToken(token: string | null | undefined): string | nul
   return !Number.isNaN(claimedAt.getTime()) && claimedAt.toISOString() === token ? token : null;
 }
 class PinIssueCommandTransitionConflictError extends Error {}
+class PinIssueCommandClaimReacquireConflictError extends Error {}

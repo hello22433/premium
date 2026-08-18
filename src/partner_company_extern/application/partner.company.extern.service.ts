@@ -374,6 +374,18 @@ export class PartnerCompanyExternService {
     const active = allRows.filter((candidate) => candidate.supersededAt === null);
 
     if (allRows.length === 0) {
+      const [archiveHit] = await this.ssgIssueLogRepository.query(
+        `SELECT 1 AS hit FROM ssg_issue_log_ops_archive WHERE order_delivery_id = ? LIMIT 1`,
+        [orderDeliveryId],
+      );
+      if (archiveHit) {
+        return {
+          resolution: SsgPinResolution.UNKNOWN,
+          hasAnyAttempt: true,
+          activeCandidateCount: 0,
+          verdicts: [],
+        };
+      }
       return {
         resolution: SsgPinResolution.NOT_ATTEMPTED,
         hasAnyAttempt: false,
@@ -501,7 +513,13 @@ export class PartnerCompanyExternService {
     ssgEvent: SsgEventEntity | null,
     resendDeductionId?: string,
     ssgIssueAuthority?: PinIssueCommandAuthority,
+    issueOrdinal?: number | null,
   ): Promise<PartnerIssueResult> {
+    if (ssgIssueAuthority && (issueOrdinal == null || ![1, 2].includes(issueOrdinal))) {
+      throw new InternalServerErrorException(
+        `SSG INSERT ordinal is required when authority is present. commandId=${ssgIssueAuthority.commandId}, ordinal=${issueOrdinal}`,
+      );
+    }
     const type = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
     // issue 결과(배치 재발송 선차감 정합). 기본=재사용(false)·현재 귀속 행사. SSG 신규 INSERT 시 갱신.
     const result: PartnerIssueResult = { ssgNewIssue: false, ssgEventId: orderDelivery.ssgEventId ?? null };
@@ -873,8 +891,18 @@ export class PartnerCompanyExternService {
                 `SSG 후보 판정 미확정(${resolution}). orderDeliveryId=${orderDelivery.id}`,
               );
             }
+          } else {
+            const [archiveHit] = await this.ssgIssueLogRepository.query(
+              `SELECT 1 AS hit FROM ssg_issue_log_ops_archive WHERE order_delivery_id = ? LIMIT 1`,
+              [orderDelivery.id],
+            );
+            if (archiveHit) {
+              throw new SsgIssueUnknownError(
+                `SSG archive 이력 존재 — clean 발급 차단. orderDeliveryId=${orderDelivery.id}`,
+              );
+            }
           }
-          // 후보 0건(최초 clean 발송) → 새 PIN. 외부 SSG API 추가호출 없음(hot-path 보존).
+          // 후보 0건 + archive 0건(최초 clean 발송) → 새 PIN. 외부 SSG API 추가호출 없음(hot-path 보존).
         }
 
         // 2~4단계를 Mutex로 직렬화: PIN 생성~중복확인~INSERT 간 경쟁 조건 방지.
@@ -897,10 +925,16 @@ export class PartnerCompanyExternService {
             // 2) 새 PIN 생성 + 2중 중복 확인
             const { barCode, personalCode } = this.ssgIssue.generateSsgIssue();
 
-            // 1차 중복 확인: 로컬 ssg_issue_log (빠름). SELECT 이므로 비원자적 — 최종 판정은 UNIQUE 제약.
-            const localDuplicate = await this.ssgIssueLogRepository.findOne({
-              where: [{ barCode }, { personalCode }],
-            });
+            // 1차 중복 확인: 로컬 ssg_issue_log + ops_archive UNION (빠름).
+            // SELECT 이므로 비원자적 — 최종 판정은 UNIQUE 제약.
+            // ops_archive 는 수동 복구 시 DELETE된 PIN 4행 보존. tombstone 전환 후 신규 유입 없음.
+            const [localDuplicate] = await this.ssgIssueLogRepository.query(
+              `SELECT 1 AS hit FROM ssg_issue_log WHERE bar_code = ? OR personal_code = ?
+               UNION ALL
+               SELECT 1 FROM ssg_issue_log_ops_archive WHERE bar_code = ? OR personal_code = ?
+               LIMIT 1`,
+              [barCode, personalCode, barCode, personalCode],
+            );
             if (localDuplicate) {
               this.logger.warn(
                 `[SSG] 로컬 블랙리스트 중복 감지 - barCode: ${barCode}, personalCode: ${personalCode}, 재생성 시도 (${attempt + 1}/${maxRetries})`,
@@ -969,6 +1003,8 @@ export class PartnerCompanyExternService {
               expireAt: orderDelivery.expireAt ?? null,
               encourageAt: orderDelivery.encourageAt ?? null,
               couponNum: orderDelivery.couponNum ?? null,
+              pinIssueCommandId: ssgIssueAuthority?.commandId ?? null,
+              issueOrdinal: issueOrdinal ?? null,
             };
             let markResult: MarkAttemptedResult;
             try {

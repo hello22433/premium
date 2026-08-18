@@ -1711,6 +1711,7 @@ export class DeliveryBatchService {
           });
         }
 
+        let resolvedOrdinal: number | undefined;
         if (order.type === IOrderType.SSG) {
           if (!commandAuthority) {
             const ownerToken = claimToken?.toISOString() ?? `batch:${orderDelivery.id}`;
@@ -1728,6 +1729,7 @@ export class DeliveryBatchService {
             if (!(await this.pinIssueCommandService.consumeInitialIssueAuthority(commandAuthority))) {
               throw new SsgIssueUnknownError(`SSG INSERT authority lost. orderDeliveryId=${orderDelivery.id}`);
             }
+            resolvedOrdinal = 1;
           } else {
             const resolution = await this.partnerCompanyExternService.resolveDeferredSsgIssue(orderDelivery);
             if (resolution === SsgPinResolution.CONFIRMED) {
@@ -1752,6 +1754,7 @@ export class DeliveryBatchService {
               if (!(await this.pinIssueCommandService.consumeNotIssuedRetryAuthority(commandAuthority))) {
                 throw new SsgIssueUnknownError(`SSG retry authority lost. orderDeliveryId=${orderDelivery.id}`);
               }
+              resolvedOrdinal = 2;
             } else if (resolution === SsgPinResolution.PROCESSING) {
               await this.pinIssueCommandService.recordResolution(commandAuthority, {
                 resolution,
@@ -1772,7 +1775,7 @@ export class DeliveryBatchService {
         }
 
         if (!orderDelivery.barCode) {
-          await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent, undefined, commandAuthority);
+          await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent, undefined, commandAuthority, resolvedOrdinal);
         }
 
         if (orderDelivery.status === IOrderDeliveryStatus.FAIL || !orderDelivery.barCode) {
@@ -2307,6 +2310,7 @@ export class DeliveryBatchService {
           ssgEvent,
           resendDeductionId ?? undefined,
           ssgIssueAuthority,
+          ssgIssueAuthority ? 1 : undefined,
         );
         if (ssgIssueAuthority && !(await this.pinIssueCommandService.markSucceeded(ssgIssueAuthority))) {
           throw new SsgIssueUnknownError(`SSG INSERT completion authority lost. orderDeliveryId=${orderDelivery.id}`);

@@ -127,7 +127,7 @@ export class OrderReceiveService {
         : undefined;
 
     try {
-      await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent, undefined, ssgIssueAuthority);
+      await this.partnerCompanyExternService.issue(orderDelivery, ssgEvent, undefined, ssgIssueAuthority, ssgIssueAuthority ? 1 : undefined);
       if (ssgIssueAuthority) {
         await this.deliveryBatchService.markSsgIssueSucceeded(ssgIssueAuthority, orderDelivery.id);
       }

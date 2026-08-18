@@ -3051,6 +3051,7 @@ export class CustomerServiceService {
               ssgEvent,
               resendDeductionId ?? undefined,
               ssgIssueAuthority,
+              ssgIssueAuthority ? 1 : undefined,
             );
             if (ssgIssueAuthority) {
               await this.deliveryBatchService.markSsgIssueSucceeded(ssgIssueAuthority, fullDelivery.id);
