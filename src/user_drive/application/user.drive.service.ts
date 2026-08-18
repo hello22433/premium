@@ -163,8 +163,8 @@ export class UserDriveService {
    * 첨부 다운로드 프록시용. 권한·소유 검증 후 비공개(private) S3 객체를 임시파일로 받아
    * 로컬 경로와 원본 파일명을 돌려준다. 컨트롤러가 Content-Disposition(원본명)으로 스트리밍한다.
    *  - 문서 권한: 상세조회와 동일(assertCanReadDrive) — 관리자 전체, 기업=본인 수신 문서(비DRAFT)만.
-   *  - 객체 소유 검증(assertDownloadable): 첨부 소유를 문서 "글쓰기 권한"과 통일한다 — 관리자 아닌
-   *    요청자(기업 수신자)에겐 ownerId 가 발신자이거나 SUPER 인 첨부만 허용(글 쓸 수 있던 사람이 넣은 것만).
+   *  - 객체 소유 검증(assertDownloadable): 첨부 소유를 문서 "글쓰기 권한"과 통일한다 — 요청자 권한과
+   *    무관하게 ownerId 가 발신자이거나 업로더가 SUPER 인 첨부만 허용(글 쓸 수 있던 사람이 넣은 것만).
    *    filePath 는 신뢰 불가하므로 key 소유까지 검증한다. ※ 주문접수와 달리 정당한 다운로더가
    *    수신자(≠업로더)라 요청자 id 로 비교하지 않는다.
    *  - 원본명: 객체 메타데이터(verbatim) 우선, 없으면 key 복원.
