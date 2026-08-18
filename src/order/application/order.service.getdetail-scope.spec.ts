@@ -206,3 +206,123 @@ describe('OrderService getDetail ssgBalanceCheck 노출 게이트', () => {
     expect(result.ssgBalanceCheck).toBeUndefined();
   });
 });
+
+/**
+ * getDetail 이 발송건별 cancelable/cancelBlockReason 을 실제로 조립해 응답에 싣는지 검증한다
+ * (197-16 리뷰 pr-test H-1). 술어 단위테스트는 뷰를 손으로 만들어 넘기므로 "getDetail 이 실
+ * 엔티티를 술어에 올바르게 태우고 결과를 DTO 에 싣는" 배선을 검증하지 못한다. 여기서 실제 getDetail
+ * 을 발송건이 있는 주문으로 구동해 필드가 상태별로 맞게 실리는지, SSG order-level 게이트가 먹는지 본다.
+ */
+describe('OrderService getDetail — cancelable 조립 (H-1)', () => {
+  const HOUR = 60 * 60 * 1000;
+  const MIN = 60 * 1000;
+
+  const makeDelivery = (id: number, over: Record<string, unknown>) => ({
+    id,
+    status: 'WAIT',
+    deliveryTarget: `0101234${id}`,
+    originalDeliveryTarget: null,
+    replaceCharacter1: null,
+    replaceCharacter2: null,
+    replaceCharacter3: null,
+    resendAt: null,
+    actualSendAt: null,
+    claimedAt: null,
+    couponIssuedAt: null,
+    barCode: null,
+    reportState: null,
+    // getDetail 은 내부에서 new Date() 를 쓰므로 실제 현재시각 기준으로 넉넉히 미래 예약
+    sendRequestAt: new Date(Date.now() + HOUR),
+    expireAt: null,
+    ...over,
+  });
+
+  const buildOrder = (type: string, deliveries: any[]) =>
+    ({
+      id: 77,
+      userId: 10,
+      operationUserId: null,
+      clientUserId: null,
+      companyId: 100,
+      departmentId: 5,
+      registerAt: new Date('2026-01-01T00:00:00Z'),
+      eventName: 'evt',
+      type,
+      status: 'DELIVERY_CONFIRMED',
+      cancelReason: null,
+      canceledAt: null,
+      user: { settlePeriodCondition: null, settlePeriodCount: null, settleCondition: null },
+      orderProductMappings: [
+        {
+          id: 1,
+          productId: 1,
+          amount: deliveries.length,
+          product: { id: 1, name: '상품', price: 5000, expireDay: 30, imagePath: '', brandId: 1 },
+          orderDeliveries: deliveries,
+          topImagePath: '',
+          midImagePath: '',
+          sendMethod: 'MMS',
+          sendRequestAt: null,
+        },
+      ],
+    }) as any;
+
+  const buildService = (order: any) => {
+    const builder: any = {
+      innerJoinAndSelect: jest.fn().mockReturnThis(),
+      leftJoinAndSelect: jest.fn().mockReturnThis(),
+      withDeleted: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockResolvedValue(order),
+    };
+    const service = Object.create(OrderService.prototype) as any;
+    service.orderRepository = { createQueryBuilder: jest.fn().mockReturnValue(builder) };
+    service.userRepository = { findOne: jest.fn().mockResolvedValue({ id: 10, companyId: 100, departmentId: 5 }) };
+    service.userViewScopeRepository = {
+      findOne: jest.fn().mockResolvedValue({ scopeType: ViewScopeType.SELF, getDeptIdList: () => [] }),
+    };
+    service.recoverDeletedProducts = jest.fn().mockResolvedValue(undefined);
+    service.hideDiscardReissueDeliveries = jest.fn();
+    service.resolveOrderExpireAt = jest.fn().mockReturnValue(null);
+    // 테스트발송 이력 로딩(develop 197-15)은 이 테스트 관심사가 아니라 빈 결과로 둔다.
+    service.testOrderDeliveryRepository = { find: jest.fn().mockResolvedValue([]) };
+    service.cryptoCipher = { safeDecryptDeliveryTarget: jest.fn((v: string) => v) };
+    service.getCurrentDeliveryTransitionUser = jest
+      .fn()
+      .mockResolvedValue({ id: 10, authority: IUserAuthority.CORPORATE_ADMIN, status: IUserStatus.USED, authorityList: null });
+    service.ssgEventService = { getSsgBalanceCheckForOrder: jest.fn() };
+    // getDetail 응답의 지갑 정보(정산조건) 해석 — 이 스펙의 관심사는 cancelable 조립이라 최소 배선만 한다.
+    service.walletAccountResolverService = {
+      resolveForOrder: jest.fn().mockResolvedValue({ settleCondition: 'POST_PAYMENT' }),
+    };
+    return service;
+  };
+
+  const owner = { id: 10, email: 'o@o.com', authority: IUserAuthority.CORPORATE_ADMIN };
+  const findDelivery = (result: any, id: number) =>
+    result.productList[0].orderDeliveryList.find((d: any) => d.id === id);
+
+  it('GENERAL 혼합 주문: WAIT(미래)=true/null, COMPLETE=false/NOT_WAITING, WAIT(컷오프 이내)=false/CUTOFF_PASSED', async () => {
+    const order = buildOrder('GENERAL', [
+      makeDelivery(1, {}), // WAIT + 미래 예약 → 취소가능
+      makeDelivery(2, { status: 'COMPLETE' }), // 발송완료
+      makeDelivery(3, { sendRequestAt: new Date(Date.now() + 5 * MIN) }), // WAIT + 컷오프 이내
+    ]);
+    const result = await buildService(order).getDetail(owner, { id: 77 });
+
+    expect(findDelivery(result, 1)).toMatchObject({ cancelable: true, cancelBlockReason: null });
+    expect(findDelivery(result, 2)).toMatchObject({ cancelable: false, cancelBlockReason: 'NOT_WAITING' });
+    expect(findDelivery(result, 3)).toMatchObject({ cancelable: false, cancelBlockReason: 'CUTOFF_PASSED' });
+  });
+
+  it('SSG 주문: order-level 게이트로 전 발송건 cancelable=false, UNSUPPORTED_ORDER (조건 충족해도)', async () => {
+    const order = buildOrder('SSG', [makeDelivery(1, {}), makeDelivery(2, {})]);
+    const result = await buildService(order).getDetail(owner, { id: 77 });
+
+    for (const id of [1, 2]) {
+      expect(findDelivery(result, id)).toMatchObject({ cancelable: false, cancelBlockReason: 'UNSUPPORTED_ORDER' });
+    }
+  });
+});

@@ -1,6 +1,16 @@
 jest.mock('typeorm-transactional', () => ({
   Transactional: () => (_target: unknown, _key: unknown, descriptor: PropertyDescriptor) => descriptor,
   Propagation: { REQUIRED: 'REQUIRED', REQUIRES_NEW: 'REQUIRES_NEW' },
+  // ★ IsolationLevel 을 빠뜨리면 안 된다. deliveryCancel 이
+  //   `@Transactional({ isolationLevel: IsolationLevel.READ_COMMITTED })` 라, 이 목이 통째로
+  //   덮으면 데코레이터 평가 시점(= 모듈 로드)에 undefined 를 읽어 **스위트 전체가 로드 실패**한다.
+  //   여기서 검사하는 것과 무관한 메서드 때문에 죽는 형태라 원인이 잘 안 보인다.
+  IsolationLevel: {
+    READ_UNCOMMITTED: 'READ UNCOMMITTED',
+    READ_COMMITTED: 'READ COMMITTED',
+    REPEATABLE_READ: 'REPEATABLE READ',
+    SERIALIZABLE: 'SERIALIZABLE',
+  },
   runOnTransactionCommit: jest.fn((callback: () => void) => callback()),
 }));
 

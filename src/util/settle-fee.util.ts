@@ -92,6 +92,21 @@ export function calculateMappingSettlementBaseAmount(mapping: OrderProductMappin
   return buildSettlementDisplayLines(mapping).reduce((total, line) => total + line.price * line.amount, 0);
 }
 
+/**
+ * 매핑 1건의 **청구 수량** (= 정산금액이 실제로 몇 건분인가).
+ *
+ * ★ `mapping.amount`(주문 수량)를 그대로 쓰면 안 되는 곳이 있다. 정산금액(위 함수)은
+ *   buildSettlementDisplayLines 를 통해 취소된 발송건(status=CANCEL)을 빼는데, 수량만 원값을 쓰면
+ *   **같은 화면·같은 행에서 "수량 10건 / 금액 8건분"** 이 되어 운영자가 근거로 삼는 숫자가 갈린다.
+ *   금액과 수량은 반드시 같은 분해(buildSettlementDisplayLines)에서 나와야 구조적으로 일치한다.
+ *
+ * 재발행으로 대체된 CANCEL 원본은 여기서도 차감되지 않는다 — 재발행분이 그 자리를 채우므로
+ * 청구 수량은 그대로다(위 함수와 동일한 근거). 순수 감소인 발송취소만 빠진다.
+ */
+export function calculateMappingBilledQuantity(mapping: OrderProductMappingEntity): number {
+  return buildSettlementDisplayLines(mapping).reduce((total, line) => total + line.amount, 0);
+}
+
 /** 정산 표시용 라인 1행: 실존 단가(price)와 그 단가가 적용된 발송건 수(amount). */
 export type SettlementDisplayLine = {
   price: number;
@@ -108,11 +123,20 @@ export type SettlementDisplayLine = {
  * 요율 적용 단가별로 행을 분리하면 모든 행의 단가가 실존값이고 price*amount 가 항상 정확한 합계다.
  * (정산정보입력 화면(getOrderSettle 가상 분리 행)과 동일한 표현 방식)
  *
- * - 비차등(균일 요율) 매핑: 단가 × mapping.amount 단일 행.
+ * - 비차등(균일 요율) 매핑: 단가 × (주문 수량 − 취소된 발송건 수).
+ *   ★ "살아있는 발송건 수" 가 아니다 — 아래 균일 분기의 주석 참조. 필터로 살아남은 목록에는
+ *     재발행으로 대체된 원본도 빠져 있는데, 그 경우 재발행분이 원본 자리를 채우므로 청구
+ *     수량은 그대로여야 한다. 길이로 세면 재발행 건 금액이 절반이 된다.
  * - 폐기 후 재발행으로 대체된 CANCEL 원본 delivery 는 제외(이중합산 방지 — D3-52).
  *   정산금액 SoT(calculateMappingSettlementBaseAmount)가 이 함수의 결과를 그대로 합산하므로,
  *   화면과 실제 돈이 동일한 필터·분기 기준을 공유한다(로직 중복 없음).
  *   폐기만 하고 재발행하지 않은 CANCEL 은 기존 동작 유지(정산 반영 정책 별도 판단).
+ * - 취소된 발송건(delivery.status = CANCEL)은 제외한다(197-16 예약건 부분취소).
+ *   그 몫은 이미 환불됐고, 실제 정산확정 금액(getOrderSettlementSummary)도 완료건만 더한다.
+ *   빼지 않으면 거래명세서·발송완료리포트가 환불된 건까지 청구한다.
+ *   ※ 두 함수가 CANCEL 축에서는 일치하지만 전부 일치하는 것은 아니다 — getOrderSettlementSummary
+ *     는 FAIL 도 빼고 이 함수는 남긴다(실패건은 재발송으로 성공시켜 청구하는 것이 정책).
+ *     "정산확정과 맞춘다" 는 이유로 여기서 FAIL 을 빼면 안 된다.
  */
 export function buildSettlementDisplayLines(mapping: OrderProductMappingEntity): SettlementDisplayLine[] {
   const allDeliveries = mapping.orderDeliveries ?? [];
@@ -123,7 +147,11 @@ export function buildSettlementDisplayLines(mapping: OrderProductMappingEntity):
       .map((delivery) => Number(delivery.replacedFromId)),
   );
   const deliveries = allDeliveries.filter(
-    (delivery) => !(delivery.couponStatus === OrderDeliveryCouponStatus.CANCEL && replacedIds.has(Number(delivery.id))),
+    (delivery) =>
+      // 폐기 후 재발행으로 대체된 원본 (D3-52)
+      !(delivery.couponStatus === OrderDeliveryCouponStatus.CANCEL && replacedIds.has(Number(delivery.id))) &&
+      // 취소된 발송건 (197-16) — 이미 환불됐으므로 청구 대상이 아니다
+      delivery.status !== IOrderDeliveryStatus.CANCEL,
   );
 
   // 차등정산 여부 판정은 필터 "전" 목록 기준 — calculateMappingSettlementBaseAmount(정산금액 util)와
@@ -131,8 +159,19 @@ export function buildSettlementDisplayLines(mapping: OrderProductMappingEntity):
   // 서로 다른 분기(균일 vs 차등)를 타는 불일치를 방지한다.
   const hasDeliveryFee = allDeliveries.some((delivery) => delivery.settleFee !== null);
   if (!hasDeliveryFee) {
-    // 균일 요율: 단가 1회 계산 × 주문 수량
-    return [{ price: calculateSettlementPrice(mapping, false), amount: mapping.amount }];
+    // 균일 요율: 단가 1회 계산 × (주문 수량 − 취소된 발송건 수).
+    //
+    // ★ deliveries.length 를 쓰지 않는 이유: 그 목록은 "폐기 후 재발행으로 대체된 원본"(D3-52)도
+    //   빼는데, 그 경우 재발행분이 원본 자리를 채우므로 청구 수량은 그대로여야 한다.
+    //   길이로 세면 재발행 건의 금액이 절반이 된다(기존 계약 위반 — settle-fee.util.spec
+    //   "delivery-level 요율이 전혀 없는 순수 균일 매핑은 필터 전 기준이어도 균일 분기 유지").
+    //   취소는 대체가 아니라 순수 감소이므로 그 수만 뺀다.
+    const canceledCount = allDeliveries.filter(
+      (delivery) => delivery.status === IOrderDeliveryStatus.CANCEL,
+    ).length;
+    return [
+      { price: calculateSettlementPrice(mapping, false), amount: Math.max(0, mapping.amount - canceledCount) },
+    ];
   }
 
   // 차등정산: 요율 적용 단가별로 발송건 수를 세어 행 분리.
@@ -143,6 +182,32 @@ export function buildSettlementDisplayLines(mapping: OrderProductMappingEntity):
     unitPriceCounts.set(unitPrice, (unitPriceCounts.get(unitPrice) ?? 0) + 1);
   }
   return [...unitPriceCounts.entries()].map(([price, amount]) => ({ price, amount }));
+}
+
+/**
+ * 위 필터의 **SQL 판(版)** — "폐기 후 재발행으로 대체된 원본" 을 같은 기준으로 뺀다.
+ *
+ * 왜 따로 필요한가: buildSettlementDisplayLines 는 `mapping.orderDeliveries` 를 메모리에 올려
+ * 거르지만, 발송건 수를 세기만 하는 곳은 `getCount()` 로 DB 에서 끝낸다. 그때 이 술어가 없으면
+ * **같은 발송건을 두 화면이 다르게 센다.**
+ *
+ * 실제로 그래서 났던 결함(197-16 리뷰 P1): 1건 주문을 폐기 후 재발행하면 원본은
+ * `status=COMPLETE / coupon_status=CANCEL` 로 남고 새 행이 그 자리를 채운다. 새 행을 부분취소하면
+ * 살아 있는 발송건은 0 인데, `status != CANCEL` 만 세면 죽은 원본이 1 건으로 잡혀 주문이
+ * DELIVERY_CONFIRMED 로 남고 allocation 도 안 닫힌다.
+ *
+ * ⚠️ 위 in-memory 필터와 **한 쌍이다.** 한쪽만 고치지 마라 — 고치면 두 화면의 숫자가 갈린다.
+ *
+ * @param alias 조회에 쓰는 order_delivery 별칭 (예: `'od'`)
+ */
+export function notDiscardedReplacedOriginPredicate(alias: string): string {
+  // 대체 행이 soft-delete 됐으면(재발행 되감기 unwindReissue) 원본은 다시 유효하다 —
+  // in-memory 쪽도 관계 로딩에서 soft-delete 를 제외하므로 같은 판정이 된다.
+  return (
+    `NOT (${alias}.coupon_status = '${OrderDeliveryCouponStatus.CANCEL}' AND EXISTS (` +
+    `SELECT 1 FROM order_delivery reissued ` +
+    `WHERE reissued.replaced_from_id = ${alias}.id AND reissued.deleted_at IS NULL))`
+  );
 }
 
 /**

@@ -10,6 +10,9 @@ import { SsgRecoveryResult } from '../interface/ssg.recovery.result';
 import { SsgRecoverySweepService } from './ssg-recovery-sweep.service';
 import { PinIssueCommandService } from './pin-issue-command.service';
 import { SsgRecoveryService } from './ssg-recovery.service';
+import { SsgAutoResolveConfig } from '../../partner_company_extern/application/ssg.autoresolve.config';
+import { SSG_AUTORESOLVE_PHASE } from '../../partner_company_extern/domain/ssg.autoresolve.policy';
+import { PinIssueCommandStatus } from '../interface/pin.issue.command.status';
 import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
 
 /**
@@ -75,6 +78,7 @@ describe('SsgRecoverySweepService', () => {
           },
         },
         { provide: PartnerCompanyExternService, useValue: { resolveDeferredSsgIssue: jest.fn(), issue: jest.fn() } },
+        { provide: SsgAutoResolveConfig, useValue: new SsgAutoResolveConfig({ get: () => 'off' } as any) },
       ],
     }).compile();
     sut = module.get(SsgRecoverySweepService);
@@ -230,7 +234,7 @@ describe('P24 PIN resolution sweep fencing', () => {
 
   const makeService = (
     repo: any,
-    opts: { delivery?: any; ssgEvent?: any; pinCmd?: any; partner?: any } = {},
+    opts: { delivery?: any; ssgEvent?: any; pinCmd?: any; partner?: any; autoResolveMode?: string } = {},
   ): any =>
     new SsgRecoverySweepService(
       {} as any,
@@ -240,6 +244,9 @@ describe('P24 PIN resolution sweep fencing', () => {
       {} as any,
       (opts.pinCmd ?? {}) as any,
       (opts.partner ?? {}) as any,
+      new SsgAutoResolveConfig({
+        get: () => opts.autoResolveMode ?? 'off',
+      } as any),
     );
 
   const ISO = '2026-08-11T00:00:00.000Z';
@@ -342,7 +349,12 @@ describe('P24 PIN resolution sweep fencing', () => {
     const command = query();
     const deliveryRefresh = query();
     const finder = query(undefined, [
-      candidate({ deliveryClaimToken: '2026-08-03T01:00:00.000Z', status: 'STARTED', externalIssueCount: 1, resolution: null }),
+      candidate({
+        deliveryClaimToken: '2026-08-03T01:00:00.000Z',
+        status: 'STARTED',
+        externalIssueCount: 1,
+        resolution: null,
+      }),
     ]);
     const markSucceededAfterDeliveryClaimRelease = jest.fn().mockResolvedValue(true);
     const service = makeService(sweepRepo({ finder, command, deliveryRefresh }), {
@@ -382,7 +394,12 @@ describe('P24 PIN resolution sweep fencing', () => {
     const command = query();
     const deliveryRefresh = query(jest.fn().mockResolvedValue({ affected: 0 }));
     const finder = query(undefined, [
-      candidate({ deliveryClaimToken: '2026-08-03T01:00:00.000Z', status: 'STARTED', externalIssueCount: 0, resolution: null }),
+      candidate({
+        deliveryClaimToken: '2026-08-03T01:00:00.000Z',
+        status: 'STARTED',
+        externalIssueCount: 0,
+        resolution: null,
+      }),
     ]);
     const consumeInitialIssueAuthority = jest.fn().mockResolvedValue(true);
     const issue = jest.fn();
@@ -404,7 +421,12 @@ describe('P24 PIN resolution sweep fencing', () => {
     const command = query(jest.fn().mockResolvedValue({ affected: 0 }));
     const deliveryRefresh = query();
     const finder = query(undefined, [
-      candidate({ deliveryClaimToken: '2026-08-03T01:00:00.000Z', status: 'STARTED', externalIssueCount: 0, resolution: null }),
+      candidate({
+        deliveryClaimToken: '2026-08-03T01:00:00.000Z',
+        status: 'STARTED',
+        externalIssueCount: 0,
+        resolution: null,
+      }),
     ]);
     const consumeInitialIssueAuthority = jest.fn().mockResolvedValue(true);
     const issue = jest.fn();
@@ -476,7 +498,11 @@ describe('P24 PIN resolution sweep fencing', () => {
     expect(stats.confirmed).toBe(1);
   });
 
-  it('routes a reclaimed batch count-1 STARTED command through the resolver, never re-INSERTing the initial call', async () => {
+  /**
+   * EP-P30 §6-B-3 — 판정기가 `tryYn='N'` 을 NOT_ISSUED 로 반환하기 시작하면 이 경로가 살아난다.
+   * 게이트(SSG_AUTORESOLVE_PHASE.ORDINAL_2_REISSUE)가 닫혀 있는 동안은 권한 소비도 INSERT 도 0회다.
+   */
+  const notIssuedRetryHarness = (autoResolveMode: 'off' | 'observe' | 'on' = 'off') => {
     const command = query();
     const deliveryRefresh = query();
     const finder = query(undefined, [
@@ -487,26 +513,57 @@ describe('P24 PIN resolution sweep fencing', () => {
     const markSucceededAfterDeliveryClaimRelease = jest.fn().mockResolvedValue(true);
     const issue = jest.fn();
     const resolve = jest.fn().mockResolvedValue('NOT_ISSUED');
+    const recordResolution = jest.fn().mockResolvedValue(true);
     const service = makeService(sweepRepo({ finder, command, deliveryRefresh }), {
       delivery: { findOne: jest.fn().mockResolvedValue({ id: 71, ssgEventId: 42 }) },
       ssgEvent: { findOne: jest.fn().mockResolvedValue({ id: 42 }) },
       pinCmd: {
         consumeInitialIssueAuthority,
         consumeNotIssuedRetryAuthority,
-        recordResolution: jest.fn().mockResolvedValue(true),
+        recordResolution,
         markSucceededAfterDeliveryClaimRelease,
         markSucceeded: jest.fn(),
       },
       partner: { resolveDeferredSsgIssue: resolve, issue },
+      autoResolveMode,
     });
+    return { service, resolve, issue, consumeInitialIssueAuthority, consumeNotIssuedRetryAuthority, recordResolution };
+  };
 
-    const stats = await service.resolvePinIssuesOnce();
+  it('P30 게이트가 닫혀 있으면 NOT_ISSUED 판정도 재발급 권한을 소비하지 않고 운영 확인으로 간다', async () => {
+    const h = notIssuedRetryHarness();
 
-    expect(resolve).toHaveBeenCalledTimes(1);
-    expect(consumeInitialIssueAuthority).not.toHaveBeenCalled();
-    expect(consumeNotIssuedRetryAuthority).toHaveBeenCalledTimes(1);
-    expect(issue).toHaveBeenCalledTimes(1);
-    expect(stats.retryPending).toBe(1);
+    const stats = await h.service.resolvePinIssuesOnce();
+
+    expect(h.resolve).toHaveBeenCalledTimes(1);
+    expect(h.consumeInitialIssueAuthority).not.toHaveBeenCalled();
+    expect(h.consumeNotIssuedRetryAuthority).not.toHaveBeenCalled();
+    expect(h.issue).not.toHaveBeenCalled();
+    expect(h.recordResolution).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ resolution: 'NOT_ISSUED', status: PinIssueCommandStatus.OPS_REVIEW_REQUIRED }),
+    );
+    expect(stats.opsReview).toBe(1);
+  });
+
+  // 배포 상수를 뒤집는 것만으로는 재발급이 열리지 않는다 — 실행 증거(§5-4) 수집은 P3 소관이다.
+  // 그래도 count-1 STARTED 회수 경로가 **최초 INSERT 를 재실행하지 않는다**는 원래 불변식은 그대로다.
+  it('routes a reclaimed batch count-1 STARTED command through the resolver, never re-INSERTing the initial call', async () => {
+    (SSG_AUTORESOLVE_PHASE as { ORDINAL_2_REISSUE: boolean }).ORDINAL_2_REISSUE = true;
+    try {
+      const h = notIssuedRetryHarness('on');
+
+      const stats = await h.service.resolvePinIssuesOnce();
+
+      expect(h.resolve).toHaveBeenCalledTimes(1);
+      expect(h.consumeInitialIssueAuthority).not.toHaveBeenCalled();
+      // 증거 미수집 → fail-closed. 권한 소비도 INSERT 도 없고 운영 확인으로 간다.
+      expect(h.consumeNotIssuedRetryAuthority).not.toHaveBeenCalled();
+      expect(h.issue).not.toHaveBeenCalled();
+      expect(stats.opsReview).toBe(1);
+    } finally {
+      (SSG_AUTORESOLVE_PHASE as { ORDINAL_2_REISSUE: boolean }).ORDINAL_2_REISSUE = false;
+    }
   });
 
   it('reclaims a crashed count-0 STARTED command as STARTED so the initial INSERT can resume', async () => {
@@ -575,7 +632,10 @@ describe('P24 PIN resolution sweep fencing', () => {
     const command = query();
     const service = makeService(sweepRepo({ command }));
 
-    await service.claimPinCommand(candidate({ status: 'STARTED', externalIssueCount: 1, leaseExpiresAt: null }), new Date());
+    await service.claimPinCommand(
+      candidate({ status: 'STARTED', externalIssueCount: 1, leaseExpiresAt: null }),
+      new Date(),
+    );
 
     const eligibility = command.andWhere.mock.calls.find((call: any[]) => String(call[0]).includes(':started'))[0];
     expect(eligibility).toContain('status = :started AND (lease_expires_at IS NULL OR lease_expires_at < :now)');

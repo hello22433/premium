@@ -61,10 +61,150 @@ const HAS_RESEND_ATTEMPT_PREDICATE =
   'EXISTS (SELECT 1 FROM message_attempt ma WHERE ma.order_delivery_id = `orderDelivery`.`id` ' +
   `AND ma.attempt_type IN (${RESEND_ATTEMPT_TYPES.map((t) => `'${t}'`).join(', ')}))`;
 
-// 전환 건은 workflow 상태 진입 시각, 미전환 건은 기존 legacy 시각을 목록 기준 일시로 쓴다.
+/**
+ * 발송실패목록의 **기준 일시**. 전환 건은 workflow 상태 진입 시각, 미전환 건은 legacy 시각을 쓴다.
+ *
+ * ⚠️ **미전환 건에서만** 필터(startAt/endAt) · 정렬(sortDate) · 화면 표시(parseOrderDeliveryView)
+ * 세 곳이 같은 값을 쓴다. 어긋나면 "2월로 검색했는데 8월 건이 나온다"가 된다. TS 표시 로직
+ * (parseOrderDeliveryView 의 `legacyDisplayDate`)이 이 순서를 그대로 복제하므로 한쪽만 고치지 말 것.
+ *
+ * ⚠️ **전환 건은 두 축이 다르다.** 필터·정렬은 여기 ① `wf.state_entered_at` 을 쓰는데, 화면은
+ *   `sot.lastResolvedAt`(parseOrderDeliveryView 의 sotDisplayDate)을 쓴다. `state_entered_at` 은
+ *   `RESOLVED_MANUALLY_*` 로 넘어갈 때 갱신되므로, 운영자가 나중에 수동 종결하면 화면 날짜로
+ *   검색해도 안 나온다 — 이 주석이 든 예시와 **같은 형태**다. 이 PR 은 그 축을 통일하지 않는다.
+ *
+ *   그리고 아래 ④⑤ 는 **전환 건에 닿지 않는다.** `sot.lastResolvedAt` 이 `stateEnteredAt`
+ *   (NOT NULL DEFAULT CURRENT_TIMESTAMP(6))으로 폴백해 절대 null 이 되지 않기 때문이다.
+ *   즉 이 상수를 고쳐도 전환 건 화면은 안 바뀐다.
+ *
+ *   ⭐ 2026-08-14 운영 실측 — 전환 0건 / shadow 19,137건 중 이 목록 대상 60건:
+ *     · FAILED_FINAL 45건        → 두 축이 **전부 일치**. 실제로 실패한 건은 문제가 없다.
+ *     · OPS_REVIEW_REQUIRED 15건 → 재료 있는 10건 중 9건 날짜 불일치. 단 이 상태는 **아직 실패한
+ *       것이 아니라** SLA 초과 승격이라, "실패 시각"이라는 값 자체가 없다(5건은 재료도 없다).
+ *     즉 축 불일치는 버그라기보다 **"아직 실패 안 한 건의 발생일시를 무엇으로 볼 것인가"** 라는
+ *     미결 업무 결정이다. 운영 확인 전까지 코드로 통일하지 말 것.
+ *
+ *   ⚠️ **전환을 시작하기 전에** 다시 확인할 것 — 지금 0 인 값들이라 시간이 지나면 거짓이 된다.
+ *     ⭐ 확인 쿼리와 판단 근거는 **docs/followup-list-date-axis.md §1-2** 에 있다.
+ *       (컷오버 담당자가 이 서비스 파일을 열 이유가 없으므로 문서로 뺐다)
+ *     ① RESOLVED_MANUALLY_* 건수(현재 0). 생기면 **실제 실패 건인데** 날짜가 종결일로 밀린다.
+ *     ② 위 60건 대조를 재실행해 FAILED_FINAL 불일치가 0 을 유지하는지.
+ *     ③ OPS_REVIEW_REQUIRED 를 이 목록에 계속 둘지(운영 확인).
+ *
+ * 칸 순서와 근거
+ *  ① wf.state_entered_at  컷오버 전환 건만. CASE 에 ELSE 가 없어 미전환 건은 NULL 로 떨어져 다음
+ *                         칸으로 넘어간다(전환 여부 분기를 COALESCE 로 표현한 것).
+ *  ② actual_send_at       실제 발송 시각.
+ *  ③ failed_at            실패 시각. 2026-02-25(1d04c425) 신설이고 **백필하지 않았다.** 그 이전
+ *                         실패 건은 영구히 NULL 이라 아래 칸으로 떨어진다.
+ *  ④ send_request_at      발송 요청·예약 시각. created_at 이 아니라 이것을 쓰는 이유 — 예약발송에서는
+ *                         주문 접수일과 발송 시도일이 갈리는데, 이 목록이 답해야 하는 것은 "언제
+ *                         실패했나"이지 "언제 주문했나"가 아니다. NULLIF 로 감싼 것은 MySQL 의
+ *                         '0000-00-00' 이 NULL 이 아니어서 COALESCE 가 그대로 채택해 버리기 때문이다.
+ *  ⑤ updated_at           최후 폴백. **의도적으로 남긴다.**
+ *
+ * ⚠️ ⑤ 를 남긴 이유와, 남기면서도 기준으로 삼지 않는 이유
+ *
+ *    updated_at 은 행을 건드리기만 하면 바뀌므로 **사건 시각이 아니다.** 실제로 ⑤ 가 사실상의
+ *    기준이던 시절, 180일 뒤 PII 파기 배치가 옛 실패 건의 updated_at 을 갱신하면서 "6개월 전 건이
+ *    오늘 실패로 목록 맨 위에 뜨는" 사고가 있었다(order_delivery 98182 — 2026-02-11 건이 2026-08-10
+ *    00:00:03 으로 표시). 돈·CS 화면에서 운영자가 그것을 당일 장애로 오인한다.
+ *
+ *    그럼에도 지우지 않는 것은 ④ 가 NOT NULL 이라 **정상 경로에서는 도달할 수 없기 때문**이다.
+ *    즉 ⑤ 도달은 그 자체로 "④ 를 못 채운 다른 버그가 있다"는 신호다. 날짜를 비워 정렬·필터를
+ *    깨뜨리는 대신, 값은 채우되 도달을 점검할 수 있게 남긴다.
+ *
+ *    ⚠️ 도달은 화면상 보이지 않는다(④ 에서 왔는지 ⑤ 에서 왔는지 응답만으로는 구분 불가). 이 사고의
+ *    원인이 정확히 그 침묵이었으므로 점검 수단을 여기 같이 둔다. 결과가 0 이 아니면 **폴백을 더
+ *    늘리지 말고** ④ 를 못 채운 경로를 찾을 것.
+ *
+ *    (전환 건을 빼는 이유 — ① state_entered_at 이 NOT NULL 이라 ④⑤ 에 도달할 수 없고, 표시도
+ *     lastResolvedAt 이라 legacyDisplayDate 에 닿지 않는다. 즉 이 쿼리의 관심 밖이다.)
+ *
+ *      SELECT COUNT(*) FROM order_delivery od
+ *      LEFT JOIN delivery_workflow wf ON wf.order_delivery_id = od.id
+ *      WHERE od.deleted_at IS NULL AND wf.cutover_migrated_at IS NULL
+ *        AND od.actual_send_at IS NULL AND od.failed_at IS NULL
+ *        AND (od.send_request_at IS NULL OR od.send_request_at = '0000-00-00 00:00:00');
+ *      -- 2026-08-10 운영 실측: 0
+ *
+ *    ⚠️ 이 쿼리는 정확히 '0000-00-00 00:00:00' 만 센다. `2026-00-00` 같은 **부분 제로날짜**는
+ *      세지 못하고, sql_mode 에 따라 리터럴 비교 자체가 무력화될 수도 있다. 그래서 표시 쪽 방어는
+ *      이 실측이 아니라 `validDate`(아래) 로 둔다 — 측정값으로 방어를 생략하지 않는다.
+ *      모드에 안 걸리는 대안: WHERE od.send_request_at < '1000-01-01'
+ */
+/**
+ * SQL 쪽 무효 날짜 판정. TS 의 `isValidDate` 와 **같은 기준**이어야 한다.
+ *
+ * ⚠️ 왜 `NULLIF(col, '0000-00-00 00:00:00')` 이 아닌가 — 그것은 정확히 그 리터럴 하나만 걷어낸다.
+ *   `2026-00-00` 같은 **부분 제로날짜**는 통과하는데, JS 에서는 그것도 Invalid Date 다. 그러면
+ *   필터·정렬은 그 값을 쓰고 화면은 다음 칸을 써서 **화면 날짜로 검색해도 안 나오는** 상태가 된다.
+ *   이 파일이 맨 위에서 금지한 바로 그 상태다.
+ *
+ * ⚠️ 범위 비교(`col > '1000-01-01'`)로도 부족하다 — `2026-00-00` 은 연도가 2026 이라 그 비교를
+ *   통과한다. 그래서 연·월·일을 **각각** 본다. 셋 다 0 보다 커야 실재하는 날짜다.
+ *
+ * ⚠️ sql_mode 에 의존하지 않는다. 리터럴 비교가 아니라 값에서 뽑은 성분을 보기 때문이다.
+ *
+ * 성능: 컬럼에 함수를 씌우므로 인덱스를 못 탄다. 다만 이 식은 **PR 이전부터** COALESCE·CASE 라
+ *   이미 인덱스를 못 탔다 — 회귀가 아니다.
+ *
+ * ⚠️ 미검증 — 실 MySQL 에 대고 돌려보지 못했다(운영 RDS 는 로컬 직결 불가). MySQL 의 YEAR/MONTH/DAY
+ *   추적 문서: docs/followup-list-date-axis.md §6.
+ *   가 제로·부분제로에서 0 을 준다는 문서상 동작에 기대고 있다. 배포 전 개발 DB 에서 한 번 확인할 것:
+ *     SELECT YEAR('2026-00-00'), MONTH('2026-00-00'), DAY('2026-00-00');  -- 2026, 0, 0 이어야 한다
+ */
+const validDateSql = (column: string): string =>
+  `CASE WHEN YEAR(${column}) > 0 AND MONTH(${column}) > 0 AND DAY(${column}) > 0 THEN ${column} END`;
+
 const LIST_DATE_EXPR =
-  'COALESCE(CASE WHEN `wf`.`cutover_migrated_at` IS NOT NULL THEN `wf`.`state_entered_at` END, ' +
-  '`orderDelivery`.`actual_send_at`, `orderDelivery`.`failed_at`, `orderDelivery`.`updated_at`)';
+  'COALESCE(' +
+  // (1) 컷오버 전환 건만. ELSE 가 없어 미전환 건은 NULL 로 떨어져 다음 칸으로 간다.
+  '(CASE WHEN `wf`.`cutover_migrated_at` IS NOT NULL THEN ' +
+  validDateSql('`wf`.`state_entered_at`') +
+  ' END), ' +
+  // (2) 실제 발송 → (3) 실패 → (4) 발송 요청 → (5) 안전망. TS 의 legacyDisplayDate 와 같은 순서다.
+  validDateSql('`orderDelivery`.`actual_send_at`') +
+  ', ' +
+  validDateSql('`orderDelivery`.`failed_at`') +
+  ', ' +
+  validDateSql('`orderDelivery`.`send_request_at`') +
+  ', ' +
+  validDateSql('`orderDelivery`.`updated_at`') +
+  ')';
+
+/**
+ * `LIST_DATE_EXPR` 의 `NULLIF` 와 **짝**이다. SQL 이 걷어내는 값을 TS 도 같은 자리에서 걷어낸다.
+ *
+ * ⚠️ 왜 필요한가 — MySQL 의 제로날짜(`0000-00-00`)는 `NULL` 이 아니라 **값**이라 `NOT NULL` 컬럼에도
+ *   들어갈 수 있고, mysql2 는 그것을 `new Date(NaN)` 으로 돌려준다. 그 값은 null 이 아니므로
+ *   `??` 를 그대로 통과하고, 뒤이어 `format()`(date-fns v3)이 `RangeError` 를 던진다.
+ *   호출부가 `.map()` 안이라 **그 행 하나가 아니라 페이지 전체가 500** 이 된다.
+ *   ⚠️ 이 경로는 이 PR 이 연 것이 **아니다.** 종전 체인도 `actualSendAt ?? failedAt ?? updatedAt`
+ *     이었고 앞의 둘은 `datetime NULL`(sql/snapshots/prod_db.md:388, 373)이라 같은 값이 들어갈 수
+ *     있다. 즉 결함은 이 PR 보다 오래됐고 더 넓다 — 리뷰 HIGH-1 과 그 반영 커밋이 "④ 를 넣으면서
+ *     처음 열렸다" 고 적었던 것은 **둘 다 틀렸다.**
+ *
+ * ⚠️ SQL 쪽 `NULLIF` 만으로는 부족하다. 그것은 정확히 `'0000-00-00 00:00:00'` 하나만 걷어내므로
+ *   같은 형태(truthy 가드만 있는 format 호출)가 다른 모듈 6곳에 남아 있다 —
+ *   추적: docs/followup-list-date-axis.md §3.
+ *   `2026-00-00` 같은 **부분 제로날짜**는 통과시킨다(그것도 JS 에서 Invalid Date 다).
+ *   그래서 최종 방어는 리터럴 비교가 아니라 **값이 유효한가**를 묻는 여기에 둔다.
+ */
+const isValidDate = (d: Date | null | undefined): d is Date => {
+  // 형제 코드(delivery.batch.service.ts 의 formatAuditTimestamp)와 같은 형태다 — optional call 로
+  // Date 아닌 값이 와도 TypeError 대신 '무효' 로 떨어뜨린다.
+  const time = d?.getTime?.();
+  return typeof time === 'number' && !Number.isNaN(time);
+};
+
+/**
+ * 목록 렌더 **한 번(요청 하나)** 동안 무효 날짜를 몇 번 만났는지 담는 통.
+ *
+ * ⚠️ 서비스는 싱글턴이라 인스턴스 필드로 두면 동시에 들어온 요청끼리 숫자가 섞인다.
+ *   그래서 호출마다 새로 만들어 인자로 넘긴다.
+ */
+type ListDateGuardSink = { invalidCount: number };
 
 // claim self-heal 임계(ms). 크래시로 finally 못 탄 stale claim 만 재claim 허용.
 // claim 게이트(재claim 조건)와 거부 사유 판정(처리중 여부)이 동일 경계를 쓰도록 공유한다.
@@ -184,8 +324,22 @@ export class PartnerCompanyExternHistoryService {
     }
 
     // 페이징 및 정렬
+    //
+    // ⚠️ id 보조키. sortDate 는 초 정밀도이고, 한 상품의 모든 발송건이 **같은** send_request_at 을
+    //   갖는다(order.service.ts 가 productSendAt 을 그 상품 전 행에 넣고 한 번에 insert 한다).
+    //
+    //   ⚠️ 다만 "없으면 같은 행이 두 페이지에 나오거나 빠진다" 는 **이 스택에서는 사실이 아니다.**
+    //     조인 + skip/take 면 TypeORM 이 distinct-id 2단 쿼리를 만들고, 그 1단 ORDER BY 에 PK 를
+    //     보조키로 **자동 주입**한다(SelectQueryBuilder 의
+    //     `if (!orderBys[columnAlias]) orderBys[columnAlias] = 'ASC'`). 페이지 경계는 원래도 결정적이었다.
+    //
+    //   실제로 고친 것은 둘이다 — (a) 2단(엔티티) 쿼리의 ORDER BY 는 sortDate 뿐이라 **페이지 안**
+    //   행 순서가 매 요청 흔들렸고, (b) 자동 보조키 방향이 ASC 라 화면 기대(DESC)와 반대였다.
+    //   ⚠️ 부수 효과 — 동률 행 순서가 id ASC 에서 **id DESC 로 뒤집힌다**(운영자 눈에 보인다).
+    //   그리고 자동 주입은 조인이 빠지거나 skip/take 가 없어지면 사라지므로 명시해 둘 값어치가 있다.
+    //   환불목록(refund.service.ts)이 같은 형태를 쓴다.
     const skip = (page - 1) * take;
-    queryBuilder.orderBy('sortDate', 'DESC').skip(skip).take(take);
+    queryBuilder.orderBy('sortDate', 'DESC').addOrderBy('orderDelivery.id', 'DESC').skip(skip).take(take);
 
     const [orderDeliveries, totalCount] = await queryBuilder.getManyAndCount();
 
@@ -197,8 +351,9 @@ export class PartnerCompanyExternHistoryService {
         : [new Map<number, PartnerCompanyExternHistoryEntity>(), new Map<number, DeliveryFailureSotView>()];
 
     // DTO 변환 (배치로 가져온 history/SoT 전달)
+    const sink: ListDateGuardSink = { invalidCount: 0 };
     const list: PartnerCompanyExternHistoryViewDto[] = orderDeliveries.map((od) =>
-      this.parseOrderDeliveryView(od, latestHistoryMap.get(od.id) ?? null, sotMap.get(od.id) ?? null),
+      this.parseOrderDeliveryView(od, latestHistoryMap.get(od.id) ?? null, sotMap.get(od.id) ?? null, sink),
     );
 
     return {
@@ -207,6 +362,7 @@ export class PartnerCompanyExternHistoryService {
       totalPage: Math.ceil(totalCount / take),
       currentPage: page,
       mirrorMismatchCount: list.filter((row) => row.mirrorMismatch).length,
+      invalidDateCount: sink.invalidCount,
     };
   }
 
@@ -273,10 +429,54 @@ export class PartnerCompanyExternHistoryService {
    * `sot` 가 있으면(=컷오버 전환 건) 발송상태·실패코드·확정시각·버튼 활성화는 **workflow SoT 만**
    * 근거로 하고, legacy 값은 미러 불일치 지표 계산에만 쓴다(§8 화면 SoT 고정).
    */
+  /**
+   * 목록 날짜 칸의 **유일한 통로**. 이 파일에서 `format()` 을 직접 부르지 말 것.
+   *
+   * ⚠️ 왜 통로를 하나로 두나 — 종전에는 칸마다 `x ? format(x) : null` 을 따로 썼는데, 그 truthy
+   *   검사는 **Invalid Date 를 통과시킨다**(객체라 truthy 다). 그래서 한 칸을 막아도 옆 칸이 그대로
+   *   남았고, 실제로 이 파일에 그런 칸이 5개였다. 통로를 하나로 두면 새 날짜 칸이 생겨도 자동으로 막힌다.
+   *
+   * ⚠️ 조용히 폴백하지 않는다 — 무효 도달은 **로그 + 응답 카운터** 로 남긴다. 폴백만 하면 화면에
+   *   `updated_at`(파기 배치가 오늘로 찍어 둔 값)이 뜨는데, 그건 이 파일이 애초에 없애려던 착시다.
+   *   형제 코드(delivery.batch.service.ts 의 formatAuditTimestamp / summarizeRestampRows)도
+   *   "값이 없었다" 와 "값이 깨져 있었다" 를 구분해 세는 쪽을 택했다.
+   */
+  private pickListDate(
+    value: Date | null | undefined,
+    field: string,
+    orderDeliveryId: number,
+    sink: ListDateGuardSink,
+  ): Date | null {
+    if (value === null || value === undefined) {
+      return null;
+    }
+    if (!isValidDate(value)) {
+      sink.invalidCount += 1;
+      this.logger.warn(
+        `[LIST_DATE_INVALID] orderDeliveryId=${orderDeliveryId} field=${field} raw=${String(value)} — ` +
+          '무효 datetime(제로날짜 등)이라 다음 칸으로 폴백한다. 0 이 아니면 그 컬럼을 채운 경로를 찾을 것.',
+      );
+      return null;
+    }
+    return value;
+  }
+
+  /** 위 통로를 태운 뒤 화면 문자열로. 무효거나 없으면 null. */
+  private formatListDate(
+    value: Date | null | undefined,
+    field: string,
+    orderDeliveryId: number,
+    sink: ListDateGuardSink,
+  ): string | null {
+    const picked = this.pickListDate(value, field, orderDeliveryId, sink);
+    return picked ? format(picked, DateFormatStr) : null;
+  }
+
   private parseOrderDeliveryView(
     orderDelivery: OrderDeliveryEntity,
     latestHistory: PartnerCompanyExternHistoryEntity | null,
     sot: DeliveryFailureSotView | null,
+    sink: ListDateGuardSink,
   ): PartnerCompanyExternHistoryViewDto {
     // 협력사 타입
     const partnerCompanyType = orderDelivery.orderProductMapping?.product?.partnerCompany?.type || null;
@@ -344,7 +544,19 @@ export class PartnerCompanyExternHistoryService {
       errorMessage = '문자/알림톡 발송 실패';
     }
 
-    const legacyDisplayDate = orderDelivery.actualSendAt ?? orderDelivery.failedAt ?? orderDelivery.updatedAt;
+    // LIST_DATE_EXPR(필터·정렬)과 **같은 칸 순서**를 쓴다. 다만 "그대로 복제" 는 아니다 —
+    // 판정 방식이 다르다. SQL 은 validDateSql(연·월·일이 모두 0 보다 큰가), 여기는 isValidDate
+    // (getTime() 이 NaN 이 아닌가)다. 둘은 **같은 값을 걷어내도록 맞춰 둔 것**이지 같은 코드가
+    // 아니다. 한쪽만 고치면 필터와 화면이 갈린다.
+    //
+    // ⑤(updated_at)도 검사한다. 종전 주석은 "NOT NULL 이라 무효값이 될 수 없다" 고 적었는데
+    // 그건 틀렸다 — 위 isValidDate 주석이 이미 "제로날짜는 NULL 이 아니라 값이라 NOT NULL 컬럼에도
+    // 들어간다" 고 말한다. 다섯 칸이 다 무효면 날짜 칸이 비는데, 대안이 페이지 전체 500 이다.
+    const legacyDisplayDate =
+      this.pickListDate(orderDelivery.actualSendAt, 'actual_send_at', orderDelivery.id, sink) ??
+      this.pickListDate(orderDelivery.failedAt, 'failed_at', orderDelivery.id, sink) ??
+      this.pickListDate(orderDelivery.sendRequestAt, 'send_request_at', orderDelivery.id, sink) ??
+      this.pickListDate(orderDelivery.updatedAt, 'updated_at', orderDelivery.id, sink);
 
     if (!sot) {
       return {
@@ -363,7 +575,7 @@ export class PartnerCompanyExternHistoryService {
         eventName,
         deliveryTarget,
         pinIssued,
-        resendAt: orderDelivery.resendAt ? format(orderDelivery.resendAt, DateFormatStr) : null,
+        resendAt: this.formatListDate(orderDelivery.resendAt, 'resend_at', orderDelivery.id, sink),
         sotSource: 'LEGACY',
         workflowStatus: null,
         workflowStatusKo: null,
@@ -389,7 +601,8 @@ export class PartnerCompanyExternHistoryService {
         ? FailType.PIN_ISSUE_FAIL
         : FailType.SEND_FAIL;
     const sotFailTypeKo = sotResent ? '재발송완료' : sot.pinIssueFailed ? '핀발급실패' : '발송실패';
-    const sotDisplayDate = sot.lastResolvedAt ?? legacyDisplayDate;
+    const sotDisplayDate =
+      this.pickListDate(sot.lastResolvedAt, 'sot.lastResolvedAt', orderDelivery.id, sink) ?? legacyDisplayDate;
 
     // 미러 불일치(§10 3단계 지표): workflow 는 실패로 종결했는데 legacy 미러가 실패가 아니거나,
     // workflow 는 전달 완료인데 legacy 미러가 아직 실패로 남아 있는 경우.
@@ -413,7 +626,7 @@ export class PartnerCompanyExternHistoryService {
       eventName,
       deliveryTarget,
       pinIssued: sot.pinIssued,
-      resendAt: sot.deliveredAt ? format(sot.deliveredAt, DateFormatStr) : null,
+      resendAt: this.formatListDate(sot.deliveredAt, 'sot.deliveredAt', orderDelivery.id, sink),
       sotSource: 'WORKFLOW',
       workflowStatus: sot.workflowStatus,
       workflowStatusKo: sot.workflowStatusKo,
@@ -424,7 +637,7 @@ export class PartnerCompanyExternHistoryService {
       manualResendCount: sot.manualResendCount,
       failureCodeDescription: sot.failureCode?.description ?? null,
       opsAction: sot.failureCode?.opsAction ?? null,
-      lastResolvedAt: sot.lastResolvedAt ? format(sot.lastResolvedAt, DateFormatStr) : null,
+      lastResolvedAt: this.formatListDate(sot.lastResolvedAt, 'sot.lastResolvedAt', orderDelivery.id, sink),
       // 전환 건의 재발송은 이 화면의 legacy claim 경로가 아니라 MANUAL_RESEND 슬롯 경로 소관이다.
       resendable: false,
       resendBlockReason: '컷오버 전환 건은 운영 재발송(MANUAL_RESEND) 슬롯 경로로만 처리합니다.',

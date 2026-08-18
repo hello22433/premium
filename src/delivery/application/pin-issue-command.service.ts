@@ -81,6 +81,11 @@ export class PinIssueCommandService {
     });
   }
 
+  /** 롤아웃 capability 판정(§9-3 drain marker)용 단건 조회. 권한 승인 근거로는 쓰지 않는다. */
+  async findById(commandId: string): Promise<PinIssueCommandEntity | null> {
+    return this.repository.findOne({ where: { id: commandId } });
+  }
+
   async hasActiveCommand(orderDeliveryId: number): Promise<boolean> {
     return (await this.repository.count({ where: { orderDeliveryId, status: In(PIN_ISSUE_ACTIVE_STATUSES) } })) > 0;
   }
@@ -238,9 +243,13 @@ export class PinIssueCommandService {
     }
   }
 
+  /**
+   * 자동 처리 불가 판정을 운영 확인으로 승격한다. `CONFIRMED` 는 성공 종결 경로(markSucceeded)
+   * 소관이므로 여기로 들어오면 안 된다.
+   */
   async markOpsReviewRequired(
     authority: PinIssueCommandAuthority,
-    resolution: SsgPinResolution.UNKNOWN | SsgPinResolution.MULTIPLE_CONFIRMED,
+    resolution: Exclude<SsgPinResolution, SsgPinResolution.CONFIRMED>,
   ): Promise<boolean> {
     return this.transitionOwned(authority, PinIssueCommandStatus.OPS_REVIEW_REQUIRED, resolution);
   }

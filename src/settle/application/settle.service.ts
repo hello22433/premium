@@ -95,6 +95,7 @@ import { OrderDeliveryCouponStatus, couponStatusToKorean } from '../../delivery/
 import { IOrderDeliveryStatus } from '../../delivery/interface/order.delivery.status';
 import {
   calculateMappingSettlementBaseAmount,
+  calculateMappingBilledQuantity,
   buildSettlementDisplayLines,
   computeSettleNetAmountByOrder,
 } from '../../util/settle-fee.util';
@@ -122,6 +123,54 @@ import { SettleGalaxiaListViewDto } from '../api/dto/settle.galaxia.list.view.dt
 import { IProductSettleMethod } from '../../product/interface/product.settle.method';
 
 const SETTLE_BLOCKED_BY_PENDING_DELIVERY_MSG = '미완료 발송 건이 있어 정산확정할 수 없습니다.';
+
+export interface MobileReportDeliveryCounts {
+  tradeAmount: number; // 교환(USED)
+  unExchangedAmount: number; // 미교환(NOT_USED)
+  discardAmount: number; // 폐기/취소
+  refundAmount: number; // 환불
+}
+
+/**
+ * 모바일 정산/수익 리포트의 발송건 상태 집계.
+ *
+ * 교환/미교환은 couponStatus 로 판정하지만, 환불(폐기·발송취소)은 두 축을 함께 봐야 한다:
+ *  - 폐기: couponStatus = CANCEL (이미 나간 쿠폰을 폐기)
+ *  - 발송취소(197-16): status = CANCEL. 취소는 status 만 바꾸므로 couponStatus 는 기본값
+ *    NOT_USED 로 남는다(coupon_status 컬럼은 NOT NULL DEFAULT NOT_USED).
+ *
+ * ★ 그래서 환불 판정을 먼저 하고 continue 한다. 발송취소 건은 couponStatus 가 NOT_USED 라,
+ *   먼저 걸러내지 않으면 아래 미교환(NOT_USED) 분기에서 이중 카운트되어 unExchangedPrice·
+ *   profitAmount 까지 부풀린다. couponStatus 만 보던 종전 코드는 이 환불을 통째로 누락했다.
+ *   이 리포트 모집단(order.status IN DELIVERY_CONFIRMED/DELIVERY_COMPLETE)에서 두 축은
+ *   겹치지 않지만, OR 로 합쳐 어느 경우든 한 번만 센다.
+ */
+export function countMobileReportDeliveries(
+  deliveries: Pick<OrderDeliveryEntity, 'status' | 'couponStatus'>[],
+): MobileReportDeliveryCounts {
+  const counts: MobileReportDeliveryCounts = {
+    tradeAmount: 0,
+    unExchangedAmount: 0,
+    discardAmount: 0,
+    refundAmount: 0,
+  };
+  for (const delivery of deliveries) {
+    if (
+      delivery.status === IOrderDeliveryStatus.CANCEL ||
+      delivery.couponStatus === OrderDeliveryCouponStatus.CANCEL
+    ) {
+      counts.discardAmount++;
+      counts.refundAmount++;
+      continue;
+    }
+    if (delivery.couponStatus === OrderDeliveryCouponStatus.USED) {
+      counts.tradeAmount++;
+    } else if (delivery.couponStatus === OrderDeliveryCouponStatus.NOT_USED) {
+      counts.unExchangedAmount++;
+    }
+  }
+  return counts;
+}
 
 @Injectable()
 export class SettleService {
@@ -848,11 +897,7 @@ export class SettleService {
     for (const order of orderList) {
       for (const orderProductMapping of order.orderProductMappings!) {
         const deliveryAmount = orderProductMapping.amount;
-        let tradeAmount = 0;
-        let discardAmount = 0;
         let tradeRate = 0;
-        let refundAmount = 0;
-        let unExchangedAmount = 0;
         let unExchangedPrice = 0;
         let refundPrice = 0;
         let cardFee = 0;
@@ -860,18 +905,9 @@ export class SettleService {
         let profitAmount = 0;
         let profitRate = 0;
 
-        for (const orderDelivery of orderProductMapping.orderDeliveries!) {
-          if (orderDelivery.couponStatus === 'USED') {
-            tradeAmount++;
-          }
-          if (orderDelivery.couponStatus === 'NOT_USED') {
-            unExchangedAmount++;
-          }
-          if (orderDelivery.couponStatus === 'CANCEL') {
-            discardAmount++;
-            refundAmount++;
-          }
-        }
+        const { tradeAmount, unExchangedAmount, discardAmount, refundAmount } = countMobileReportDeliveries(
+          orderProductMapping.orderDeliveries!,
+        );
         const totalAmount = deliveryAmount * orderProductMapping.product.price;
         tradeRate = deliveryAmount > 0 ? +((tradeAmount / deliveryAmount) * 100).toFixed(1) : 0;
         unExchangedPrice = orderProductMapping.product.price * unExchangedAmount;
@@ -1051,11 +1087,7 @@ export class SettleService {
         if (!order) continue;
         for (const orderProductMapping of order.orderProductMappings!) {
           const deliveryAmount = orderProductMapping.amount;
-          let tradeAmount = 0;
-          let discardAmount = 0;
           let tradeRate = 0;
-          let refundAmount = 0;
-          let unExchangedAmount = 0;
           let unExchangedPrice = 0;
           let refundPrice = 0;
           let cardFee = 0;
@@ -1063,18 +1095,9 @@ export class SettleService {
           let profitAmount = 0;
           let profitRate = 0;
 
-          for (const orderDelivery of orderProductMapping.orderDeliveries!) {
-            if (orderDelivery.couponStatus === 'USED') {
-              tradeAmount++;
-            }
-            if (orderDelivery.couponStatus === 'NOT_USED') {
-              unExchangedAmount++;
-            }
-            if (orderDelivery.couponStatus === 'CANCEL') {
-              discardAmount++;
-              refundAmount++;
-            }
-          }
+          const { tradeAmount, unExchangedAmount, discardAmount, refundAmount } = countMobileReportDeliveries(
+            orderProductMapping.orderDeliveries!,
+          );
           const totalAmount = deliveryAmount * orderProductMapping.product.price;
           tradeRate = deliveryAmount > 0 ? +((tradeAmount / deliveryAmount) * 100).toFixed(1) : 0;
           unExchangedPrice = orderProductMapping.product.price * unExchangedAmount;
@@ -1514,7 +1537,9 @@ export class SettleService {
 
       for (const mapping of order.orderProductMappings!) {
         productNameList.push(mapping.product.name);
-        amount += mapping.amount;
+        // 수량과 금액은 같은 분해에서 나와야 한다 — mapping.amount(원 수량)를 쓰면 금액만 취소분을
+        // 빼서 같은 행에 "수량 10건 / 금액 8건분" 이 표시된다.
+        amount += calculateMappingBilledQuantity(mapping);
         finalSettlePrice += calculateMappingSettlementBaseAmount(mapping);
       }
 
@@ -1571,7 +1596,8 @@ export class SettleService {
       totalDeliveryPriceSum += order.sendAmount;
 
       for (const mapping of order.orderProductMappings!) {
-        totalAmountSum += mapping.amount;
+        // 목록과 동일하게 청구 수량 기준(취소분 제외) — 합계와 금액의 기준을 맞춘다.
+        totalAmountSum += calculateMappingBilledQuantity(mapping);
         totalSettlePriceSum += calculateMappingSettlementBaseAmount(mapping);
       }
     }
@@ -1970,7 +1996,8 @@ export class SettleService {
 
         for (const orderProductMapping of order.orderProductMappings!) {
           productNameList.push(orderProductMapping.product.name);
-          amount += orderProductMapping.amount;
+          // 엑셀 '발송수량' 도 화면 목록과 같은 청구 수량 기준(취소분 제외)을 쓴다.
+          amount += calculateMappingBilledQuantity(orderProductMapping);
         }
 
         // 첫 번째 배송의 실제 발송 시간 사용
@@ -2994,6 +3021,10 @@ export class SettleService {
           'orderDeliveries.settlePriceAdjustment',
           'orderDeliveries.couponStatus',
           'orderDeliveries.replacedFromId',
+          // 취소된 발송건을 정산 표시금액에서 빼려면 status 가 필요하다. 빼먹으면 undefined 가 되어
+          // buildSettlementDisplayLines 의 필터가 조용히 통과하고, 요약만 취소분을 포함한 금액이 된다
+          // (상세와 요약이 어긋난다).
+          'orderDeliveries.status',
         ]);
     } else {
       queryBuilder = queryBuilder.innerJoinAndSelect('orderProductMappings.orderDeliveries', 'orderDeliveries');

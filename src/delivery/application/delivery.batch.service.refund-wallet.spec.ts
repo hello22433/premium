@@ -49,6 +49,7 @@ import { OrderFromService } from '../../order_from/application/order.from.servic
 import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
 import { InventoryPinAllocationService } from '../../inventory_coupon/application/inventory.pin.allocation.service';
 import { InventoryPinSendService } from '../../inventory_coupon/application/inventory.pin.send.service';
+import { SsgAutoResolveConfig } from '../../partner_company_extern/application/ssg.autoresolve.config';
 
 /**
  * PR2-006 — refundForFail wallet path 분기 회귀.
@@ -213,6 +214,8 @@ describe('DeliveryBatchService.refundForFail - wallet path', () => {
         { provide: getDataSourceToken(), useValue: { transaction: jest.fn() } },
         { provide: InventoryPinAllocationService, useValue: { allocate: jest.fn() } },
         { provide: InventoryPinSendService, useValue: { processOutbox: jest.fn() } },
+
+        { provide: SsgAutoResolveConfig, useValue: new SsgAutoResolveConfig({ get: () => 'off' } as any) },
         { provide: OrderFromService, useValue: { resolveSendDefaultPhone: jest.fn().mockResolvedValue('16443614') } },
       ],
     }).compile();

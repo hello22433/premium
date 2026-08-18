@@ -19,6 +19,7 @@ import { ExternalApiAccountEntity } from '../entity/external.api.account.entity'
 import { ApiCredentialEntity } from '../entity/api.credential.entity';
 import { InventoryPinCryptoService } from './application/inventory.pin.crypto.service';
 import { InventoryPinImportService } from './application/inventory.pin.import.service';
+import { InventoryPinExcelParser } from './application/inventory.pin.excel.parser';
 import { InventoryPinAllocationService } from './application/inventory.pin.allocation.service';
 import { InventoryPinBillingChainService } from './application/inventory.pin.billing.chain.service';
 import { InventoryPinConfigService } from './application/inventory.pin.config.service';
@@ -83,6 +84,7 @@ import { InventoryPinOutboxSchedule } from './inventory.pin.outbox.schedule';
   providers: [
     InventoryPinCryptoService,
     InventoryPinImportService,
+    InventoryPinExcelParser,
     InventoryPinAllocationService,
     InventoryPinBillingChainService,
     InventoryPinConfigService,

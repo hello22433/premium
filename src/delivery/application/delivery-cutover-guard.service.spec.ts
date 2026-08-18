@@ -219,11 +219,13 @@ describe('DeliveryCutoverGuardService — 전환 건 legacy 진입 거부', () =
       } as never;
 
       const refundAttemptRepository = {
-        findOne: jest.fn().mockResolvedValue(
-          options.attempt === undefined
-            ? { id: fencing.refundAttemptId, orderDeliveryId, status: 'SUBMITTING' }
-            : options.attempt,
-        ),
+        findOne: jest
+          .fn()
+          .mockResolvedValue(
+            options.attempt === undefined
+              ? { id: fencing.refundAttemptId, orderDeliveryId, status: 'SUBMITTING' }
+              : options.attempt,
+          ),
       } as never;
 
       return {
@@ -348,9 +350,9 @@ describe('DeliveryCutoverGuardService — 전환 건 legacy 진입 거부', () =
       expect(await reasonOf(createRefundService({ matched: false, activeExclusiveOp: null }).service)).toBe(
         'REFUND_SLOT_NOT_HELD',
       );
-      expect(
-        await reasonOf(createRefundService({ matched: false, activeExclusiveOp: 'MANUAL_RESEND' }).service),
-      ).toBe('REFUND_SLOT_NOT_HELD');
+      expect(await reasonOf(createRefundService({ matched: false, activeExclusiveOp: 'MANUAL_RESEND' }).service)).toBe(
+        'REFUND_SLOT_NOT_HELD',
+      );
       expect(await reasonOf(createRefundService({ matched: false, leaseMs: -1_000 }).service)).toBe(
         'REFUND_SLOT_NOT_HELD',
       );

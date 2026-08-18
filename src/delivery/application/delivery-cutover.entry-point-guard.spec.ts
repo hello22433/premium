@@ -498,9 +498,7 @@ describe('§9 컷오버 — legacy 진입점 12곳 거부', () => {
 
       await service.claim({ ...baseInput, refundExecution: fencing });
 
-      expect(attemptFindOne).toHaveBeenCalledWith(
-        expect.objectContaining({ lock: { mode: 'pessimistic_write' } }),
-      );
+      expect(attemptFindOne).toHaveBeenCalledWith(expect.objectContaining({ lock: { mode: 'pessimistic_write' } }));
     });
 
     it('게이트를 통과하면 attempt id와 외부 멱등키를 ledger에 기록한다', async () => {
@@ -708,6 +706,12 @@ describe('§9 컷오버 — legacy 진입점 12곳 거부', () => {
       'src/customer_service/application/customer.service.service.ts', // #8 CS 폐기 복구
       'src/delivery/application/delivery.batch.service.ts', // #5 배치 실패 환불
       'src/external_api/application/external.api.service.ts', // #6·#7 외부 API 환불
+      // #13 예약 발송 부분취소 환불 (197-16). 게이트가 요구하는 조건을 충족해 허용에 추가한다:
+      //  - 선점 CAS(cancelDeliveriesIfStillWaiting)가 NOT_CUTOVER_ORDER_DELIVERY 를 함께 싣는다
+      //    → 전환·드레이닝 건은 affected=0 으로 취소 자체가 성립하지 않아 환불에 도달하지 못한다.
+      //  - 환불은 그 CAS 성공(=legacy 점유 획득) 뒤에만 호출된다. 즉 refund_attempt 가 아니라
+      //    "취소 선점" 이 종속 근거이며, 외부 API 취소 환불(#7)과 같은 형태다.
+      'src/order/application/order.service.ts',
     ];
 
     const listCallers = (): string[] => {

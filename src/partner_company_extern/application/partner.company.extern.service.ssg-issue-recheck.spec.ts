@@ -1,5 +1,7 @@
 import { PartnerSettleFeatureFlag } from '../../partner_settle/application/partner.settle.feature.flag';
 import { PartnerSettleProducerService } from '../../partner_settle/application/partner.settle.producer.service';
+import { SsgAutoResolveConfig } from './ssg.autoresolve.config';
+import { SsgPinObservationService } from './ssg.pin.observation.service';
 // 실제 DB 연결 없는 단위 테스트이므로 typeorm-transactional 데코레이터를 no-op으로 mock한다.
 jest.mock('typeorm-transactional', () => ({
   Transactional: () => (_target: unknown, _key: unknown, _descriptor: unknown) => _descriptor,
@@ -189,6 +191,8 @@ describe('PartnerCompanyExternService - issue() SSG barCode-empty 후보 재조�
         { provide: getRepositoryToken(SsgResendDeductPendingEntity), useValue: resendDeductPendingRepository },
         { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, isEnabledFor: () => false } },
         { provide: PartnerSettleProducerService, useValue: {} },
+        { provide: SsgAutoResolveConfig, useValue: new SsgAutoResolveConfig({ get: () => 'off' } as any) },
+        { provide: SsgPinObservationService, useValue: { record: jest.fn() } },
       ],
     }).compile();
 
@@ -248,13 +252,19 @@ describe('PartnerCompanyExternService - issue() SSG barCode-empty 후보 재조�
   });
 
   it.each<[string, () => void]>([
-    ['resultCd=0103', () => {
-      ssgIssue.getTry.mockResolvedValue(tryOut('Y'));
-      ssgIssue.check.mockResolvedValue(checkOut('0103'));
-    }],
-    ['getTry=N', () => {
-      ssgIssue.getTry.mockResolvedValue(tryOut('N'));
-    }],
+    [
+      'resultCd=0103',
+      () => {
+        ssgIssue.getTry.mockResolvedValue(tryOut('Y'));
+        ssgIssue.check.mockResolvedValue(checkOut('0103'));
+      },
+    ],
+    [
+      'getTry=N',
+      () => {
+        ssgIssue.getTry.mockResolvedValue(tryOut('N'));
+      },
+    ],
   ])('후보 %s → SsgIssueUnknownError로 중단, 새 PIN INSERT 없음', async (_label, mockCandidate) => {
     ssgIssueLogRepository.find.mockResolvedValue([buildCandidate()]);
     mockCandidate();
@@ -281,12 +291,8 @@ describe('PartnerCompanyExternService - issue() SSG barCode-empty 후보 재조�
     const newer = buildCandidate({ id: 2, barCode: '8NEWFAIL', personalCode: '01300000002' });
     const older = buildCandidate({ id: 1, barCode: '8OLDOK', personalCode: '01300000001' });
     ssgIssueLogRepository.find.mockResolvedValue([newer, older]);
-    ssgIssue.getTry
-      .mockResolvedValueOnce(tryOut('Y'))
-      .mockResolvedValueOnce(tryOut('Y'));
-    ssgIssue.check
-      .mockResolvedValueOnce(checkOut('0103'))
-      .mockResolvedValueOnce(checkOut('0100'));
+    ssgIssue.getTry.mockResolvedValueOnce(tryOut('Y')).mockResolvedValueOnce(tryOut('Y'));
+    ssgIssue.check.mockResolvedValueOnce(checkOut('0103')).mockResolvedValueOnce(checkOut('0100'));
     const od = buildOrderDelivery();
 
     await expect(sut.issue(od, buildSsgEvent())).rejects.toBeInstanceOf(SsgIssueUnknownError);
@@ -312,15 +318,18 @@ describe('PartnerCompanyExternService - issue() SSG barCode-empty 후보 재조�
   it.each<[string, () => void]>([
     ['getTry=Y', () => ssgIssue.getTry.mockResolvedValue(tryOut('Y'))],
     ['getTry=N', () => ssgIssue.getTry.mockResolvedValue(tryOut('N'))],
-  ])('eventSeq=null legacy 후보 + %s → SsgIssueUnknownError로 중단, 새 PIN INSERT 없음', async (_label, mockCandidate) => {
-    ssgIssueLogRepository.find.mockResolvedValue([buildCandidate({ eventSeq: null })]);
-    mockCandidate();
-    const classifySpy = jest.spyOn(sut as any, 'classifySsgPin');
-    const od = buildOrderDelivery();
+  ])(
+    'eventSeq=null legacy 후보 + %s → SsgIssueUnknownError로 중단, 새 PIN INSERT 없음',
+    async (_label, mockCandidate) => {
+      ssgIssueLogRepository.find.mockResolvedValue([buildCandidate({ eventSeq: null })]);
+      mockCandidate();
+      const classifySpy = jest.spyOn(sut as any, 'classifySsgPin');
+      const od = buildOrderDelivery();
 
-    await expect(sut.issue(od, buildSsgEvent())).rejects.toBeInstanceOf(SsgIssueUnknownError);
+      await expect(sut.issue(od, buildSsgEvent())).rejects.toBeInstanceOf(SsgIssueUnknownError);
 
-    expect(classifySpy).not.toHaveBeenCalled();
-    expect(ssgIssue.issue).not.toHaveBeenCalled();
-  });
+      expect(classifySpy).not.toHaveBeenCalled();
+      expect(ssgIssue.issue).not.toHaveBeenCalled();
+    },
+  );
 });
