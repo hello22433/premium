@@ -30,6 +30,16 @@ export class FileStorageS3 implements IFileStorage {
         accessKeyId: this.configService.getOrThrow('AWS_S3_ACCESS_KEY_ID'),
         secretAccessKey: this.configService.getOrThrow('AWS_S3_SECRET_ACCESS_KEY'),
       },
+      // ★ 기본값은 타임아웃이 전부 꺼져 있다(@smithy/node-http-handler 기본 0 = 무제한). 그러면 상대가
+      //   데이터도 오류도 안 주고 멈출 때(stall) 응답 Promise 가 영영 끝나지 않는다 — pipeline 은 스트림이
+      //   '끝나는' 경로만 덮으므로 이건 안 덮인다. 부분 임시파일·소켓·요청 컨텍스트가 무기한 남는다.
+      //   같은 파일의 axios(copyImageFromUrl)와 저장소 관례(HttpModule.register({ timeout: 30000 }) 6곳)에
+      //   맞춰 30초. 이 파일에서 S3Client 만 상한이 없던 비대칭을 없앤다.
+      //
+      // ⚠️ requestTimeout 을 쓰면 안 된다 — 그건 '총 시간' 이라 대용량 업로드/다운로드(20MB 상한)와
+      //   엑셀 파싱(getBuffer)을 그대로 끊는다. 게다가 throwOnRequestTimeout 없이는 경고만 하고 안 끊는다.
+      //   여기서 필요한 건 '무응답 시간' 이고 그게 socketTimeout 이다(데이터가 흐르는 한 안 걸린다).
+      requestHandler: { connectionTimeout: 30_000, socketTimeout: 30_000 },
     });
   }
 
