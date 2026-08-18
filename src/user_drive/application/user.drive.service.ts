@@ -131,9 +131,9 @@ export class UserDriveService {
           // 상세 전체를 500 내지 않도록 폴백하되, 조용히 넘기지 않게 남긴다.
           // uuid 접두사를 벗겨(첫 '-' 뒤) extractOriginalFileName 과 표시 일관성을 맞춘다.
           this.logger.warn(
-            `첨부 이름 조립 실패 — key 복원으로 폴백 (driveId=${userDrive.id}, index=${index}): ${
-              (error as Error)?.message ?? String(error)
-            }`,
+            `첨부 이름 조립 실패 — key 복원으로 폴백 (driveId=${userDrive.id}, index=${index}): ${sanitizeForLog(
+              (error as Error)?.message ?? String(error),
+            )}`,
           );
           const base = url.split('/').pop() || url;
           return { url, name: base.includes('-') ? base.split('-').slice(1).join('-') : base };
@@ -252,7 +252,7 @@ export class UserDriveService {
       this.logger.warn(
         `첨부 업로더 권한 조회 실패 — 원본명 조회를 생략하고 key 복원으로 표시 (ownerIds=${foreignOwnerIds.join(
           ',',
-        )}): ${(error as Error)?.message ?? String(error)}`,
+        )}): ${sanitizeForLog((error as Error)?.message ?? String(error))}`,
       );
       return headable;
     }
