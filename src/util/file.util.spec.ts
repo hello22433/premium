@@ -281,8 +281,12 @@ describe('resolveDownloadExtension — 확장자 화이트리스트', () => {
     expect(resolveDownloadExtension('private/5/a-x.p\u0000ng')).toBe('bin');
   });
 
-  it('★역슬래시가 섞인 확장자는 bin 으로 떨어뜨린다 (경로 탈출 방지)', () => {
-    expect(resolveDownloadExtension('private/5/a-x.p\ng')).toBe('bin');
+  // ★ 역슬래시는 문자 코드로 박는다. 문자열 리터럴에 적으면 이스케이프가 한 번 풀려 개행이 들어가고,
+  //   그러면 바로 위 널바이트 케이스와 '같은 것' 을 두 번 보게 된다(실제로 그랬다 — 리뷰가 잡았다).
+  const BACKSLASH = String.fromCharCode(92);
+
+  it('★역슬래시가 섞인 확장자는 bin 으로 떨어뜨린다 (윈도우에서 tmpdir 밖 경로가 된다)', () => {
+    expect(resolveDownloadExtension(`private/5/a-x.p${BACKSLASH}ng`)).toBe('bin');
   });
 
   it('비정상적으로 긴 확장자도 bin', () => {
