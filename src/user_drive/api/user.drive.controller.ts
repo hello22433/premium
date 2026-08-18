@@ -83,28 +83,45 @@ export class UserDriveController {
       res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
       res.setHeader('Content-Disposition', buildContentDispositionAttachment(fileName));
     } catch (setupErr) {
-      fs.unlink(filePath, () => undefined);
+      this.removeTempQuietly(filePath);
       throw setupErr;
     }
     // pipeline은 성공/스트림오류/클라이언트 조기 종료(res close) 등 '모든' 종료 경로에서 콜백을 1회 호출하고
     // 두 스트림을 정리한다 → 어느 경로로 끝나든 임시파일을 확실히 삭제한다.
     pipeline(fileStream, res, (err) => {
-      fs.unlink(filePath, (unlinkErr) => {
-        if (unlinkErr && (unlinkErr as NodeJS.ErrnoException).code !== 'ENOENT') {
-          this.logger.warn(`문서함 첨부 임시파일 삭제 실패(누수 가능): ${filePath} — ${unlinkErr.message}`);
-        }
-      });
+      this.removeTempQuietly(filePath);
       if (!err) return;
       if ((err as NodeJS.ErrnoException).code === 'ERR_STREAM_PREMATURE_CLOSE') {
         this.logger.warn(`문서함 첨부 다운로드 중단(클라이언트 종료): ${filePath}`);
         return;
       }
       this.logger.error(`문서함 첨부 스트림 오류: ${err}`, err instanceof Error ? err.stack : undefined);
+      // ※ 이 분기는 거의 도달하지 않는다 — pipeline 은 오류 시 두 스트림을 destroy 하므로 여기 올 때는
+      //   res.destroyed 가 이미 true 다(실측: headersSent=false / destroyed=true / 클라이언트는 ECONNRESET).
+      //   즉 사용자가 보는 것은 이 JSON 이 아니라 브라우저의 "다운로드 실패" 이고, 원인을 아는 유일한
+      //   창구는 바로 위 error 로그다. 남겨 두는 이유는 헤더 전 동기 실패 같은 예외 경로 대비이고,
+      //   "500 JSON 이 나가니까 괜찮다" 로 읽으면 안 된다. 실제로 JSON 을 주려면 pipeline 앞에서
+      //   소스 오류를 먼저 받아야 하는데, 그건 형제(order_receipt)와 같이 고쳐야 해 후속으로 뒀다.
       if (!res.headersSent && !res.destroyed) {
         // 데이터 전송 전 실패: attachment 헤더가 남아 에러 JSON 이 파일로 저장되지 않도록 제거 후 응답.
         res.removeHeader('Content-Disposition');
         res.removeHeader('Access-Control-Expose-Headers');
         res.status(500).json({ message: '파일 다운로드 중 오류가 발생했습니다.' });
+      }
+    });
+  }
+
+  /**
+   * 스트리밍용 임시파일 정리. 이미 없으면(ENOENT) 조용히, 그 외 실패만 누수로 남긴다.
+   *
+   * ★ 한 곳으로 묶은 이유 — 예전엔 setup 실패 경로만 `fs.unlink(filePath, () => undefined)` 로 완전히
+   *   침묵했다. 12줄 아래 pipeline 콜백과 형제(FileStorageS3.removeLocalFileQuietly)는 둘 다 남기는데
+   *   한 곳만 안 남기는 비대칭이었고, 그 침묵이 막으려던 임시파일 누수를 조용히 되살린다.
+   */
+  private removeTempQuietly(filePath: string): void {
+    fs.unlink(filePath, (unlinkErr) => {
+      if (unlinkErr && (unlinkErr as NodeJS.ErrnoException).code !== 'ENOENT') {
+        this.logger.warn(`문서함 첨부 임시파일 삭제 실패(누수 가능): ${filePath} — ${unlinkErr.message}`);
       }
     });
   }
