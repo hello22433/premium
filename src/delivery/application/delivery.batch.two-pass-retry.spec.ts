@@ -6,6 +6,8 @@ import { IOrderType } from '../../order/interface/order.type';
 import { IProductType } from '../../product/interface/product.type';
 import { SsgTryError } from '../../partner_company_extern/infra/ssg.issue';
 import { PinIssueCommandStatus, SsgPinResolution } from '../interface/pin.issue.command.status';
+import { SsgAutoResolveConfig } from '../../partner_company_extern/application/ssg.autoresolve.config';
+import { SSG_AUTORESOLVE_PHASE } from '../../partner_company_extern/domain/ssg.autoresolve.policy';
 
 /**
  * PIN 발급 실패 2-pass 재시도 (`plans/2026-08-03-pin-issue-retry-wiring.md` §4.1).
@@ -121,7 +123,14 @@ describe('DeliveryBatchService — PIN 발급 실패 2-pass 재시도', () => {
         recordResolution,
         markOpsReviewRequired,
         markSucceeded,
+        findById: jest.fn().mockResolvedValue({
+          id: authority.commandId,
+          externalIssueCount: 1,
+          autoresolveVersion: null,
+        }),
       };
+      // EP-P30 — 기본 배포 상태(off). 게이트 개방 시나리오는 개별 테스트에서 바꾼다.
+      (sut as any).autoResolveConfig = new SsgAutoResolveConfig({ get: () => 'off' } as any);
       (sut as any).markSendFail = markSendFail;
       (sut as any).refundForFail = refundForFail;
       (sut as any).shouldHoldRefundForFail = jest.fn().mockResolvedValue(true);
@@ -211,21 +220,45 @@ describe('DeliveryBatchService — PIN 발급 실패 2-pass 재시도', () => {
       },
     );
 
-    it('pass 2 NOT_ISSUED만 한 번의 재발급 권한을 소비한다', async () => {
+    it('P30 게이트가 닫힌 상태에서는 pass 2 NOT_ISSUED 도 권한 소비·INSERT 0회로 운영 확인으로 간다', async () => {
+      const issue = jest.fn();
       (sut as any).partnerCompanyExternService = {
         resolveDeferredSsgIssue: jest.fn().mockResolvedValue(SsgPinResolution.NOT_ISSUED),
-        issue: jest.fn().mockImplementation(async (od: any) => {
-          od.barCode = '80000001';
-        }),
+        issue,
       };
 
-      await (sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN, false, authority);
+      await expect(
+        (sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN, false, authority),
+      ).rejects.toBeInstanceOf(DeferredDeliveryError);
 
-      expect(recordResolution).toHaveBeenCalledWith(authority, {
-        resolution: SsgPinResolution.NOT_ISSUED,
-        status: PinIssueCommandStatus.RETRYING,
-      });
-      expect(consumeNotIssuedRetryAuthority).toHaveBeenCalledWith(authority);
+      expect(consumeNotIssuedRetryAuthority).not.toHaveBeenCalled();
+      expect(issue).not.toHaveBeenCalled();
+      expect(markOpsReviewRequired).toHaveBeenCalledWith(authority, SsgPinResolution.NOT_ISSUED);
+    });
+
+    // 단계 상수는 "재발급이라는 행위가 배포됐는가"일 뿐, "지금 이 건을 재발급해도 되는가"가 아니다.
+    // 증거(경과시간·연속 N·ordinal 로그 부재·live claim) 수집은 P3 소관이므로, 지금은 상수를
+    // 실수로 뒤집어도 재발급이 열리면 안 된다.
+    it('mode=on + ORDINAL_2_REISSUE=true 여도 실행 증거가 없으면 권한을 소비하지 않는다', async () => {
+      (sut as any).autoResolveConfig = new SsgAutoResolveConfig({ get: () => 'on' } as any);
+      (SSG_AUTORESOLVE_PHASE as { ORDINAL_2_REISSUE: boolean }).ORDINAL_2_REISSUE = true;
+      const issue = jest.fn();
+      try {
+        (sut as any).partnerCompanyExternService = {
+          resolveDeferredSsgIssue: jest.fn().mockResolvedValue(SsgPinResolution.NOT_ISSUED),
+          issue,
+        };
+
+        await expect(
+          (sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN, false, authority),
+        ).rejects.toBeInstanceOf(DeferredDeliveryError);
+
+        expect(consumeNotIssuedRetryAuthority).not.toHaveBeenCalled();
+        expect(issue).not.toHaveBeenCalled();
+        expect(markOpsReviewRequired).toHaveBeenCalledWith(authority, SsgPinResolution.NOT_ISSUED);
+      } finally {
+        (SSG_AUTORESOLVE_PHASE as { ORDINAL_2_REISSUE: boolean }).ORDINAL_2_REISSUE = false;
+      }
     });
 
     it('비판정 불가 실패는 TERMINAL로 기록한 뒤 기존 FAIL 처리한다', async () => {
@@ -235,10 +268,10 @@ describe('DeliveryBatchService — PIN 발급 실패 2-pass 재시도', () => {
 
       const result = await (sut as any).processOneDeliveryInternal(makeDelivery(), TOKEN, true);
 
-      expect(recordResolution).toHaveBeenCalledWith(
-        authority,
-        { resolution: SsgPinResolution.UNKNOWN, status: PinIssueCommandStatus.TERMINAL },
-      );
+      expect(recordResolution).toHaveBeenCalledWith(authority, {
+        resolution: SsgPinResolution.UNKNOWN,
+        status: PinIssueCommandStatus.TERMINAL,
+      });
       expect(markSendFail).toHaveBeenCalled();
       expect(result.deliveryHistory.isSuccess).toBe(false);
     });

@@ -49,6 +49,7 @@ import { OrderHistoryEntity } from '../../entity/order.history.entity';
 import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
 import { InventoryPinAllocationService } from '../../inventory_coupon/application/inventory.pin.allocation.service';
 import { InventoryPinSendService } from '../../inventory_coupon/application/inventory.pin.send.service';
+import { SsgAutoResolveConfig } from '../../partner_company_extern/application/ssg.autoresolve.config';
 import { SsgPinResolution } from '../../partner_company_extern/interface/ssg.issue';
 import { PinIssueCommandStatus } from '../interface/pin.issue.command.status';
 
@@ -256,6 +257,8 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
         { provide: LegacyWalletCreditSyncService, useValue: { syncCredit: jest.fn(), syncDeposit: jest.fn() } },
         { provide: InventoryPinAllocationService, useValue: { allocate: jest.fn() } },
         { provide: InventoryPinSendService, useValue: { send: jest.fn() } },
+
+        { provide: SsgAutoResolveConfig, useValue: new SsgAutoResolveConfig({ get: () => 'off' } as any) },
         { provide: getRepositoryToken(OrderDeliveryAttemptEntity), useValue: { findOne: jest.fn(), save: jest.fn() } },
         {
           provide: getRepositoryToken(OrderPaymentRefundEventEntity),
@@ -548,5 +551,4 @@ describe('DeliveryBatchService.reissuePinAndCreateImageIfNeeded - refund ledger 
       expect(PinIssueCommandStatus.OPS_REVIEW_REQUIRED).toBe('OPS_REVIEW_REQUIRED');
     });
   });
-
 });

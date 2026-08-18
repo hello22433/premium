@@ -61,7 +61,12 @@ export class PinIssueCommandEntity {
 
   @Column({ type: 'varchar', length: 64, nullable: true, comment: 'Level B 실행 lease 소유자' })
   ownerToken: string | null;
-  @Column({ type: 'varchar', length: 32, nullable: true, comment: '최초 batch delivery claim ISO token(lease owner와 분리)' })
+  @Column({
+    type: 'varchar',
+    length: 32,
+    nullable: true,
+    comment: '최초 batch delivery claim ISO token(lease owner와 분리)',
+  })
   deliveryClaimToken: string | null;
 
   @Column({ type: 'bigint', default: 0, comment: 'Level B 세대(3중 fencing)' })
@@ -106,6 +111,21 @@ export class PinIssueCommandEntity {
 
   @Column({ type: 'datetime', precision: 6, nullable: true, comment: '터미널 확정 시각' })
   resolvedAt: Date | null;
+
+  /**
+   * EP-P30 §9-3 drain marker. 새 autoresolve resolver 가 **실제로 이 command 를 변경했는가**.
+   *
+   * 생성 시점 코드 버전이 아니라 enrollment 여부다. 모드를 `off` 로 내려도 이미 손대본
+   * command 는 종결까지 drain 해야 fence 가 영구 잔류하지 않는다. `observe` 는 순수 관측이므로
+   * 이 값을 세팅하지 않는다. `workflow_version`(가변 fencing 카운터)으로 대체할 수 없다.
+   */
+  @Column({
+    type: 'smallint',
+    name: 'autoresolve_version',
+    nullable: true,
+    comment: 'P30 autoresolve enrollment marker',
+  })
+  autoresolveVersion: number | null;
 
   @CreateDateColumn({ type: 'datetime', precision: 6 })
   createdAt: Date;

@@ -1,16 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { Propagation, Transactional } from 'typeorm-transactional';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliverySsgInsertStateEntity } from '../../entity/order.delivery.ssg.insert.state.entity';
 import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
 import { SsgIssueLogKeyCollisionError } from '../../partner_company_extern/infra/ssg.issue';
 import { PinIssueCommandEntity } from '../../entity/pin.issue.command.entity';
-import {
-  hasConsumedSsgIssueAuthority,
-  PinIssueCommandAuthority,
-} from './pin-issue-command.service';
+import { hasConsumedSsgIssueAuthority, PinIssueCommandAuthority } from './pin-issue-command.service';
 import { MarkAttemptedResult, SsgInsertState } from '../interface/ssg.insert.state';
 
 /**
@@ -314,8 +311,9 @@ export class SsgInsertStateService {
    * @returns true = 복원 완료(usable row 존재), false = 복원 후보 없음(운영 점검 필요)
    */
   async restoreConfirmedPinFromIssueLog(orderDeliveryId: number): Promise<boolean> {
+    // tombstone(superseded_at) 된 후보는 폐기된 PIN 이다. 복원 대상으로 쓰면 폐기 PIN 이 되살아난다(EP-P30 §6-D).
     const candidates = await this.issueLogRepository.find({
-      where: { orderDeliveryId },
+      where: { orderDeliveryId, supersededAt: IsNull() },
       order: { id: 'DESC' },
     });
     const usable = candidates.find((c) => c.eventSeq !== null && c.barCode !== null && c.personalCode !== null);

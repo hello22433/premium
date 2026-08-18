@@ -91,6 +91,8 @@ import { DeliveryCreateCouponImage } from '../infra/delivery.create.coupon.image
 
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { SsgPinResolution } from '../../partner_company_extern/interface/ssg.issue';
+import { canExecuteOrdinal } from '../../partner_company_extern/domain/ssg.autoresolve.policy';
+import { SsgAutoResolveConfig } from '../../partner_company_extern/application/ssg.autoresolve.config';
 import { SsgEventService } from '../../ssg_event/application/ssg.event.service';
 import { UserManagementService } from '../../user_management/application/user.management.service';
 import { DeliverySendService } from './delivery.send.service';
@@ -288,6 +290,7 @@ export class DeliveryBatchService {
     private readonly refundAttemptExecutor: RefundAttemptExecutorService,
     private readonly inventoryPinAllocationService: InventoryPinAllocationService,
     private readonly inventoryPinSendService: InventoryPinSendService,
+    private readonly autoResolveConfig: SsgAutoResolveConfig,
   ) {}
 
   private readonly logger = new Logger('batch');
@@ -1731,7 +1734,17 @@ export class DeliveryBatchService {
               if (!(await this.pinIssueCommandService.markSucceeded(commandAuthority))) {
                 throw new DeferredDeliveryError(orderDelivery.id, new Error('SSG PIN success authority lost'));
               }
-            } else if (resolution === SsgPinResolution.NOT_ISSUED) {
+            } else if (
+              resolution === SsgPinResolution.NOT_ISSUED &&
+              // 재발급 증거 수집 경로는 P3 소관이라 지금은 증거 없음 → fail-closed 로 떨어진다.
+              canExecuteOrdinal(
+                this.autoResolveConfig.capabilityFor(
+                  await this.pinIssueCommandService.findById(commandAuthority.commandId),
+                ),
+                2,
+              ).allowed
+            ) {
+              // EP-P30 §6-B-3 — 게이트가 닫혀 있으면 재발급 권한을 소비하지 않고 아래 운영 확인으로 떨어진다.
               await this.pinIssueCommandService.recordResolution(commandAuthority, {
                 resolution,
                 status: PinIssueCommandStatus.RETRYING,
@@ -1780,7 +1793,6 @@ export class DeliveryBatchService {
         if (error instanceof DeferredDeliveryError) {
           throw error;
         }
-
 
         // 미확정 실패(SsgTryError=조회 판정 불가, SsgIssueUnknownError=INSERT 결과 미확정)는
         // pass 1 이면 확정하지 않고 뒤로 미룬다 — status/환불/이력을 건드리지 않아야

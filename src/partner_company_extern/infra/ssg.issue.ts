@@ -65,6 +65,28 @@ export class SsgIssueUnknownError extends Error {
 }
 
 /**
+ * EP-P30 §6-B-3 — 판정은 신규 발급을 가리키는데 롤아웃 게이트(mode/capability/ordinal 증인/claim)가
+ * 통과되지 않아 중단했다.
+ *
+ * 게이트 미통과를 정상 반환으로 표현하면(`needsInsert=false`) 호출자가 PIN 없는 성공으로 오해해
+ * null PIN 발송·command 오종결로 이어진다. 반드시 throw 로 끝난다(§10 불변식 9).
+ * 운영 알림을 분리하기 위한 전용 타입이지만, **호출자 처리는 미확정과 동일해야 한다** — 발송실패
+ * 확정·환불로 가면 안 되고 보류(pass 2 / 운영 확인)여야 하므로 `SsgIssueUnknownError` 를 상속한다.
+ */
+export class SsgAutoResolveBlockedError extends SsgIssueUnknownError {
+  constructor(
+    public readonly orderDeliveryId: number,
+    public readonly blockedResolution: string,
+    public readonly ordinal: number,
+  ) {
+    super(
+      `SSG 자동 재발급 게이트 차단(resolution=${blockedResolution}, ordinal=${ordinal}). orderDeliveryId=${orderDeliveryId}`,
+    );
+    this.name = 'SsgAutoResolveBlockedError';
+  }
+}
+
+/**
  * SSG INSERT 시도 중복 — 이미 ATTEMPTED state row 존재.
  * plans/ssg-balance-refactor.md PR2.
  *

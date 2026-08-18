@@ -4,7 +4,7 @@ import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { PinIssueDedupEntity } from '../../entity/pin.issue.dedup.entity';
 import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
 import { PinIssueCommandEntity } from '../../entity/pin.issue.command.entity';
-import { QueryFailedError, Repository } from 'typeorm';
+import { IsNull, QueryFailedError, Repository } from 'typeorm';
 import {
   hasConsumedSsgIssueAuthority,
   PinIssueCommandAuthority,
@@ -21,11 +21,21 @@ import { GalaxiaBarcodeLogEntity } from '../../entity/galaxia.barcode.log.entity
 import { GiftielExchangeHistoryEntity } from '../../entity/giftiel.exchange.history.entity';
 import { ISsgCheckOut, ISsgIssue, SsgPinResolution, SsgPinVerdict } from '../interface/ssg.issue';
 import {
+  SSG_AUTORESOLVE_PHASE,
+  SsgAutoResolveCapability,
+  SsgIssueOrdinal,
+  SsgOrdinal2Evidence,
+  aggregateSsgPinResolutions,
+  canExecuteOrdinal,
+} from '../domain/ssg.autoresolve.policy';
+import { SsgAutoResolveConfig } from './ssg.autoresolve.config';
+import {
   SsgIssueAlreadyConfirmedError,
   SsgIssueAttemptAlreadyActiveError,
   SsgIssueLogKeyCollisionError,
   SsgIssueRejectedError,
   SsgIssueUnknownError,
+  SsgAutoResolveBlockedError,
 } from '../infra/ssg.issue';
 import { SsgInsertStateService, SsgAttemptPayload } from '../../delivery/application/ssg-insert-state.service';
 import { MarkAttemptedResult, SsgInsertState } from '../../delivery/interface/ssg.insert.state';
@@ -67,6 +77,28 @@ export interface PartnerIssueResult {
   inventoryPinItemId?: string;
 }
 
+/** 후보 1건 판정 결과 + 관측용 원시 신호 (EP-P30 §5-2). */
+export interface SsgCandidateVerdict {
+  resolution: SsgPinResolution;
+  tryYn: string | null;
+  resultCd: string | null;
+}
+
+/**
+ * 발송건 단위 판정 결과 (EP-P30 §5-3-1). **부작용 0** — durable 쓰기도 메모리 entity 변경도 없다.
+ *
+ * `hasAnyAttempt` 는 tombstone 포함 전체 행 기준이고, 후보 판정은 활성 행(`superseded_at IS NULL`)
+ * 기준이다. 이 구분을 빼면 tombstone 된 발송건이 "시도한 적 없음"으로 오판된다.
+ */
+export interface SsgDeferredClassification {
+  resolution: SsgPinResolution;
+  confirmedCandidate?: SsgIssueLogEntity;
+  hasAnyAttempt: boolean;
+  activeCandidateCount: number;
+  /** 관측용 후보별 원시 신호. 후보 0건(NOT_ATTEMPTED·tombstone-only)이면 빈 배열이다. */
+  verdicts: Array<SsgCandidateVerdict & { candidate: SsgIssueLogEntity }>;
+}
+
 @Injectable()
 export class PartnerCompanyExternService {
   constructor(
@@ -106,6 +138,7 @@ export class PartnerCompanyExternService {
     private resendDeductPendingRepository: Repository<SsgResendDeductPendingEntity>,
     private readonly settleFlag: PartnerSettleFeatureFlag,
     private readonly settleProducer: PartnerSettleProducerService,
+    private readonly autoResolveConfig: SsgAutoResolveConfig,
   ) {}
 
   private logger = new Logger('PARTNER_COMPANY_EXTERN');
@@ -151,7 +184,6 @@ export class PartnerCompanyExternService {
   }
 
   private async checkSsgWithRetry(params: { eventNo: string; eventSeq: number; vno: string }): Promise<ISsgCheckOut> {
-
     const maxAttempts = 3;
     let lastError: unknown;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -170,74 +202,104 @@ export class PartnerCompanyExternService {
     throw lastError;
   }
 
-  private async classifySsgPin(params: {
+  /**
+   * 후보 1건 판정 (EP-P30 §5-2). **부작용 0** — 조회만 한다.
+   *
+   * ```
+   * [1] 등록 여부 — GetSsgTry / cust_info — 지연 없음 — 재발급 판단의 유일 근거
+   *     SsgTryError(호출·파싱 실패, tryYn 이 'Y'·'N' 이 아님) → LOOKUP_FAILED
+   *     tryYn='N' → NOT_ISSUED (cust_info 에 없음이 확정)
+   *     tryYn='Y' → [2]. 이 시점부터 재발급 영구 금지
+   * [2] 사용 가능 여부 — GetSsgStatus / cust_info_result — 재사용 판단만
+   *     resultCd ∈ {0100,0200,0400} → CONFIRMED
+   *     그 외 resultCd            → REGISTERED_UNSENDABLE (운영 확인, 재조회 대상 아님)
+   *     throw/timeout/파싱 불가    → LOOKUP_FAILED
+   * ```
+   *
+   * 종전 구현은 `!== 'Y'` 로 위 세 가지를 전부 `UNKNOWN` 으로 접어 영구 동결을 만들었다.
+   * `tryYn` 정확값 계약은 infra(`ssg.issue.ts` getTry)가 집행한다 — 비정상 값은 SsgTryError 다(§5-2-1).
+   */
+  private async classifySsgPinDetailed(params: {
     eventNo: string;
-    eventSeq: number;
+    eventSeq: number | null;
     personalCode: string;
-  }): Promise<SsgPinResolution> {
+  }): Promise<SsgCandidateVerdict> {
+    let tryYn: string | null;
     try {
       const tryOut = await this.ssgIssue.getTry({ vno: params.personalCode });
-      if (tryOut?.response?.value?.[0]?.tryYn?.[0] !== 'Y') {
-        // GetSsgTry=N alone is not the contractual GetSsgStatus absence proof.
-        return SsgPinResolution.UNKNOWN;
-      }
+      tryYn = tryOut?.response?.value?.[0]?.tryYn?.[0] ?? null;
+    } catch {
+      return { resolution: SsgPinResolution.LOOKUP_FAILED, tryYn: null, resultCd: null };
+    }
+    if (tryYn !== 'Y' && tryYn !== 'N') {
+      // infra 계약상 도달 불가(SsgTryError 로 throw). 계약이 회귀로 깨져도 부재로 오판하지 않는다.
+      return { resolution: SsgPinResolution.LOOKUP_FAILED, tryYn: null, resultCd: null };
+    }
+    if (tryYn === 'N') {
+      return { resolution: SsgPinResolution.NOT_ISSUED, tryYn, resultCd: null };
+    }
+    if (params.eventSeq === null) {
+      // legacy 후보 — check 파라미터가 없어 사용 가능 여부를 확인할 수단이 없다. 등록은 됐으므로
+      // 재발급은 금지하고 운영 확인으로 보낸다.
+      return { resolution: SsgPinResolution.UNKNOWN, tryYn, resultCd: null };
+    }
 
+    let resultCd: string | null;
+    try {
       const checkOut = await this.checkSsgWithRetry({
         eventNo: params.eventNo,
         eventSeq: params.eventSeq,
         vno: params.personalCode,
       });
-      const resultCd = checkOut?.response?.value?.[0]?.resultCd?.[0];
-      return this.isSsgSendableResult(resultCd) ? SsgPinResolution.CONFIRMED : SsgPinResolution.UNKNOWN;
+      resultCd = checkOut?.response?.value?.[0]?.resultCd?.[0] ?? null;
     } catch {
-      return SsgPinResolution.UNKNOWN;
+      return { resolution: SsgPinResolution.LOOKUP_FAILED, tryYn, resultCd: null };
     }
+    return {
+      resolution: this.isSsgSendableResult(resultCd ?? undefined)
+        ? SsgPinResolution.CONFIRMED
+        : SsgPinResolution.REGISTERED_UNSENDABLE,
+      tryYn,
+      resultCd,
+    };
   }
 
+  private async classifySsgPin(params: {
+    eventNo: string;
+    eventSeq: number | null;
+    personalCode: string;
+  }): Promise<SsgPinResolution> {
+    return (await this.classifySsgPinDetailed(params)).resolution;
+  }
+
+  /** 후보별 판정 + 집계 (§5-3). 부작용 0. */
   private async resolveSsgPinCandidates(candidates: SsgIssueLogEntity[]): Promise<{
     resolution: SsgPinResolution;
     confirmedCandidate?: SsgIssueLogEntity;
+    verdicts: Array<SsgCandidateVerdict & { candidate: SsgIssueLogEntity }>;
   }> {
-    const results = await Promise.all(
+    const verdicts = await Promise.all(
       candidates.map(async (candidate) => ({
         candidate,
-        resolution:
-          candidate.eventSeq === null
-            ? SsgPinResolution.UNKNOWN
-            : await this.classifySsgPin({
-                eventNo: candidate.eventNo,
-                eventSeq: candidate.eventSeq,
-                personalCode: candidate.personalCode,
-              }),
+        ...(await this.classifySsgPinDetailed({
+          eventNo: candidate.eventNo,
+          eventSeq: candidate.eventSeq,
+          personalCode: candidate.personalCode,
+        })),
       })),
     );
-    const confirmed = results.filter((result) => result.resolution === SsgPinResolution.CONFIRMED);
-
-    if (confirmed.length >= 2) return { resolution: SsgPinResolution.MULTIPLE_CONFIRMED };
-    if (confirmed.length === 1) {
-      if (results.some((result) => result.resolution === SsgPinResolution.UNKNOWN || result.resolution === SsgPinResolution.PROCESSING)) {
-        return { resolution: SsgPinResolution.UNKNOWN };
-      }
-      return { resolution: SsgPinResolution.CONFIRMED, confirmedCandidate: confirmed[0].candidate };
-    }
-    if (results.length > 0 && results.every((result) => result.resolution === SsgPinResolution.NOT_ISSUED)) {
-      return { resolution: SsgPinResolution.NOT_ISSUED };
-    }
-    if (results.some((result) => result.resolution === SsgPinResolution.UNKNOWN)) {
-      return { resolution: SsgPinResolution.UNKNOWN };
-    }
-    if (results.some((result) => result.resolution === SsgPinResolution.PROCESSING)) {
-      return { resolution: SsgPinResolution.PROCESSING };
-    }
-    return { resolution: SsgPinResolution.UNKNOWN };
+    return { ...aggregateSsgPinResolutions(verdicts), verdicts };
   }
 
   /**
    * ssg_issue_log 후보(cust_info 등록 확인된 PIN)를 재사용한다: 선택 후보의 PIN 을 메모리 엔티티에 반영하고
-   * state CONFIRMED + order_delivery PIN 컬럼을 best-effort 로 durable 동기화(markConfirmed)한다.
+   * state CONFIRMED + order_delivery PIN 컴럼을 best-effort 로 durable 동기화(markConfirmed)한다.
    * 발송은 메모리 엔티티 기준이므로 markConfirmed 가 state 가드로 skip 되어도 재사용 PIN 으로 정상 발송된다.
+   *
+   * EP-P30 §6-B-2 — **이것이 판정의 부작용 부분**이다. 판정(`classifyDeferredSsgIssue`)과 분리돼
+   * 있어, 호출자는 delivery claim 재획득(P1)에 성공한 뒤에만 이걸 부른다.
    */
-  private async reuseSsgCandidate(orderDelivery: OrderDeliveryEntity, candidate: SsgIssueLogEntity): Promise<void> {
+  async applyConfirmedCandidate(orderDelivery: OrderDeliveryEntity, candidate: SsgIssueLogEntity): Promise<void> {
     orderDelivery.barCode = candidate.barCode;
     orderDelivery.personalCode = candidate.personalCode;
     orderDelivery.ssgTransactionId = candidate.ssgTransactionId;
@@ -267,36 +329,108 @@ export class PartnerCompanyExternService {
     return resultCd === '0100' || resultCd === '0200' || resultCd === '0400';
   }
 
+  /**
+   * 재발송 경로의 기존 PIN 판정. 순수 조회다.
+   *
+   * `NOT_ISSUED`·`LOOKUP_FAILED` 등 미등록·미확정은 **정상 반환하지 않는다**(§6-B-3).
+   * 재발송 경로는 command 권한·ordinal 증인이 없어 신규 INSERT 를 승인할 근거가 없으므로,
+   * 재사용(`CONFIRMED`)만 통과시키고 나머지는 보류로 보낸다.
+   */
   async classifySsgResendPin(orderDeliveryId: number, personalCode: string): Promise<SsgPinVerdict> {
-    const candidates = await this.ssgIssueLogRepository.find({
-      where: { orderDeliveryId },
-      order: { id: 'DESC' },
-    });
+    const candidates = await this.findActiveSsgCandidates(orderDeliveryId);
     const matching = candidates.filter((candidate) => candidate.personalCode === personalCode);
     const { resolution } = await this.resolveSsgPinCandidates(matching);
 
     if (resolution === SsgPinResolution.CONFIRMED) return SsgPinVerdict.REGISTERED;
-    if (resolution === SsgPinResolution.NOT_ISSUED) return SsgPinVerdict.NOT_SUBMITTED;
-    if (resolution === SsgPinResolution.PROCESSING) return SsgPinVerdict.PROCESSING;
-    throw new SsgIssueUnknownError(`SSG PIN 판정 미확정. orderDeliveryId=${orderDeliveryId}`);
+    throw new SsgIssueUnknownError(
+      `SSG PIN 재사용 불가 판정(${resolution}) — 재발송 보류. orderDeliveryId=${orderDeliveryId}`,
+    );
   }
+
+  /** 활성 후보 — 어떤 PIN 을 조회·재사용할가 (tombstone 제외, §6-D). */
+  private async findActiveSsgCandidates(orderDeliveryId: number): Promise<SsgIssueLogEntity[]> {
+    return this.ssgIssueLogRepository.find({
+      where: { orderDeliveryId, supersededAt: IsNull() },
+      order: { id: 'DESC' },
+    });
+  }
+
+  /**
+   * 미확정 SSG INSERT 의 durable 후보를 판정한다 (EP-P30 §5-3-1, §6-B-2). **순수 함수**다:
+   * DB 쓰기 0회, 메모리 entity 미변경. PIN 복원은 `applyConfirmedCandidate` 소관이고,
+   * 관측 기록은 독립 observer(`SsgPinObservationSweepService`) 소관이다 — 판정 자체는 아무것도 쓰지 않는다.
+   *
+   * ```
+   * !hasAnyAttempt                       → NOT_ATTEMPTED   (SSG 호출 0회)
+   * hasAnyAttempt && 활성후보 0        → UNKNOWN         (tombstone 만 존재 — 재개 판단은 P1)
+   * 그 외                              → 후보별 판정 → 집계
+   * ```
+   */
+  async classifyDeferredSsgIssue(orderDeliveryId: number): Promise<SsgDeferredClassification> {
+    const allRows = await this.ssgIssueLogRepository.find({
+      where: { orderDeliveryId },
+      order: { id: 'DESC' },
+    });
+    const active = allRows.filter((candidate) => candidate.supersededAt === null);
+
+    if (allRows.length === 0) {
+      return {
+        resolution: SsgPinResolution.NOT_ATTEMPTED,
+        hasAnyAttempt: false,
+        activeCandidateCount: 0,
+        verdicts: [],
+      };
+    }
+    if (active.length === 0) {
+      // 시도 이력은 있고 활성 후보만 없다 — 미시도가 아니므로 ordinal=1 재발급으로 가면 안 된다.
+      return {
+        resolution: SsgPinResolution.UNKNOWN,
+        hasAnyAttempt: true,
+        activeCandidateCount: 0,
+        verdicts: [],
+      };
+    }
+
+    const { resolution, confirmedCandidate, verdicts } = await this.withSsgMutex(() =>
+      this.resolveSsgPinCandidates(active),
+    );
+    return { resolution, confirmedCandidate, hasAnyAttempt: true, activeCandidateCount: active.length, verdicts };
+  }
+
   /**
    * Resolves the durable candidates for a deferred SSG INSERT. A confirmed
    * candidate is restored onto the delivery so the caller can send it without
    * another INSERT.
    */
   async resolveDeferredSsgIssue(orderDelivery: OrderDeliveryEntity): Promise<SsgPinResolution> {
-    const candidates = await this.ssgIssueLogRepository.find({
-      where: { orderDeliveryId: orderDelivery.id },
-      order: { id: 'DESC' },
-    });
-    const { resolution, confirmedCandidate } = await this.withSsgMutex(() =>
-      this.resolveSsgPinCandidates(candidates),
-    );
+    const { resolution, confirmedCandidate } = await this.classifyDeferredSsgIssue(orderDelivery.id);
     if (resolution === SsgPinResolution.CONFIRMED && confirmedCandidate) {
-      await this.reuseSsgCandidate(orderDelivery, confirmedCandidate);
+      await this.applyConfirmedCandidate(orderDelivery, confirmedCandidate);
     }
     return resolution;
+  }
+
+  /**
+   * 신규 INSERT 게이트 (§6-B-3). 판정값만으로 진행하는 분기를 전부 이 뒤로 보낸다.
+   *
+   * 차수는 **호출자가 명시**한다. `external_issue_count` 로 추론하면 안 된다 — 재발급 권한은
+   * 소비 **전**(count=1)에 검사하므로 count 추론은 재발급을 ordinal=1 로 오판하고,
+   * 그러면 1차만 열은 단계(P1)에서 2차 INSERT 가 그대로 통과한다.
+   *
+   * 게이트는 배포 capability 와 실행 증거를 **둘 다** 요구한다(`canExecuteOrdinal`). 재발급 증거
+   * 수집 경로는 P3 소관이므로, 지금은 `ORDINAL_2_REISSUE` 상수를 뒤집어도 재발급이 열리지 않는다.
+   */
+  private async resolveInsertGate(
+    authority: PinIssueCommandAuthority | undefined,
+    ordinal: SsgIssueOrdinal,
+    evidence?: SsgOrdinal2Evidence,
+  ): Promise<{ capability: SsgAutoResolveCapability; ordinal: SsgIssueOrdinal; allowed: boolean; missing: string[] }> {
+    const command = authority
+      ? await this.pinIssueCommandRepository.findOne({ where: { id: authority.commandId } })
+      : null;
+    const capability = this.autoResolveConfig.capabilityFor(command);
+    const { allowed, missing } = canExecuteOrdinal(capability, ordinal, evidence);
+    return { capability, ordinal, allowed, missing };
   }
 
   /**
@@ -710,10 +844,7 @@ export class PartnerCompanyExternService {
         //     등록실패를 NOT 재사용으로 구분하는 classifySsgPin 으로 후보를 분류한다.
         //     eventSeq 없는 legacy 후보는 check 파라미터가 부족하므로 getTry(제출여부)만으로 보류 판단한다.
         if (!orderDelivery.barCode) {
-          const allCandidates = await this.ssgIssueLogRepository.find({
-            where: { orderDeliveryId: orderDelivery.id },
-            order: { id: 'DESC' },
-          });
+          const allCandidates = await this.findActiveSsgCandidates(orderDelivery.id);
           const candidates = allCandidates.filter((c) => !!c.personalCode);
 
           if (candidates.length > 0) {
@@ -721,15 +852,26 @@ export class PartnerCompanyExternService {
 
             if (resolution === SsgPinResolution.CONFIRMED && confirmedCandidate) {
               await this.markReissuePendingReusedIfBatch(resendDeductionId);
-              await this.reuseSsgCandidate(orderDelivery, confirmedCandidate);
+              await this.applyConfirmedCandidate(orderDelivery, confirmedCandidate);
               needsInsert = false;
               result.ssgEventId = orderDelivery.ssgEventId ?? null;
               this.logger.log(
                 `[SSG] 단일 등록 확정 후보 재사용(barCode=${confirmedCandidate.barCode}). orderDeliveryId=${orderDelivery.id}`,
               );
-            } else if (resolution !== SsgPinResolution.NOT_ISSUED) {
-              // UNKNOWN, PROCESSING, and MULTIPLE_CONFIRMED must not issue or select a PIN.
-              throw new SsgIssueUnknownError(`SSG 후보 판정 미확정(${resolution}). orderDeliveryId=${orderDelivery.id}`);
+            } else if (resolution === SsgPinResolution.NOT_ISSUED) {
+              // EP-P30 §6-B-3-1 — 게이트 미통과를 needsInsert=false 로 표현하면 그건 "재사용 확정" 신호라
+              // PIN payload 가 빈 채 정상 반환된다(무발급 성공·null PIN 발송·command 오종결).
+              // 반드시 정상 반환 전에 중단한다.
+              // 기존 후보가 있는데 NOT_ISSUED 로 판정된 건은 정의상 재발급(2차)이다.
+              const gate = await this.resolveInsertGate(ssgIssueAuthority, 2);
+              if (!gate.allowed) {
+                throw new SsgAutoResolveBlockedError(orderDelivery.id, resolution, gate.ordinal);
+              }
+            } else {
+              // UNKNOWN, LOOKUP_FAILED, REGISTERED_UNSENDABLE, MULTIPLE_CONFIRMED must not issue or select a PIN.
+              throw new SsgIssueUnknownError(
+                `SSG 후보 판정 미확정(${resolution}). orderDeliveryId=${orderDelivery.id}`,
+              );
             }
           }
           // 후보 0건(최초 clean 발송) → 새 PIN. 외부 SSG API 추가호출 없음(hot-path 보존).
@@ -830,7 +972,11 @@ export class PartnerCompanyExternService {
             };
             let markResult: MarkAttemptedResult;
             try {
-              markResult = await this.ssgInsertStateService.markAttempted(orderDelivery.id, attemptPayload, ssgIssueAuthority);
+              markResult = await this.ssgInsertStateService.markAttempted(
+                orderDelivery.id,
+                attemptPayload,
+                ssgIssueAuthority,
+              );
             } catch (e) {
               if (e instanceof SsgIssueLogKeyCollisionError) {
                 // 다른 발송 건이 이 후보를 선점했다. markAttempted 의 REQUIRES_NEW 가 통째로 롤백되어
@@ -851,10 +997,7 @@ export class PartnerCompanyExternService {
               // classifySsgPin 결과는 mutex 밖(stale 가능) → SSG 재확인 후 확정.
               // resolveSsgOrphan 은 내부에 withSsgMutex 가 있어 여기서 호출하면 deadlock.
               // 같은 로직을 mutex-free 로 인라인한다.
-              const orphanCandidates = await this.ssgIssueLogRepository.find({
-                where: { orderDeliveryId: orderDelivery.id },
-                order: { id: 'DESC' },
-              });
+              const orphanCandidates = await this.findActiveSsgCandidates(orderDelivery.id);
               const { resolution, confirmedCandidate } = await this.resolveSsgPinCandidates(orphanCandidates);
               if (resolution === SsgPinResolution.CONFIRMED && confirmedCandidate) {
                 const confirmed = await this.ssgInsertStateService.markConfirmed(orderDelivery.id, {
@@ -867,13 +1010,21 @@ export class PartnerCompanyExternService {
                   ssgEventId: confirmedCandidate.ssgEventId,
                 });
                 if (!confirmed) throw new SsgIssueAttemptAlreadyActiveError(orderDelivery.id);
-                await this.reuseSsgCandidate(orderDelivery, confirmedCandidate);
+                await this.applyConfirmedCandidate(orderDelivery, confirmedCandidate);
                 needsInsert = false;
                 return '';
               }
 
               if (resolution !== SsgPinResolution.NOT_ISSUED) {
                 throw new SsgIssueAttemptAlreadyActiveError(orderDelivery.id);
+              }
+
+              // 게이트 뒤에서만 markFailed 한다 — markFailed 는 ATTEMPTED 를 풀어 다음 후보의 INSERT 를 여는
+              // 실질적 재발급 트리거다(§6-B-3).
+              // 남은 시도 흔적(ACTIVE state)을 폐기하고 다시 넣는 것 = 재발급(2차).
+              const skippedActiveGate = await this.resolveInsertGate(ssgIssueAuthority, 2);
+              if (!skippedActiveGate.allowed) {
+                throw new SsgAutoResolveBlockedError(orderDelivery.id, resolution, skippedActiveGate.ordinal);
               }
 
               const failedOk = await this.ssgInsertStateService.markFailed(orderDelivery.id);
@@ -1546,8 +1697,7 @@ export class PartnerCompanyExternService {
     // P5 SSG 정산: isSettlementTarget 이면 CAS + producer 를 같은 트랜잭션으로 묶는다(§6.5).
     // flag off 경로는 기존 CAS 단독 실행과 1비트도 다르지 않다(§4.6 회귀 요건).
     const provider = partnerType as IPartnerCompanyType;
-    const needsSsgSettlement =
-      !!ssgExchangeEvidence && this.settleFlag.isEnabledFor(provider);
+    const needsSsgSettlement = !!ssgExchangeEvidence && this.settleFlag.isEnabledFor(provider);
 
     const executeCasWrite = () =>
       this.orderDeliveryRepository
@@ -1588,9 +1738,10 @@ export class PartnerCompanyExternService {
           kind: 'EXCHANGE',
           idempotencyKey: buildProviderTransitionKey(IPartnerCompanyType.SSG, 'EXCHANGE', ev.evidenceRef),
           occurredAt: ev.occurredAt ? fromDate(ev.occurredAt) : null,
-          baseAmount: orderDelivery.orderProductMapping?.snapshotProductPrice != null
-            ? BigInt(orderDelivery.orderProductMapping.snapshotProductPrice)
-            : null,
+          baseAmount:
+            orderDelivery.orderProductMapping?.snapshotProductPrice != null
+              ? BigInt(orderDelivery.orderProductMapping.snapshotProductPrice)
+              : null,
           providerEvidenceRef: ev.evidenceRef,
         });
       });
@@ -1621,10 +1772,7 @@ export class PartnerCompanyExternService {
       return SsgOrphanResolveOutcome.SKIPPED_NOT_ATTEMPTED;
     }
 
-    const candidates = await this.ssgIssueLogRepository.find({
-      where: { orderDeliveryId },
-      order: { id: 'DESC' },
-    });
+    const candidates = await this.findActiveSsgCandidates(orderDeliveryId);
     if (candidates.length === 0) {
       return SsgOrphanResolveOutcome.NETWORK_UNKNOWN;
     }
@@ -1644,12 +1792,20 @@ export class PartnerCompanyExternService {
     }
 
     if (resolution === SsgPinResolution.NOT_ISSUED) {
+      // EP-P30 §6-B-3 — 판정기 재작성만으로 환불·state 전이가 살아나지 않도록 게이트 뒤에 둔다.
+      // `tryYn='N'` 만으로 행사 잔액을 복구하려면 §4-2 의 코드 계약(8021·0103)이 먼저 확정돼야 한다.
+      if (!SSG_AUTORESOLVE_PHASE.REFUND_ON_NOT_ISSUED) {
+        this.logger.warn(
+          `[SSG][P30] NOT_ISSUED 판정이나 환불 경로는 미개방 — ATTEMPTED 유지. orderDeliveryId=${orderDeliveryId}`,
+        );
+        return SsgOrphanResolveOutcome.NETWORK_UNKNOWN;
+      }
       const transitioned = await this.ssgInsertStateService.markFailed(orderDeliveryId);
       return transitioned ? SsgOrphanResolveOutcome.FAILED : SsgOrphanResolveOutcome.NETWORK_UNKNOWN;
     }
 
-    // PROCESSING, UNKNOWN, and MULTIPLE_CONFIRMED retain ATTEMPTED. They never select,
-    // reissue, send, or refund from partial evidence.
+    // LOOKUP_FAILED, REGISTERED_UNSENDABLE, UNKNOWN, and MULTIPLE_CONFIRMED retain ATTEMPTED.
+    // They never select, reissue, send, or refund from partial evidence.
     return SsgOrphanResolveOutcome.NETWORK_UNKNOWN;
   }
 
@@ -1686,9 +1842,10 @@ export class PartnerCompanyExternService {
       kind: 'ISSUANCE',
       idempotencyKey: buildIssuanceKey(od.id),
       occurredAt: fromDate(new Date()),
-      baseAmount: od.orderProductMapping?.snapshotProductPrice != null
-        ? BigInt(od.orderProductMapping.snapshotProductPrice)
-        : null,
+      baseAmount:
+        od.orderProductMapping?.snapshotProductPrice != null
+          ? BigInt(od.orderProductMapping.snapshotProductPrice)
+          : null,
     });
   }
 }

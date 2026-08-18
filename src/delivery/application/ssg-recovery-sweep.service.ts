@@ -8,6 +8,8 @@ import { PinIssueCommandEntity } from '../../entity/pin.issue.command.entity';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { SsgPinResolution } from '../../partner_company_extern/interface/ssg.issue';
+import { canExecuteOrdinal } from '../../partner_company_extern/domain/ssg.autoresolve.policy';
+import { SsgAutoResolveConfig } from '../../partner_company_extern/application/ssg.autoresolve.config';
 import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
 import { PinIssueCommandStatus } from '../interface/pin.issue.command.status';
 import { SsgRecoveryResult } from '../interface/ssg.recovery.result';
@@ -53,6 +55,7 @@ export class SsgRecoverySweepService {
     private readonly ssgRecoveryService: SsgRecoveryService,
     private readonly pinIssueCommandService: PinIssueCommandService,
     private readonly partnerCompanyExternService: PartnerCompanyExternService,
+    private readonly autoResolveConfig: SsgAutoResolveConfig,
   ) {}
 
   /**
@@ -268,7 +271,14 @@ export class SsgRecoverySweepService {
           } else {
             skipped++;
           }
-        } else if (resolution === SsgPinResolution.NOT_ISSUED && !exhausted && candidate.externalIssueCount === 1) {
+        } else if (
+          resolution === SsgPinResolution.NOT_ISSUED &&
+          !exhausted &&
+          candidate.externalIssueCount === 1 &&
+          canExecuteOrdinal(this.autoResolveConfig.capabilityFor(candidate), 2).allowed
+        ) {
+          // EP-P30 §6-B-3 — 판정만으로 재발급 권한을 소비하지 않는다. 게이트가 닫혀 있으면
+          // recordResolution·consumeNotIssuedRetryAuthority 자체를 실행하지 않고 운영 확인으로 보낸다.
           // Persist RETRYING before consuming.  A crash after 1 -> 2 leaves the
           // durable NOT_ISSUED intent reclaimable only by this resolver.
           const recorded = await this.recordResolution(authority, resolution, PinIssueCommandStatus.RETRYING);
@@ -299,8 +309,9 @@ export class SsgRecoverySweepService {
             skipped++;
           }
         } else {
-          // UNKNOWN, MULTIPLE_CONFIRMED, a second NOT_ISSUED, and SLA exhaustion
-          // are operator-owned terminal holds. None may issue, send, or refund.
+          // UNKNOWN, LOOKUP_FAILED, REGISTERED_UNSENDABLE, NOT_ATTEMPTED, MULTIPLE_CONFIRMED,
+          // a gate-blocked NOT_ISSUED, and SLA exhaustion are operator-owned terminal holds.
+          // None may issue, send, or refund.
           if (await this.recordResolution(authority, resolution, PinIssueCommandStatus.OPS_REVIEW_REQUIRED)) {
             opsReview++;
           } else {

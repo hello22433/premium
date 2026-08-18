@@ -44,6 +44,7 @@ import { SsgRefundOutcome } from '../interface/ssg.refund.resolve';
 import { DeliveryCutoverGuardService } from './delivery-cutover-guard.service';
 import { InventoryPinAllocationService } from '../../inventory_coupon/application/inventory.pin.allocation.service';
 import { InventoryPinSendService } from '../../inventory_coupon/application/inventory.pin.send.service';
+import { SsgAutoResolveConfig } from '../../partner_company_extern/application/ssg.autoresolve.config';
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
 import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
 import { OrderDeliveryCouponStatus } from '../interface/order.delivery.coupon.status';
@@ -172,6 +173,8 @@ describe('DeliveryBatchService', () => {
         { provide: OrderFromService, useValue: { resolveSendDefaultPhone: jest.fn() } },
         { provide: InventoryPinAllocationService, useValue: { allocate: jest.fn() } },
         { provide: InventoryPinSendService, useValue: { processOutbox: jest.fn() } },
+
+        { provide: SsgAutoResolveConfig, useValue: new SsgAutoResolveConfig({ get: () => 'off' } as any) },
       ],
     }).compile();
 
