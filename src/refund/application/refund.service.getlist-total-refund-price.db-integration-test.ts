@@ -31,12 +31,13 @@ const TEST_DB_NAME_PATTERN = /test/i;
 
 const COMPANY_A = '환불집계 고객사A';
 const COMPANY_B = '환불집계 고객사B';
+const COMPANY_C = '환불집계 고객사C';
 
 /**
  * 환불목록 상단 '총 환불금액'(totalRefundPrice) — 실 MySQL 검증.
  *
- * 합계는 목록 QueryBuilder 를 clone 해 `SUM(COALESCE(snapshot_product_price, product.price, 0) *
- * refund_ratio / 100)` 으로 낸다. 이 SQL 이 **실제로 그 컬럼들을 읽는지**(TypeORM property-path 치환,
+ * 합계는 목록 QueryBuilder 를 clone 해 `SUM(CAST(COALESCE(snapshot_product_price, product.price, 0) *
+ * refund_ratio AS DECIMAL(20,4)) / 100)` 으로 낸다. 이 SQL 이 **실제로 그 컬럼들을 읽는지**(TypeORM property-path 치환,
  * alias, decimal 반환)와 **행 합과 일치하는지**는 repository mock 으로 잡히지 않는다
  * (mock 은 문자열만 비교하므로). 같은 이유로 만들어진 선례: settle.service.summary-settlefee.
  */
@@ -120,6 +121,15 @@ describe('RefundService.getList — totalRefundPrice DB 통합', () => {
     expect(res.totalRefundPrice).toBe(8000);
   });
 
+  // 어느 한쪽에 반올림이 들어가면 여기서만 갈린다 — 다른 픽스처는 전부 정수라 no-op 이다.
+  it('환불금액이 소수로 떨어져도 총합이 행별 환불금액의 단순 합과 일치한다', async () => {
+    const res = await service.getList({ page: 1, take: 10, userBusinessName: COMPANY_C } as any, auditContext);
+
+    const rowSum = res.list.reduce((acc, row) => acc + row.refundPrice, 0);
+    expect(rowSum).toBe(499.5);
+    expect(res.totalRefundPrice).toBe(rowSum);
+  });
+
   it('환불건이 아닌 행(refundStatus NULL)은 집계에 섞이지 않는다', async () => {
     const res = await service.getList({ page: 1, take: 10, userBusinessName: COMPANY_A } as any, auditContext);
 
@@ -135,7 +145,7 @@ describe('RefundService.getList — totalRefundPrice DB 통합', () => {
       auditContext,
     );
 
-    expect(all.totalRefundPrice).toBe(15000); // A(8000) + B(7000)
+    expect(all.totalRefundPrice).toBe(15499.5); // A(8000) + B(7000) + C(499.5)
     expect(companyA.totalRefundPrice).toBe(8000);
     expect(progressOnly.totalRefundPrice).toBe(5000); // A-1 만 PROGRESS
   });
@@ -266,6 +276,7 @@ async function seedFixtures(dataSource: DataSource): Promise<void> {
 
   const customerA = await createCustomer(COMPANY_A, 'a');
   const customerB = await createCustomer(COMPANY_B, 'b');
+  const customerC = await createCustomer(COMPANY_C, 'c');
 
   const createMapping = async (userId: number, productId: number, snapshotProductPrice: number | null, tag: string) => {
     const order = await orderRepo.save(
@@ -339,4 +350,9 @@ async function seedFixtures(dataSource: DataSource): Promise<void> {
   // B-1: 다른 고객사 → 고객사명 필터로 배제되는지 확인
   const b1 = await createMapping(customerB.id, raisedProduct.id, 7000, 'b1');
   await saveDelivery(b1.id, { refundStatus: OrderDeliveryRefundStatusEnum.PROGRESS, refundRatio: 100 });
+
+  // C-1: 결과가 소수인 유일한 건(999 * 50% = 499.5). 나머지가 전부 정수라 SQL·JS 어느 쪽에 반올림이
+  // 들어가도 다른 픽스처로는 드러나지 않는다.
+  const c1 = await createMapping(customerC.id, raisedProduct.id, 999, 'c1');
+  await saveDelivery(c1.id, { refundStatus: OrderDeliveryRefundStatusEnum.PROGRESS, refundRatio: 50 });
 }

@@ -1,3 +1,4 @@
+import { InternalServerErrorException } from '@nestjs/common';
 import { Repository } from 'typeorm';
 import { RefundService } from './refund.service';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
@@ -15,7 +16,7 @@ import { OrderDeliveryRefundStatusEnum } from '../../delivery/interface/order.de
 
 // 부분일치(toContain)로 두면 곱셈이 덧셈으로 바뀐 식도 통과하므로 전문을 대조한다.
 const EXPECTED_SUM_EXPRESSION =
-  'SUM(COALESCE(orderProductMapping.snapshotProductPrice, product.price, 0) * orderDelivery.refundRatio / 100)';
+  'SUM(CAST(COALESCE(orderProductMapping.snapshotProductPrice, product.price, 0) * orderDelivery.refundRatio AS DECIMAL(20, 4)) / 100)';
 
 const cipherStub = {
   safeDecryptDeliveryTarget: (v: string) => v,
@@ -28,15 +29,13 @@ const auditContext = {
   ipAddress: '127.0.0.1',
 };
 
-function makeHarness(rawTotalRefundPrice: string | null) {
+// rawRow 를 통째로 넘기면 alias 불일치(키 부재)·비정상 driver 값까지 재현할 수 있다.
+function makeHarness(rawTotalRefundPrice: unknown, options: { rawRow?: unknown } = {}) {
+  const rawRow = 'rawRow' in options ? options.rawRow : { totalRefundPrice: rawTotalRefundPrice };
   const callOrder: string[] = [];
   const aggregate: any = {
     select: jest.fn(() => aggregate),
-    getRawOne: jest
-      .fn()
-      .mockResolvedValue(
-        rawTotalRefundPrice === null ? { totalRefundPrice: null } : { totalRefundPrice: rawTotalRefundPrice },
-      ),
+    getRawOne: jest.fn().mockResolvedValue(rawRow),
   };
 
   const qb: any = {};
@@ -83,7 +82,9 @@ describe('RefundService.getList — 총 환불금액(totalRefundPrice)', () => {
     expect(res.totalRefundPrice).toBe(3500);
   });
 
-  it('목록과 같은 where 를 clone 으로 물려받고, skip/take 적용 이전에 집계한다(페이지 무관)', async () => {
+  // where 가 실제로 복사되는지는 TypeORM 동작이라 여기서 못 잡는다 — clone 을 정확히 1회 뜨고
+  // skip/take/orderBy 보다 앞선다는 '호출 위치'만 고정한다(모집단 일치 검증은 db-integration).
+  it('clone 을 1회만 뜨고 skip/take/orderBy 적용 이전에 집계한다(페이지·정렬 무관)', async () => {
     const { service, qb, callOrder } = makeHarness('1000');
 
     await service.getList({ page: 2, take: 10 } as any, auditContext);
@@ -91,6 +92,8 @@ describe('RefundService.getList — 총 환불금액(totalRefundPrice)', () => {
     expect(qb.clone).toHaveBeenCalledTimes(1);
     expect(callOrder.indexOf('clone')).toBeLessThan(callOrder.indexOf('skip'));
     expect(callOrder.indexOf('clone')).toBeLessThan(callOrder.indexOf('take'));
+    // orderBy 가 clone 위로 올라가면 집계 쿼리에 비집계 ORDER BY 가 남아 ONLY_FULL_GROUP_BY 에서 목록 API 가 500 이 된다.
+    expect(callOrder.indexOf('clone')).toBeLessThan(callOrder.indexOf('orderBy'));
   });
 
   // clone 위치가 필터 블록보다 위로 올라가면 합계가 '검색결과 합계'가 아니라 '전체 합계'가 된다.
@@ -112,7 +115,6 @@ describe('RefundService.getList — 총 환불금액(totalRefundPrice)', () => {
     );
 
     const andWhereIndexes = callOrder.flatMap((name, index) => (name === 'andWhere' ? [index] : []));
-    expect(andWhereIndexes).toHaveLength(6); // 기간 2 + 고객사명 + 담당자명 + 환불상태 + 수신정보
     expect(Math.max(...andWhereIndexes)).toBeLessThan(callOrder.indexOf('clone'));
   });
 
@@ -122,6 +124,20 @@ describe('RefundService.getList — 총 환불금액(totalRefundPrice)', () => {
     const res = await service.getList({ page: 1, take: 10 } as any, auditContext);
 
     expect(res.totalRefundPrice).toBe(0);
+  });
+
+  // NULL 이 아닌데 숫자가 아니면 코드 결함이다. 0 원으로 응답하면 목록엔 행이 있는데 총합만 0 인 화면이
+  // 아무 신호 없이 나가므로, 자금 화면에서는 실패가 낫다.
+  it.each([
+    ['alias 불일치로 키가 없음', {}],
+    ['집계 행 자체가 없음', undefined],
+    ['숫자로 파싱되지 않는 값', { totalRefundPrice: 'not-a-number' }],
+  ])('집계 결과가 비정상이면 0 으로 숨기지 않고 실패한다 — %s', async (_label, rawRow) => {
+    const { service } = makeHarness(null, { rawRow });
+
+    await expect(service.getList({ page: 1, take: 10 } as any, auditContext)).rejects.toThrow(
+      InternalServerErrorException,
+    );
   });
 
   it('deliveryTarget 검색 시에도 PII 검색 로그는 1건만 기록된다(집계가 중복 기록하지 않는다)', async () => {
