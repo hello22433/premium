@@ -182,3 +182,36 @@ describe('UserDriveService 쓰기 검증 (create/update)', () => {
     });
   });
 });
+
+/**
+ * ★ 밀반입 '최초 시도' 가 잡히는 유일한 자리다. 여기에 로그가 없으면 반복 시도인지 오타인지도 못 가른다.
+ */
+describe('UserDriveService.create — 첨부 거절의 관측', () => {
+  const admin = { id: 10, authority: IUserAuthority.OPERATION_ADMIN } as any;
+  const foreignUrl = 'https://b.s3.amazonaws.com/private/99/0123456789abcdef-대외비.pdf';
+
+  const makeSut = () => {
+    const driveRepo: any = { insert: jest.fn(), findOne: jest.fn() };
+    const userRepo: any = { findOne: jest.fn().mockResolvedValue({ id: 20 }) };
+    const fileService: any = {
+      extractStorageKey: (url: string) => decodeURIComponent(new URL(url).pathname.replace(/^\/+/, '')),
+      isOwnStorageUrl: jest.fn().mockReturnValue(true),
+    };
+    const sut = new UserDriveService(driveRepo, userRepo, fileService);
+    const logger = { warn: jest.fn(), error: jest.fn(), log: jest.fn() };
+    (sut as any).logger = logger;
+    return { sut, logger, driveRepo };
+  };
+
+  it('★본인이 올리지 않은 private 첨부를 거절하면 경고 1회 + 저장 안 함', async () => {
+    const { sut, logger, driveRepo } = makeSut();
+    await expect(
+      sut.create(admin, { title: 't', content: 'c', receiverId: 20, filePath: [foreignUrl] } as any),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(driveRepo.insert).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    const logged = logger.warn.mock.calls[0][0] as string;
+    expect(logged).not.toContain('대외비');
+    expect(logged).toContain('private/99/');
+  });
+});

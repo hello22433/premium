@@ -3,7 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import fs from 'node:fs';
-import { isFilePathListRoundTripSafe, parseFilePathList } from '../../util/file.util';
+import {
+  isFilePathListRoundTripSafe,
+  maskStorageKeyForLog,
+  parseFilePathList,
+  sanitizeForLog,
+} from '../../util/file.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import { UserDriveEntity } from '../../entity/user.drive.entity';
 import { In, Repository } from 'typeorm';
@@ -26,9 +31,9 @@ import { IUserAuthority } from '../../user/interface/user.authority';
 
 @Injectable()
 export class UserDriveService {
-  /** 상세조회에서 원본명(HeadObject)을 조회하는 첨부 수 상한 — 초과분은 key 복원 폴백(S3 호출 폭주 방지) */
   private readonly logger = new Logger(UserDriveService.name);
 
+  /** 상세조회에서 원본명(HeadObject)을 조회하는 첨부 수 상한 — 초과분은 key 복원 폴백(S3 호출 폭주 방지) */
   static readonly MAX_FILE_META_LOOKUP = 10;
 
   constructor(
@@ -257,6 +262,22 @@ export class UserDriveService {
     return headable;
   }
 
+  /**
+   * 첨부 소유·경로 검증에서 거절한 사실을 남긴다.
+   *
+   * ★ 왜 필요한가 — 이 기능이 막으려는 것(남의 private key 를 문서에 심어 수신자에게 흘리는 것)은
+   *   막히면 400/403 으로 끝나고 앱 로그엔 한 줄도 안 남았다. 게다가 같은 작업에서 접근 로그의
+   *   filePath/fileUrl 을 *** 로 가렸기 때문에, "무슨 key 를 노렸나" 를 되짚을 마지막 흔적까지 사라졌다.
+   *   → 시도 자체를 여기서 남긴다. 반복 시도인지 오타인지도 이걸로만 갈린다.
+   * ※ 남기는 것은 내부 id 와 마스킹된 key 뿐이다 — 원본 파일명은 남지 않는다(maskStorageKeyForLog).
+   */
+  private warnAttachmentRejected(reason: string, context: Record<string, string | number>): void {
+    const detail = Object.entries(context)
+      .map(([key, value]) => `${key}=${value}`)
+      .join(', ');
+    this.logger.warn(`첨부 검증 거절 — ${reason} (${detail})`);
+  }
+
   private isAdminAuthority(authority: IUserAuthority | string): boolean {
     return [IUserAuthority.SUPER_ADMIN, IUserAuthority.OPERATION_ADMIN].includes(authority as IUserAuthority);
   }
@@ -301,6 +322,10 @@ export class UserDriveService {
    */
   private async assertDownloadable(fileUrl: string, drive: UserDriveEntity, user: ILoginUserInfo): Promise<void> {
     if (!this.fileService.isOwnStorageUrl(fileUrl)) {
+      this.warnAttachmentRejected('다운로드: 우리 버킷 URL 이 아님', {
+        driveId: drive.id,
+        requesterId: user.id,
+      });
       throw new ForbiddenException('다운로드할 수 없는 파일입니다.');
     }
 
@@ -308,6 +333,7 @@ export class UserDriveService {
     // 이 있으면 decodeURIComponent 가 URIError 를 던진다. 감싸지 않으면 클라이언트 입력 문제가 500 으로 나간다.
     const key = this.tryExtractStorageKey(fileUrl);
     if (key === null) {
+      this.warnAttachmentRejected('다운로드: key 파싱 실패', { driveId: drive.id, requesterId: user.id });
       throw new ForbiddenException('다운로드할 수 없는 파일입니다.');
     }
 
@@ -316,11 +342,16 @@ export class UserDriveService {
       // ownerId 세그먼트는 10진 숫자여야 한다. Number('')===0, Number('0x10')===16 등이 Number.isInteger 를
       // 통과하는 모호함을 없애기 위해 정규식으로 명시 검증(문서함 첨부 key 규격: private/{decimal-id}/...).
       if (!/^\d+$/.test(ownerSegment)) {
+        this.warnAttachmentRejected('다운로드: private key 에 ownerId 세그먼트가 없음', {
+          driveId: drive.id,
+          requesterId: user.id,
+          key: maskStorageKeyForLog(key),
+        });
         throw new ForbiddenException('다운로드할 수 없는 파일입니다.');
       }
       const ownerId = Number(ownerSegment);
-      // 요청자가 관리자면 전체 허용. 그 외엔 "이 문서에 글 쓸 수 있던 사람이 올린 첨부"만 허용:
-      // 발신자 본인이면 즉시 통과, 아니면 업로더가 SUPER 인 경우(아무 문서나 수정 가능)만 예외 허용.
+      // "이 문서에 글 쓸 수 있던 사람이 올린 첨부" 만 허용한다 — 발신자 본인이면 즉시 통과,
+      // 아니면 업로더가 SUPER 인 경우(아무 문서나 수정 가능)만 예외 허용.
       // ★ 요청자가 관리자여도 건너뛰지 않는다. 관리자는 '문서를 볼 권한' 이 넓은 것이지
       //   '아무 S3 객체나 백엔드 자격증명으로 받을 권한' 이 넓은 게 아니다. 쓰기 시점 검증은 앞으로
       //   들어올 것만 막으므로, 그 이전에 저장된 타인 소유 private key 가 남아 있으면 관리자 경로로
@@ -331,6 +362,13 @@ export class UserDriveService {
           select: ['id', 'authority'],
         });
         if (uploader?.authority !== IUserAuthority.SUPER_ADMIN) {
+          this.warnAttachmentRejected('다운로드: 발신자 소유도 SUPER 업로드도 아닌 첨부', {
+            driveId: drive.id,
+            requesterId: user.id,
+            senderId: drive.senderId,
+            ownerId,
+            key: maskStorageKeyForLog(key),
+          });
           throw new ForbiddenException('다운로드 권한이 없습니다.');
         }
       }
@@ -342,6 +380,11 @@ export class UserDriveService {
       return;
     }
 
+    this.warnAttachmentRejected('다운로드: 허용되지 않은 key 위치', {
+      driveId: drive.id,
+      requesterId: user.id,
+      key: maskStorageKeyForLog(key),
+    });
     throw new ForbiddenException('다운로드할 수 없는 파일입니다.');
   }
 
@@ -350,9 +393,11 @@ export class UserDriveService {
    *
    * 보존되지 않으면 "검증한 것"과 "저장되는 것"이 달라진다 — 배열 원소 하나에 `,https://...` 를 심으면
    * 소유 검증은 URL 1개(본인 소유)로 보고 통과시키지만, 저장 후에는 2개로 복원돼 검증을 거치지 않은
-   * 타인 소유 private 객체가 첨부로 들어온다(개수 상한도 함께 우회). 그 뒤 관리자 다운로드는
-   * assertDownloadable 에서 소유 검사를 건너뛰므로, 아는 key 를 백엔드 자격증명으로 받아갈 수 있다.
-   * 밀반입한 업로더가 SUPER 면 기업 수신자에게도 내려간다.
+   * 타인 소유 private 객체가 첨부로 들어온다(개수 상한도 함께 우회).
+   * 읽는 쪽(assertDownloadable)이 소유를 다시 보므로 대부분 거기서 막히지만, 밀반입한 업로더가 SUPER 면
+   * 그 판정을 통과해 기업 수신자에게까지 내려간다. 그래서 쓰는 쪽에서 먼저 막는다.
+   * ※ 한때 여기 "관리자 다운로드는 소유 검사를 건너뛴다" 고 적혀 있었으나 그 우회는 제거됐다
+   *   (assertDownloadable 참조). 되살리지 마라.
    *
    * 파일명에 정상적으로 콤마가 든 경우는 왕복이 보존되므로 이 검사에 걸리지 않는다.
    */
@@ -363,11 +408,21 @@ export class UserDriveService {
     return filePath.length === 0 ? null : filePath.join(',');
   }
 
-  /** URL → S3 key. 파싱 실패(깨진 percent-encoding 등)는 예외 대신 null 로 돌려 호출부가 상태코드를 정한다. */
+  /**
+   * URL → S3 key. 파싱 실패(깨진 percent-encoding 등)는 예외 대신 null 로 돌려 호출부가 상태코드를 정한다.
+   *
+   * ★ 노리는 실패는 둘뿐이다 — new URL 의 TypeError, decodeURIComponent 의 URIError. 그 둘은 클라이언트
+   *   입력 문제라 조용히 null 이 맞다. 하지만 전부 삼키면 이 함수가 하는 일이 늘었을 때 새 원인의 실패가
+   *   소리 없이 '권한 없음' 으로 둔갑한다. 그래서 예상 밖 예외만 남긴다.
+   */
   private tryExtractStorageKey(fileUrl: string): string | null {
     try {
       return this.fileService.extractStorageKey(fileUrl);
-    } catch {
+    } catch (error) {
+      const name = (error as Error)?.name;
+      if (name !== 'TypeError' && name !== 'URIError') {
+        this.logger.warn(`첨부 key 파싱이 예상 밖 이유로 실패: ${sanitizeForLog(name ?? String(error))}`);
+      }
       return null;
     }
   }
@@ -385,16 +440,23 @@ export class UserDriveService {
   private assertNewAttachmentsOwnedBySelf(newUrls: string[], user: ILoginUserInfo): void {
     for (const url of newUrls) {
       if (!this.fileService.isOwnStorageUrl(url)) {
+        this.warnAttachmentRejected('등록: 우리 버킷 URL 이 아님', { requesterId: user.id });
         throw new BadRequestException('허용되지 않은 파일 경로입니다.');
       }
       const key = this.tryExtractStorageKey(url);
       if (key === null) {
+        this.warnAttachmentRejected('등록: key 파싱 실패', { requesterId: user.id });
         throw new BadRequestException('허용되지 않은 파일 경로입니다.');
       }
 
       if (key.startsWith('private/')) {
         const ownerSegment = key.split('/')[1] ?? '';
         if (!/^\d+$/.test(ownerSegment) || Number(ownerSegment) !== user.id) {
+          this.warnAttachmentRejected('등록: 본인이 올리지 않은 private 첨부', {
+            requesterId: user.id,
+            ownerSegment,
+            key: maskStorageKeyForLog(key),
+          });
           throw new BadRequestException('본인이 업로드한 첨부만 등록할 수 있습니다.');
         }
         continue;
@@ -402,6 +464,10 @@ export class UserDriveService {
       if (key.startsWith('image/') || key.startsWith('file/')) {
         continue; // 공개 레거시: 심어도 유출 아님(이미 public), 전환 전 호환
       }
+      this.warnAttachmentRejected('등록: 허용되지 않은 key 위치', {
+        requesterId: user.id,
+        key: maskStorageKeyForLog(key),
+      });
       throw new BadRequestException('허용되지 않은 파일 경로입니다.');
     }
   }

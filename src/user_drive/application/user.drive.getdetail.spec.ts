@@ -83,7 +83,7 @@ describe('UserDriveService.getDetail — files 조립', () => {
     // 실제 코드에선 이런 항목이 getOriginalName 내부 new URL 에서 throw → getDetail 이 폴백해야 한다.
     const bad = 'brokenfrag';
     const good = 'https://b/private/5/u1-good.xlsx';
-    const { sut } = makeSut([bad, good], {
+    const { sut, logger } = makeSut([bad, good], {
       getOriginalName: jest.fn(async (u: string) => {
         if (u === bad) throw new Error('ERR_INVALID_URL');
         return `meta:${u.split('/').pop()}`;
@@ -94,6 +94,9 @@ describe('UserDriveService.getDetail — files 조립', () => {
 
     expect(res.files[0]).toEqual({ url: bad, name: 'brokenfrag' }); // 마지막 경로조각으로 degrade
     expect(res.files[1]).toEqual({ url: good, name: 'meta:u1-good.xlsx' });
+    // ★ 결과만 보면 warn 을 지워도 초록이다 — 조용히 열화되는 것을 막는 건 이 단언뿐이다.
+    //   (바로 아래 resolveHeadableUrls 스펙은 이미 이 단언을 하는데 여기만 빠져 있었다 — 비대칭)
+    expect(logger.warn).toHaveBeenCalledTimes(1);
   });
 
   it('첨부 없음 → files 빈 배열', async () => {

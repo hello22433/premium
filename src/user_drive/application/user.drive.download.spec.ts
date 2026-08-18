@@ -6,8 +6,10 @@ import { IUserDriveStatus } from '../interface/user.drive.status';
 /**
  * 문서함 첨부 다운로드 프록시 회귀 — 문서권한 / 첨부귀속 / 객체소유(우회 차단) / 원본명.
  *  - 문서권한: 관리자=전체, 기업관리자=본인 수신 문서(비DRAFT)만. 권한 밖은 "문서 없음"(BadRequest)로 통일(존재 은닉).
- *  - 객체소유(글쓰기 권한과 통일): 관리자 아닌 요청자에겐 key 의 ownerId 가 발신자(senderId)이거나 SUPER 인
+ *  - 객체소유(글쓰기 권한과 통일): 요청자 권한과 무관하게 key 의 ownerId 가 발신자(senderId)이거나 SUPER 인
  *    첨부만 허용. 발신자 본인은 조회 없이 통과, 그 외는 업로더가 SUPER 인 경우만 예외 허용.
+ *    ※ 한때 "요청자가 관리자면 소유검사 생략" 이 있었으나 제거했다 — 관리자는 '문서를 볼 권한' 이 넓은
+ *      것이지 '아무 S3 객체나 백엔드 자격증명으로 받을 권한' 이 넓은 게 아니다.
  *    ※ 발신 아닌 다른 운영관리자/기업계정의 key 는 차단되고, SUPER 교차수정 첨부는 과차단하지 않는다.
  */
 describe('UserDriveService.downloadFile', () => {
@@ -226,5 +228,48 @@ describe('UserDriveService.downloadFile', () => {
     const { sut, fileService } = makeSut(foreignUrl);
     await expect(sut.downloadFile(superReq, 1, foreignUrl)).rejects.toBeInstanceOf(ForbiddenException);
     expect(fileService.downloadWithPath).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * ★ 거절이 관측되는지 — 이 기능이 막으려는 것(남의 private key 밀반입)은 막히면 403 으로 끝나고
+ *   앱 로그엔 한 줄도 안 남았다. 게다가 접근 로그는 filePath/fileUrl 을 *** 로 가려서
+ *   "무슨 key 를 노렸나" 를 되짚을 방법이 0 이었다. 흔적을 남기되 원본 파일명은 안 남긴다.
+ */
+describe('UserDriveService.downloadFile — 거절의 관측', () => {
+  const foreignUrl = 'https://b.s3.amazonaws.com/private/77/ffffffffffffffffffffffffffffffff-남의것.xlsx';
+  const receiver = { id: 10, authority: IUserAuthority.CORPORATE_ADMIN } as any;
+
+  const makeSut = () => {
+    const drive = { id: 1, senderId: 5, receiverId: 10, status: IUserDriveStatus.REGISTER, filePath: foreignUrl };
+    const driveRepo: any = { findOne: jest.fn().mockResolvedValue(drive) };
+    const userRepo: any = {
+      findOne: jest.fn().mockResolvedValue({ id: 77, authority: IUserAuthority.CORPORATE_ADMIN }),
+    };
+    const fileService: any = {
+      extractStorageKey: (url: string) => decodeURIComponent(new URL(url).pathname.replace(/^\/+/, '')),
+      isOwnStorageUrl: jest.fn().mockReturnValue(true),
+      getOriginalName: jest.fn(),
+      downloadWithPath: jest.fn(),
+    };
+    const sut = new UserDriveService(driveRepo, userRepo, fileService);
+    const logger = { warn: jest.fn(), error: jest.fn(), log: jest.fn() };
+    (sut as any).logger = logger;
+    return { sut, logger };
+  };
+
+  it('★타인 소유 첨부를 거절하면 경고를 1회 남긴다', async () => {
+    const { sut, logger } = makeSut();
+    await expect(sut.downloadFile(receiver, 1, foreignUrl)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('★경고에 원본 파일명은 남기지 않고 key 는 식별 가능하게 남긴다', async () => {
+    const { sut, logger } = makeSut();
+    await expect(sut.downloadFile(receiver, 1, foreignUrl)).rejects.toBeInstanceOf(ForbiddenException);
+    const logged = logger.warn.mock.calls[0][0] as string;
+    expect(logged).not.toContain('남의것');
+    expect(logged).toContain('private/77/');
+    expect(logged).toContain('requesterId=10');
   });
 });
