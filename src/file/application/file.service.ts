@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { FileUploadResDto } from '../api/file.res.dto';
 import { IFileStorage } from '../interface/file.storage';
-import { maskStorageKeyForLog } from '../../util/file.util';
+import { maskStorageKeyForLog, sanitizeForLog } from '../../util/file.util';
 
 @Injectable()
 export class FileService {
@@ -49,9 +49,17 @@ export class FileService {
       // await 로 실제로 잡아, 원인을 로그로 남기고 상태를 구분해 던진다.
       return await this.fileStorage.downloadFileToLocalWithPath(path, fileTitle, key);
     } catch (error) {
+      // ★ key 를 그대로 쓰면 안 된다 — `private/{업로더id}/{uuid}-{원본명}` 이라 접근 로그에서 가려 놓은
+      //   원본명이 여기로 다시 샌다(같은 값을 한쪽 채널에서만 가리는 꼴). 그리고 key 는 클라이언트가 준
+      //   URL 을 decode 한 값이라 `%0a` 로 개행을 넣어 가짜 로그 줄을 만들 수 있다.
+      //   → 마스킹 + 제어문자 제거. 메시지도 같은 이유로 정제한다(SDK 메시지에 key 가 실릴 수 있다).
+      const rawMessage = error instanceof Error ? error.message : String(error);
+      const errorCode = (error as { name?: string; Code?: string })?.name ?? (error as { Code?: string })?.Code;
       this.logger.error(
-        `S3 다운로드 실패 (key=${key}): ${error instanceof Error ? error.message : String(error)}`,
-        error instanceof Error ? error.stack : undefined,
+        `S3 다운로드 실패 (key=${maskStorageKeyForLog(key)}, code=${errorCode ?? 'unknown'}): ${sanitizeForLog(
+          rawMessage,
+        )}`,
+        error instanceof Error ? sanitizeForLog(error.stack ?? '') : undefined,
       );
       if (this.isNotFoundError(error)) {
         throw new NotFoundException('파일을 찾을 수 없습니다.');

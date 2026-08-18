@@ -61,7 +61,14 @@ export function resolveDownloadExtension(key: string): string {
  */
 export function buildContentDispositionAttachment(fileName: string): string {
   const asciiFallback = fileName.replace(/[^\x20-\x7e]/g, '_').replace(/[\\"]/g, '');
-  const encoded = encodeURIComponent(fileName);
+  // ★ encodeURIComponent 는 `'`·`(`·`)`·`*` 를 안 바꿄다. 그런데 RFC5987 의 attr-char 에는 이 넣이 없어
+  //   그대로 두면 엄격한 클라이언트가 filename* 를 통째로 무효로 본다(예: `계약서(최종).pdf` →
+  //   밑줄로 뭉개는 ASCII 폴백으로 떨어진다). 네 글자만 마저 인코딩한다.
+  //   `!`·`~`·`-`·`_`·`.` 는 attr-char 에 있으므로 건드리지 않는다.
+  const encoded = encodeURIComponent(fileName).replace(
+    /['()*]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
   return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`;
 }
 
@@ -97,4 +104,17 @@ export function maskStorageKeyForLog(key: string): string {
   // `{식별자}-{원본명}` 규격이 아니면 통째로 가린다(이름만 있는 형태일 수 있다).
   const masked = dash > 0 ? `${base.slice(0, Math.min(dash, 8))}…` : '***';
   return [...segments, masked].join('/');
+}
+
+/**
+ * 로그 한 줄에 넣기 전에 줄바꿈·제어문자를 없앨다 — 로그 라인 주입 방지.
+ *
+ * key 는 클라이언트가 준 URL 의 pathname 을 decodeURIComponent 한 값이라 `%0a` 를 넣으면 실제
+ * 개행이 된다(실측 확인함). 그대로 로그에 쓰면 가짜 로그 줄을 만들어 넣을 수 있다.
+ * C0 제어문자·DEL 에 더해 유니코드 줄바꿈(U+0085, U+2028, U+2029)까지 막는다 —
+ * 일부 로그 수집기·JSON 파서가 이것들도 줄바꿈으로 해석한다.
+ */
+export function sanitizeForLog(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\u0000-\u001f\u007f\u0085\u2028\u2029]/g, ' ');
 }

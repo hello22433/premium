@@ -6,6 +6,7 @@ import {
   parseFilePathList,
   isFilePathListRoundTripSafe,
   maskStorageKeyForLog,
+  sanitizeForLog,
 } from './file.util';
 
 /**
@@ -180,5 +181,48 @@ describe('maskStorageKeyForLog — 로그용 key 축약', () => {
 
   it('레거시 공개 key 도 이름을 남기지 않는다', () => {
     expect(maskStorageKeyForLog('image/abcdef0123-사업자등록증.png')).toBe('image/abcdef01…');
+  });
+});
+
+describe('buildContentDispositionAttachment — RFC5987 attr-char', () => {
+  // ★ encodeURIComponent 는 `'`·`(`·`)`·`*` 를 안 바꾼다. RFC5987 attr-char 에는 이 넷이 없어서
+  //   그대로 두면 엄격한 클라이언트가 filename* 를 무효로 보고 밑줄 ASCII 폴백으로 떨어진다.
+  it.each([
+    ['계약서(최종).pdf', '('],
+    ["철수's 보고서.pdf", "'"],
+    ['보고서*.pdf', '*'],
+  ])('filename* 에 %s 의 `%s` 가 원문으로 남지 않는다', (name, ch) => {
+    const out = buildContentDispositionAttachment(name);
+    const encoded = out.split("filename*=UTF-8''")[1];
+    expect(encoded).not.toContain(ch);
+  });
+
+  it('attr-char 에 있는 문자(!~-_.)는 굳이 인코딩하지 않는다', () => {
+    const encoded = buildContentDispositionAttachment('a-b_c.d!e~f.pdf').split("filename*=UTF-8''")[1];
+    expect(encoded).toBe('a-b_c.d!e~f.pdf');
+  });
+
+  it('ASCII 폴백은 그대로 유지된다 (비ASCII → _, 따옴표/역슬래시 제거)', () => {
+    // 한글은 전부 비ASCII 라 _ 로, 그 뒤 quoted-string 을 깨는 " 와 \ 를 제거 → ___.pdf
+    expect(buildContentDispositionAttachment('보"고\서.pdf')).toContain('filename="___.pdf"');
+  });
+});
+
+describe('sanitizeForLog — 로그 라인 주입 차단', () => {
+  it('개행을 공백으로 바꾼다 (가짜 로그 줄 방지)', () => {
+    expect(sanitizeForLog('private/5/a\nfake-log')).toBe('private/5/a fake-log');
+  });
+
+  it('CR·탭·NUL 등 C0 제어문자도 제거한다', () => {
+    expect(sanitizeForLog('a\rb\tc\u0000d')).toBe('a b c d');
+  });
+
+  // 예시 세 개(\n \r \0)만 막으면 "제어문자" 를 다 막은 게 아니다 — 유니코드 줄바꿈이 남는다.
+  it('유니코드 줄바꿈(U+0085 · U+2028 · U+2029)도 제거한다', () => {
+    expect(sanitizeForLog('a\u0085b\u2028c\u2029d')).toBe('a b c d');
+  });
+
+  it('정상 문자는 건드리지 않는다', () => {
+    expect(sanitizeForLog('private/5/01234567… 해지 신청서')).toBe('private/5/01234567… 해지 신청서');
   });
 });
