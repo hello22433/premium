@@ -32,6 +32,18 @@
 ### A. 업로드 호출 교체 (문서 발신/작성 화면)
 `DocumentDetailPage.tsx` 의 첨부 업로드를 **`postFileImage` → `postFileUploadPrivate`(`src/apis/postFileUploadPrivate.ts`, 이미 존재)** 로 교체.
 - ⚠️ 차이는 **폼필드뿐**: `imageFile` → **`file`**. 응답 shape은 **동일**합니다 — 전역 `TransformResInterceptor`가 모든 응답을 `{ result }`로 감싸므로 두 API 다 **`data.result.url`** 로 꺼냅니다(주문접수 FE도 동일). 즉 URL 추출부(`.data.result.url`)는 그대로 두고 업로드 함수와 폼필드만 바꾸면 됩니다.
+- ownerId 는 **토큰에서 가져갑니다**(`file.controller.ts:119` 가 `user.id` 를 씀). 프론트가 보낼 값이 없습니다.
+
+#### ⭐ 이 교체로 **지금 안 되던 게 됩니다** (2026-08-18 확인)
+
+| | 현재 `/file/image` | 교체 후 `/file/upload-private` |
+|---|---|---|
+| 파일 크기 상한 | **10MB** | **20MB** |
+| 파일 종류 | **이미지만** (`mime.startsWith('image/')` 아니면 400 `NO_IMAGE_FILE_TYPE`) | **제한 없음** |
+
+즉 **지금 문서함에 PDF·한글·엑셀을 첨부하면 업로드가 실패합니다.** `<input type="file" multiple>` 에
+`accept` 가 없어서 사용자는 고를 수는 있고(`DocumentDetailPage.tsx:368-369`), 올리는 순간 실패 건수로
+잡힙니다(`:136-141`). 문서함이라는 기능 이름을 생각하면 이게 더 문제입니다 — 이번 교체로 같이 풀립니다.
 
 ### B. 다운로드를 프록시 경유로 (문서 상세 화면)
 첨부를 `<a href={fileUrl}>` 직접 오픈 → **프록시 blob 다운로드**로 교체. private라 직접 URL 접근은 403입니다.
@@ -64,6 +76,11 @@ const handleDownload = useCallback(async (file: { url: string; name: string }) =
   - ⚠️ **FE `handleFileChange`에 개수 가드가 없습니다.** 11개 이상 선택하면 업로드까지 다 하고 저장에서 400이 납니다. **선택 시점에 10개 상한 + 안내**를 넣어 주세요(백엔드 상한 도입 전엔 무제한이었으므로 신규 제약입니다).
 - 수정(PUT)은 `status`가 **필수**입니다(생략·`null` 시 400). 현행 `putUserDrive` 타입·`DocumentDetailPage` 모두 항상 보내고 있어 **조치 불필요** — 새 호출부를 만들 때만 유의.
 - 영향 화면은 문서함(발신 작성 + 수신 상세)뿐.
+- ⚠️ **A 와 B 는 같이 나가야 합니다.** A 만 하면 private 로 올라가는데 다운로드는 여전히 직접 링크라
+  **403** 이 됩니다(private 객체는 URL 직접 접근이 막혀 있습니다). 반대로 B 만 먼저 나가는 건 안전합니다 —
+  레거시 `image/` 첨부도 프록시로 받아지므로.
+- **배포 순서: 백엔드 먼저 → 프론트.** 백엔드가 먼저 나가도 현행 화면은 그대로 동작합니다
+  (업로드는 `image/` 그대로, 다운로드는 직접 링크 그대로).
 
 ## 체크리스트
 - [ ] 업로드 `postFileUploadPrivate`로 교체
