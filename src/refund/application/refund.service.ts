@@ -84,8 +84,8 @@ export class RefundService {
       await this.recordPiiSearchLog(trimmedDeliveryTarget, auditContext);
     }
 
-    // COALESCE 순서와 반올림 없음은 아래 행 계산이 쓰는 readLineProductView(스냅샷 → live product → 0)를
-    // SQL 로 복제한 것이다. 한쪽만 바뀌면 화면의 행 합과 상단 총합이 조용히 어긋난다.
+    // COALESCE 순서와 반올림 없음은 아래 행 계산이 쓰는 readLineProductView 를 SQL 로 복제한 것이다.
+    // 한쪽만 바뀌면 화면의 행 합과 상단 총합이 조용히 어긋난다.
     const sumResult = await queryBuilder
       .clone()
       .select(

@@ -39,13 +39,6 @@ const COMPANY_B = '환불집계 고객사B';
  * refund_ratio / 100)` 으로 낸다. 이 SQL 이 **실제로 그 컬럼들을 읽는지**(TypeORM property-path 치환,
  * alias, decimal 반환)와 **행 합과 일치하는지**는 repository mock 으로 잡히지 않는다
  * (mock 은 문자열만 비교하므로). 같은 이유로 만들어진 선례: settle.service.summary-settlefee.
- *
- * 픽스처(고객사 A = 집계 대상, 고객사 B = 필터 배제 확인용):
- *   A-1 snapshot=10000, live product.price=99999(주문 후 인상), ratio=50   → 5000
- *   A-2 snapshot=null(레거시), live product.price=3000, ratio=100          → 3000
- *   A-3 refundStatus=NULL (환불건 아님), snapshot=50000                    → 집계 제외
- *   B-1 snapshot=7000, ratio=100                                          → 7000 (고객사 필터로 배제)
- *   고객사 A 합계 = 8000. live product.price 로 집계했다면 A-1 이 49999.5 가 되어 8000 이 안 나온다.
  */
 describe('RefundService.getList — totalRefundPrice DB 통합', () => {
   let dataSource: DataSource;
@@ -228,7 +221,6 @@ async function seedFixtures(dataSource: DataSource): Promise<void> {
       } as any) as unknown as ProductEntity,
     );
 
-  // A-1 이 참조하는 상품은 주문 후 가격이 10000 → 99999 로 인상된 상태를 나타낸다.
   const raisedProduct = await createProduct('가격인상상품', 99999);
   const legacyProduct = await createProduct('레거시상품', 3000);
 
