@@ -61,7 +61,7 @@ export function resolveDownloadExtension(key: string): string {
  */
 export function buildContentDispositionAttachment(fileName: string): string {
   const asciiFallback = fileName.replace(/[^\x20-\x7e]/g, '_').replace(/[\\"]/g, '');
-  // ★ encodeURIComponent 는 `'`·`(`·`)`·`*` 를 안 바꿄다. 그런데 RFC5987 의 attr-char 에는 이 넣이 없어
+  // ★ encodeURIComponent 는 `'`·`(`·`)`·`*` 를 안 바꾼다. 그런데 RFC5987 의 attr-char 에는 이 넷이 없어
   //   그대로 두면 엄격한 클라이언트가 filename* 를 통째로 무효로 본다(예: `계약서(최종).pdf` →
   //   밑줄로 뭉개는 ASCII 폴백으로 떨어진다). 네 글자만 마저 인코딩한다.
   //   `!`·`~`·`-`·`_`·`.` 는 attr-char 에 있으므로 건드리지 않는다.
@@ -96,25 +96,41 @@ export function isFilePathListRoundTripSafe(urls: string[]): boolean {
  * 되짚을 단서가 0개가 된다. 그렇다고 애플리케이션 로그에 key 를 그대로 쓰면 `{uuid}-{원본명}` 의
  * 원본명이 다시 새어 같은 값을 한쪽에서만 가리는 꼴이 된다. 그래서 식별자 앞부분만 남긴다.
  *   private/5/0123456789abcdef-해지 신청서.pdf  →  private/5/01234567…
+ *
+ * ★ 제어문자 제거(sanitizeForLog)를 이 함수 안에서 끝낸다. 호출부에서 따로 감싸게 두면 한 곳은
+ *   빠진다 — 실제로 그랬다(마지막 세그먼트만 잘라 놓고 `private/5%0aFAKE/...` 의 디렉토리 세그먼트는
+ *   원문 그대로 이어붙여, "로그 줄 위조를 막았다" 는 주석과 달리 개행이 그대로 나갔다).
+ *   마스킹과 정제는 같은 목적(로그에 안전한 형태)이라 한 함수가 둘 다 책임진다.
  */
 export function maskStorageKeyForLog(key: string): string {
-  const segments = key.split('/');
+  const segments = sanitizeForLog(key).split('/');
   const base = segments.pop() ?? '';
   const dash = base.indexOf('-');
-  // `{식별자}-{원본명}` 규격이 아니면 통째로 가린다(이름만 있는 형태일 수 있다).
+  // 첫 '-' 앞(무작위 식별자)만 최대 8자 남긴다. '-' 가 없으면 통째로 가린다.
+  // ※ 업로드 key 의 식별자는 하이픈 없는 UUID(32hex)라 실제 첨부는 원본명이 안 샌다.
+  //   다만 손으로 만든 `2026년 보고서-최종.pdf` 같은 이름은 앞 8자가 남는다 — 여기까지가 이 함수의 보장이다.
   const masked = dash > 0 ? `${base.slice(0, Math.min(dash, 8))}…` : '***';
   return [...segments, masked].join('/');
 }
 
+/** 로그 한 줄에 남길 최대 길이(초과분은 잘린다). */
+const LOG_TEXT_MAX_LENGTH = 500;
+
 /**
- * 로그 한 줄에 넣기 전에 줄바꿈·제어문자를 없앨다 — 로그 라인 주입 방지.
+ * 로그 한 줄에 넣기 전에 줄바꿈·제어문자를 없앤다 — 로그 라인 주입 방지.
  *
  * key 는 클라이언트가 준 URL 의 pathname 을 decodeURIComponent 한 값이라 `%0a` 를 넣으면 실제
  * 개행이 된다(실측 확인함). 그대로 로그에 쓰면 가짜 로그 줄을 만들어 넣을 수 있다.
  * C0 제어문자·DEL 에 더해 유니코드 줄바꿈(U+0085, U+2028, U+2029)까지 막는다 —
  * 일부 로그 수집기·JSON 파서가 이것들도 줄바꿈으로 해석한다.
+ *
+ * ★ 입력이 문자열이라고 가정하지 않는다. 호출부는 대개 `error.message` 를 넘기는데 자바스크립트는
+ *   거기에 아무 값이나 들어갈 수 있다(문자열도 null 도 던져진다). 문자열로 가정하고 .replace 를
+ *   부르면 catch 안에서 TypeError 가 나 로그가 통째로 사라진다 — 남기려던 자리에서 침묵이 된다.
+ * ★ 길이 상한도 여기서 건다. key 는 클라이언트가 정하므로 URL 한도(수 KB)가 한 줄에 그대로 실린다.
  */
 export function sanitizeForLog(text: string): string {
   // eslint-disable-next-line no-control-regex
-  return text.replace(/[\u0000-\u001f\u007f\u0085\u2028\u2029]/g, ' ');
+  const cleaned = String(text).replace(/[\u0000-\u001f\u007f\u0085\u2028\u2029]/g, ' ');
+  return cleaned.length > LOG_TEXT_MAX_LENGTH ? `${cleaned.slice(0, LOG_TEXT_MAX_LENGTH)}…(잘림)` : cleaned;
 }

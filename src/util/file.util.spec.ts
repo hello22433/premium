@@ -226,3 +226,39 @@ describe('sanitizeForLog — 로그 라인 주입 차단', () => {
     expect(sanitizeForLog('private/5/01234567… 해지 신청서')).toBe('private/5/01234567… 해지 신청서');
   });
 });
+
+/**
+ * 로그 안전 회귀 — "마스킹했다" 와 "로그 줄 위조를 막았다" 는 다른 약속이다.
+ * 예전엔 마지막 세그먼트만 가리고 디렉토리 세그먼트는 원문 그대로 이어붙여, 주석은 제어문자를 없앤다고
+ * 하는데 실제로는 개행이 그대로 나갔다. 두 약속을 한 함수가 지키게 바꿨고 이 스펙이 그걸 잠근다.
+ */
+describe('maskStorageKeyForLog / sanitizeForLog — 로그 줄 위조 차단', () => {
+  it('★디렉토리 세그먼트의 개행도 없앤다 (마스킹만으로는 안 막힌다)', () => {
+    const key = 'private/5\nERROR 가짜줄/0123456789abcdef-대외비.pdf';
+    const masked = maskStorageKeyForLog(key);
+    expect(masked).not.toContain('\n');
+    expect(masked).not.toContain('대외비');
+  });
+
+  it('★파일명 쪽 개행도 없앤다', () => {
+    const masked = maskStorageKeyForLog('private/5/aa\r\nbb-x.pdf');
+    expect(masked).not.toContain('\n');
+    expect(masked).not.toContain('\r');
+  });
+
+  it('유니코드 줄바꿈(U+2028/U+2029/U+0085)도 없앤다', () => {
+    expect(sanitizeForLog('a\u2028b\u2029c\u0085d')).toBe('a b c d');
+  });
+
+  it('★문자열이 아닌 값이 와도 던지지 않는다 (catch 안에서 로그가 통째로 사라지면 안 된다)', () => {
+    expect(() => sanitizeForLog(undefined as unknown as string)).not.toThrow();
+    expect(() => sanitizeForLog(null as unknown as string)).not.toThrow();
+    expect(() => sanitizeForLog({ a: 1 } as unknown as string)).not.toThrow();
+  });
+
+  it('아주 긴 값은 잘린다 (key 는 클라이언트가 정한다)', () => {
+    const out = sanitizeForLog('x'.repeat(5000));
+    expect(out.length).toBeLessThan(600);
+    expect(out.endsWith('(잘림)')).toBe(true);
+  });
+});
