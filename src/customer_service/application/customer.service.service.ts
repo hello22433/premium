@@ -1391,6 +1391,7 @@ export class CustomerServiceService {
         .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
         .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
         .leftJoinAndSelect('choiceSelectProduct.brand', 'choiceSelectBrand')
+        .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
         .where('orderDelivery.id = :orderDeliveryId', { orderDeliveryId })
         .andWhere('orderDelivery.status IN (:...statuses)', { statuses })
         // 비동기 수신확인 진행중(PENDING)인 건은 재진입 차단 (msgKey 덮어쓰기/이중처리 방지).
@@ -2109,6 +2110,7 @@ export class CustomerServiceService {
     beforeChange: string,
     set: { couponStatus: OrderDeliveryCouponStatus; discardedAt?: Date },
     history?: { userId: number; type: string; content: string; afterChange: OrderDeliveryCouponStatus },
+    settleEnabled = false,
   ): Promise<void> {
     const qr = this.dataSource.createQueryRunner();
     await qr.connect();
@@ -2139,24 +2141,19 @@ export class CustomerServiceService {
       }
 
       // ── P6 정산 원장 (B14 §4 P6 — 핀상태변경 역분개) ──────────────────────────
-      // CANCEL/REFUND_CANCEL 전이만 역분개 대상. flag off 면 no-op.
+      // CANCEL/REFUND_CANCEL 전이만 역분개 대상. provider 선판정은 호출자(execPinStatusModify)가
+      // choice-first provider + isEnabledFor 로 수행하고 settleEnabled 으로 전달한다.
       if (
+        settleEnabled &&
         (set.couponStatus === OrderDeliveryCouponStatus.CANCEL ||
-          set.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL) &&
-        this.settleFlag.isEnabled
+          set.couponStatus === OrderDeliveryCouponStatus.REFUND_CANCEL)
       ) {
-        const od = await this.orderDeliveryRepository.findOne({
+        const lightweight = await this.orderDeliveryRepository.findOne({
           where: { id: orderDeliveryId },
-          relations: [
-            'orderProductMapping',
-            'orderProductMapping.product',
-            'orderProductMapping.product.partnerCompany',
-            'choiceSelectProduct',
-            'choiceSelectProduct.partnerCompany',
-          ],
+          relations: ['orderProductMapping', 'orderProductMapping.product', 'orderProductMapping.product.partnerCompany', 'choiceSelectProduct', 'choiceSelectProduct.partnerCompany'],
         });
-        if (od) {
-          await this.recordCsDiscardSettlement(od, qr.manager);
+        if (lightweight) {
+          await this.recordCsDiscardSettlement(lightweight, qr.manager);
         }
       }
 
@@ -2171,6 +2168,10 @@ export class CustomerServiceService {
 
   async execPinStatusModify(map: any) {
     const { businessName, beforeChange, afterChange, type, content, orderDelivery } = map;
+
+    // 정산 원장: choice-first provider 선판정 (relation 이미 mapPinStatusModify 에서 로드됨)
+    const settlementProvider = this.getPartnerType(orderDelivery);
+    const settleEnabled = !!settlementProvider && this.settleFlag.isEnabledFor(settlementProvider);
 
     // 발송취소(부분취소, 197-16)된 건은 핀상태변경 대상이 아니다. 취소는 status 만 CANCEL 로 바꾸고
     // couponStatus 는 NOT_USED 로 남아 아래 couponStatus 기반 terminal 가드가 놓친다. 폐기(execDiscard)와
@@ -2223,6 +2224,7 @@ export class CustomerServiceService {
               beforeChange,
               { couponStatus: OrderDeliveryCouponStatus.CANCEL, discardedAt: new Date() },
               { userId: map.userId, type, content, afterChange: OrderDeliveryCouponStatus.CANCEL },
+              settleEnabled,
             );
           } else {
             throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
@@ -2242,6 +2244,7 @@ export class CustomerServiceService {
               beforeChange,
               { couponStatus: afterChange, discardedAt: new Date() },
               { userId: orderDelivery.userId, type, content, afterChange },
+              settleEnabled,
             );
           } else {
             throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
@@ -2255,7 +2258,7 @@ export class CustomerServiceService {
             throw new BadRequestException('변경을 할 수 없는 핀상태입니다.');
           }
           // 경합 방지를 위해 CAS 적용.
-          await this.commitPinStatusTransition(orderDelivery.id, beforeChange, { couponStatus: afterChange });
+          await this.commitPinStatusTransition(orderDelivery.id, beforeChange, { couponStatus: afterChange }, undefined, settleEnabled);
       }
     } finally {
       await this.releaseMutationLease(orderDelivery.id, mutationClaimAt);

@@ -771,6 +771,8 @@ export class DeliveryBatchService {
       .innerJoinAndSelect('orderProductMapping.product', 'product')
       .innerJoinAndSelect('product.brand', 'brand')
       .innerJoinAndSelect('product.partnerCompany', 'partnerCompany')
+      .leftJoinAndSelect('orderDelivery.choiceSelectProduct', 'choiceSelectProduct')
+      .leftJoinAndSelect('choiceSelectProduct.partnerCompany', 'choicePartnerCompany')
       .where('orderDelivery.status = :status', { status: IOrderDeliveryStatus.WAIT })
       .andWhere('orderDelivery.claimedAt = :claimedAt', { claimedAt })
       .andWhere('orderDelivery.reportState IS NULL')

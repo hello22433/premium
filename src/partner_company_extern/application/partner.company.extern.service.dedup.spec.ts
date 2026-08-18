@@ -139,7 +139,7 @@ describe('PartnerCompanyExternService - PIN dedup recovery', () => {
           provide: getRepositoryToken(SsgResendDeductPendingEntity),
           useValue: resendDeductPendingRepository,
         },
-        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, isEnabledFor: () => false } },
+        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, hasAnyActiveProvider: false, isEnabledFor: () => false } },
         { provide: PartnerSettleProducerService, useValue: {} },
         { provide: SsgAutoResolveConfig, useValue: new SsgAutoResolveConfig({ get: () => 'off' } as any) },
         { provide: SsgPinObservationService, useValue: { record: jest.fn() } },
@@ -446,6 +446,133 @@ describe('PartnerCompanyExternService - PIN dedup recovery', () => {
           recoveredFrom: 'FRESH_ISSUE',
         }),
       );
+    });
+  });
+
+  describe('정산 원장 — 비활성 provider 는 relation 조회 없이 PIN 저장 성공', () => {
+    it('GALAXIA 만 활성이고 DAOU 발급 → 정산 relation findOne 0회, PIN update 성공', async () => {
+      const module: TestingModule = await Test.createTestingModule({
+        providers: [
+          PartnerCompanyExternService,
+          { provide: 'IGalaxia', useValue: { issue: jest.fn(), check: jest.fn(), cancel: jest.fn() } },
+          { provide: 'IGsmbiz', useValue: mock<any>() },
+          { provide: 'IGiftiel', useValue: mock<any>() },
+          { provide: 'IGiftiShow', useValue: mock<any>() },
+          { provide: 'ICulture', useValue: mock<any>() },
+          { provide: 'ISsgIssue', useValue: mock<any>() },
+          { provide: 'IDaou', useValue: { issue: jest.fn().mockResolvedValue({ resultCode: 'S000001', pinNo: 'DAOU-PIN-1', resultMessage: '정상처리', tsId: 'TS-001' }) } },
+          { provide: getRepositoryToken(OrderDeliveryEntity), useValue: makeRepoMock() },
+          { provide: getRepositoryToken(PartnerCompanyExternHistoryEntity), useValue: makeRepoMock() },
+          { provide: getRepositoryToken(PartnerCompanyEntity), useValue: makeRepoMock() },
+          { provide: getRepositoryToken(PinIssueDedupEntity), useValue: makeRepoMock() },
+          { provide: getRepositoryToken(SsgIssueLogEntity), useValue: makeRepoMock() },
+          { provide: getRepositoryToken(PinIssueCommandEntity), useValue: makeRepoMock() },
+          { provide: getRepositoryToken(SsgResendDeductPendingEntity), useValue: { createQueryBuilder: jest.fn() } },
+          { provide: getRepositoryToken(GiftielExchangeHistoryEntity), useValue: makeRepoMock() },
+          { provide: getRepositoryToken(GalaxiaBarcodeLogEntity), useValue: makeRepoMock() },
+          {
+            provide: PartnerSettleFeatureFlag,
+            useValue: {
+              isEnabled: true,
+              hasAnyActiveProvider: true,
+              isEnabledFor: (p: string) => p === 'GALAXIA',
+              getActiveProviders: () => ['GALAXIA'],
+            },
+          },
+          { provide: PartnerSettleProducerService, useValue: { record: jest.fn() } },
+          { provide: SsgAutoResolveConfig, useValue: new SsgAutoResolveConfig({ get: () => 'off' } as any) },
+          { provide: SsgPinObservationService, useValue: { record: jest.fn() } },
+          { provide: CryptoCipher, useValue: { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000') } },
+          { provide: SsgInsertStateService, useValue: { markAttempted: jest.fn(), markConfirmed: jest.fn(), markFailed: jest.fn(), getState: jest.fn() } },
+        ],
+      }).compile();
+
+      const svc = module.get<PartnerCompanyExternService>(PartnerCompanyExternService);
+      const odRepo: any = module.get(getRepositoryToken(OrderDeliveryEntity));
+
+      const od = buildOrderDelivery({
+        orderProductMapping: {
+          product: { type: 'COUPON', name: 'DAOU 상품', price: 3000, partnerCompanyCode: 'D1', partnerCompany: { type: 'DAOU' } },
+        },
+      });
+
+      await svc.issue(od, null);
+
+      // PIN 저장 확인: update 에 barCode 가 포함돼야 한다
+      const updateCalls = odRepo.update.mock.calls;
+      const pinUpdate = updateCalls.find((c: any) => c[1]?.barCode === 'DAOU-PIN-1');
+      expect(pinUpdate).toBeDefined();
+
+      // 정산 relation findOne 은 호출되지 않아야 한다 (DAOU 는 비활성)
+      const findOneCalls = odRepo.findOne.mock.calls;
+      const settleFindOne = findOneCalls.filter((c: any) =>
+        c[0]?.relations?.includes('choiceSelectProduct'),
+      );
+      expect(settleFindOne).toHaveLength(0);
+    });
+
+    it('choice provider 가 기본 상품과 다르면 choice provider 로 판정한다', async () => {
+      const module: TestingModule = await Test.createTestingModule({
+        providers: [
+          PartnerCompanyExternService,
+          { provide: 'IGalaxia', useValue: { issue: jest.fn().mockResolvedValue({ transactionId: 'g1', giftCertificate: { barcode: 'GX-1' } }) } },
+          { provide: 'IGsmbiz', useValue: mock<any>() },
+          { provide: 'IGiftiel', useValue: mock<any>() },
+          { provide: 'IGiftiShow', useValue: mock<any>() },
+          { provide: 'ICulture', useValue: mock<any>() },
+          { provide: 'ISsgIssue', useValue: mock<any>() },
+          { provide: 'IDaou', useValue: mock<any>() },
+          { provide: getRepositoryToken(OrderDeliveryEntity), useValue: makeRepoMock() },
+          { provide: getRepositoryToken(PartnerCompanyExternHistoryEntity), useValue: makeRepoMock() },
+          { provide: getRepositoryToken(PartnerCompanyEntity), useValue: makeRepoMock() },
+          { provide: getRepositoryToken(PinIssueDedupEntity), useValue: makeRepoMock() },
+          { provide: getRepositoryToken(SsgIssueLogEntity), useValue: makeRepoMock() },
+          { provide: getRepositoryToken(PinIssueCommandEntity), useValue: makeRepoMock() },
+          { provide: getRepositoryToken(SsgResendDeductPendingEntity), useValue: { createQueryBuilder: jest.fn() } },
+          { provide: getRepositoryToken(GiftielExchangeHistoryEntity), useValue: makeRepoMock() },
+          { provide: getRepositoryToken(GalaxiaBarcodeLogEntity), useValue: makeRepoMock() },
+          {
+            provide: PartnerSettleFeatureFlag,
+            useValue: {
+              isEnabled: true,
+              hasAnyActiveProvider: true,
+              isEnabledFor: (p: string) => p === 'SSG',
+              getActiveProviders: () => ['SSG'],
+            },
+          },
+          { provide: PartnerSettleProducerService, useValue: { record: jest.fn() } },
+          { provide: SsgAutoResolveConfig, useValue: new SsgAutoResolveConfig({ get: () => 'off' } as any) },
+          { provide: SsgPinObservationService, useValue: { record: jest.fn() } },
+          { provide: CryptoCipher, useValue: { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000') } },
+          { provide: SsgInsertStateService, useValue: { markAttempted: jest.fn(), markConfirmed: jest.fn(), markFailed: jest.fn(), getState: jest.fn() } },
+        ],
+      }).compile();
+
+      const svc = module.get<PartnerCompanyExternService>(PartnerCompanyExternService);
+      const odRepo: any = module.get(getRepositoryToken(OrderDeliveryEntity));
+
+      // base=GALAXIA(비활성), choice=SSG(활성) → settlement provider=SSG → findOne 호출됨
+      const od = buildOrderDelivery({
+        orderProductMapping: {
+          product: { type: 'COUPON', name: '초이스 상품', price: 5000, partnerCompanyCode: 'G1', partnerCompany: { type: 'GALAXIA' } },
+        },
+        choiceSelectProduct: { partnerCompany: { type: 'SSG' } },
+      });
+
+      // findOne 이 호출되면 정산 경로 진입 성공. choice=SSG 가 활성이므로.
+      odRepo.findOne.mockResolvedValue(od);
+
+      await svc.issue(od, null);
+
+      // PIN 저장 확인
+      const updateCalls = odRepo.update.mock.calls;
+      const pinUpdate = updateCalls.find((c: any) => c[1]?.barCode === 'GX-1');
+      expect(pinUpdate).toBeDefined();
+
+      const settleFindOne = odRepo.findOne.mock.calls.filter((c: any) =>
+        c[0]?.relations?.includes('choiceSelectProduct'),
+      );
+      expect(settleFindOne.length).toBeGreaterThan(0);
     });
   });
 
