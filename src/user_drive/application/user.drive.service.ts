@@ -200,12 +200,9 @@ export class UserDriveService {
    *   즉 다운로드를 안 해도 이름은 새어나간다. 그래서 객체 판정은 다운로드 허용 규칙
    *   (assertDownloadable: 발신자 소유이거나 업로더가 SUPER)과 같은 기준을 쓴다.
    *
-   * ⚠️ 단 한 가지는 일부러 다르다 — assertDownloadable 에는 "요청자가 관리자면 소유검사 생략" 이
-   *   있지만 여기엔 없다. 이름 노출은 관리자에게도 좁게 유지한다(이름은 다운로드보다 약한 행위라
-   *   더 넓힐 이유가 없고, 넓히면 과거 밀반입 첨부의 진짜 이름이 관리자 화면에서 다시 샌다).
-   *   그 대가로 관리자는 타인 소유 첨부를 sanitize 된 key 복원명(공백이 _)으로 보게 되는데,
-   *   다운로드하면 진짜 이름이 나오므로 기능 손실은 아니다.
-   *   ※ 이 비대칭을 없애려고 여기에 관리자 우회를 얹지 마라 — 위 이유로 의도된 차이다.
+   * ※ 한때 assertDownloadable 에만 "요청자가 관리자면 소유검사 생략" 이 있어 두 판정이 갈렸으나,
+   *   그 우회가 과거에 저장된 타인 소유 private key 를 관리자 경로로 열어 주는 구멍이라 제거했다.
+   *   지금은 두 함수가 같은 객체 판정을 쓴다 — 어느 한쪽에만 요청자 권한 우회를 얹지 마라.
    *
    *   쓰기 시점 검증이 생긴 뒤로 타인 소유 key 가 새로 들어올 길은 막혔지만, 그 이전에 저장된 행은
    *   그대로 남아 있으므로 읽는 쪽에도 같은 판정을 둔다(이중 방어).
@@ -293,7 +290,7 @@ export class UserDriveService {
    *  - private/{ownerId}/... : 첨부 소유(ownerId) 검증을 문서함 "글쓰기(수정) 권한"과 통일한다.
    *    문서함 첨부는 그 문서에 글 쓸 수 있는 사람만 넣을 수 있고(create/update 관리자 전용),
    *    글쓰기 권한은 = 발신자 본인(OPERATION_ADMIN) 또는 최고관리자(SUPER_ADMIN, 아무 문서나 수정 가능)다.
-   *    따라서 관리자 아닌 요청자(기업 수신자)에겐 ownerId 가 발신자이거나 SUPER 인 첨부만 허용한다.
+   *    따라서 ownerId 가 발신자이거나 SUPER 인 첨부만 허용한다(요청자가 관리자여도 동일하게 건다).
    *      · ownerId === senderId  → 발신자가 올린 첨부(대다수). 조회 없이 통과.
    *      · 그 외               → SUPER 가 교차수정으로 올린 경우만 허용(그래서 업로더 권한을 조회해 확인).
    *    이렇게 하면 발신 아닌 다른 운영관리자/기업계정의 key 가 심겨도 차단되면서, SUPER 교차수정은 과차단하지 않는다.
@@ -324,8 +321,15 @@ export class UserDriveService {
       const ownerId = Number(ownerSegment);
       // 요청자가 관리자면 전체 허용. 그 외엔 "이 문서에 글 쓸 수 있던 사람이 올린 첨부"만 허용:
       // 발신자 본인이면 즉시 통과, 아니면 업로더가 SUPER 인 경우(아무 문서나 수정 가능)만 예외 허용.
-      if (!this.isAdminUser(user) && ownerId !== drive.senderId) {
-        const uploader = await this.userRepository.findOne({ where: { id: ownerId } });
+      // ★ 요청자가 관리자여도 건너뛰지 않는다. 관리자는 '문서를 볼 권한' 이 넓은 것이지
+      //   '아무 S3 객체나 백엔드 자격증명으로 받을 권한' 이 넓은 게 아니다. 쓰기 시점 검증은 앞으로
+      //   들어올 것만 막으므로, 그 이전에 저장된 타인 소유 private key 가 남아 있으면 관리자 경로로
+      //   그대로 내려받힌다 → 객체 판정은 요청자 권한과 무관하게 건다(resolveHeadableUrls 와 동일).
+      if (ownerId !== drive.senderId) {
+        const uploader = await this.userRepository.findOne({
+          where: { id: ownerId },
+          select: ['id', 'authority'],
+        });
         if (uploader?.authority !== IUserAuthority.SUPER_ADMIN) {
           throw new ForbiddenException('다운로드 권한이 없습니다.');
         }

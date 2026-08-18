@@ -80,10 +80,27 @@ describe('UserDriveService.downloadFile', () => {
     expect(fileService.downloadWithPath).not.toHaveBeenCalled();
   });
 
-  it('관리자 → 허용 (업로더 조회 없이 통과)', async () => {
+  // ※ 기대값이 바뀐 케이스다. 예전엔 "요청자가 관리자면 객체소유 검사 생략" 이라 조회 없이 통과했다.
+  //   그 우회가 과거에 저장된 타인 소유 private key 를 관리자 경로로 열어 주는 구멍이라 제거했고,
+  //   이제 관리자도 같은 객체 판정을 지난다(업로더가 SUPER 라서 통과하는 것이지 관리자라서가 아니다).
+  it('관리자 + SUPER 가 올린 첨부 → 허용 (업로더 권한을 실제로 확인한다)', async () => {
     const { sut, userRepo } = makeSut(superAddedUrl);
     await expect(sut.downloadFile(admin, 1, superAddedUrl)).resolves.toBeDefined();
+    expect(userRepo.findOne).toHaveBeenCalledTimes(1);
+  });
+
+  it('관리자 + 발신자가 올린 첨부 → 허용, 조회 없이 통과 (단축 경로는 유지)', async () => {
+    const { sut, userRepo } = makeSut(ownUrl);
+    await expect(sut.downloadFile(admin, 1, ownUrl)).resolves.toBeDefined();
     expect(userRepo.findOne).not.toHaveBeenCalled();
+  });
+
+  // ★ 이번 라운드의 핵심 보장 — 관리자여도 '아무 S3 객체나' 받을 수는 없다.
+  //   쓰기 검증은 앞으로 들어올 것만 막으므로, 그 이전에 저장된 타인 소유 key 가 이 경로로 새면 안 된다.
+  it('★관리자여도 타인 소유(비SUPER) 첨부는 차단 — 레거시 행이 관리자 경로로 새지 않는다', async () => {
+    const { sut, fileService } = makeSut(foreignUrl);
+    await expect(sut.downloadFile(admin, 1, foreignUrl)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(fileService.downloadWithPath).not.toHaveBeenCalled();
   });
 
   it('비수신 기업관리자 → BadRequest (문서 존재 은닉)', async () => {
@@ -203,10 +220,11 @@ describe('UserDriveService.downloadFile', () => {
     expect(fileService.downloadWithPath).not.toHaveBeenCalled();
   });
 
-  it('SUPER_ADMIN 요청자 → 허용 (관리자는 객체소유 검사 없이 통과)', async () => {
+  // ※ 기대값이 바뀐 케이스다(위 관리자 케이스와 같은 이유). SUPER 요청자도 객체 판정을 지난다.
+  it('★SUPER_ADMIN 요청자여도 타인 소유(비SUPER) 첨부는 차단', async () => {
     const superReq = { id: 1, authority: IUserAuthority.SUPER_ADMIN } as any;
-    const { sut, userRepo } = makeSut(foreignUrl); // 업로더가 비관리자여도 관리자 요청자는 통과
-    await expect(sut.downloadFile(superReq, 1, foreignUrl)).resolves.toBeDefined();
-    expect(userRepo.findOne).not.toHaveBeenCalled();
+    const { sut, fileService } = makeSut(foreignUrl);
+    await expect(sut.downloadFile(superReq, 1, foreignUrl)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(fileService.downloadWithPath).not.toHaveBeenCalled();
   });
 });
