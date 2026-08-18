@@ -312,6 +312,27 @@ describe('LoggerMiddleware 마스킹', () => {
       warn.mockRestore();
     });
 
+    // ★ 폴백 경로가 URL 을 원문으로 남기면, 정상 경로에서 가리는 값이 '실패했을 때만' 평문으로 샌다.
+    //   보호 수준은 가장 약한 채널이 정한다 — 실패 경로도 같은 마스킹을 지나야 한다.
+    it('로그 생성 실패 시에도 URL 의 민감 파라미터를 가린다', () => {
+      const warn = jest.spyOn((mw as any).logger, 'warn').mockImplementation(() => undefined);
+      const { res, finish } = makeRes();
+      let deep: any = {};
+      const root = deep;
+      for (let i = 0; i < 60000; i++) deep = deep.a = {};
+      const url =
+        '/user-drive/1/file/download?fileUrl=https://b.s3.amazonaws.com/private/5/abc-해지신청서.pdf&token=secret123';
+      mw.use({ ...req(root), originalUrl: url } as any, res, () => undefined);
+      finish();
+
+      const logged = String(warn.mock.calls[0][0]);
+      expect(logged).not.toContain('private/5');
+      expect(logged).not.toContain('해지신청서');
+      expect(logged).not.toContain('secret123');
+      expect(logged).toContain('/user-drive/1/file/download'); // 경로는 남아야 추적이 된다
+      warn.mockRestore();
+    });
+
     it('정상 body 는 기존대로 로그된다', () => {
       const log = jest.spyOn((mw as any).logger, 'log').mockImplementation(() => undefined);
       const { res, finish } = makeRes();

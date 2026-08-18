@@ -251,11 +251,19 @@ export class LoggerMiddleware implements NestMiddleware {
 
         this.logger.log(message);
       } catch (error) {
-        this.logger.warn(
-          `접근 로그 생성 실패 (${method} ${originalUrl} ${res.statusCode}): ${
-            (error as Error)?.message ?? String(error)
-          }`,
-        );
+        // ★ 폴백에서 originalUrl 을 원문으로 쓰면 안 된다 — 정상 경로에서 가리는 fileUrl/token/code/
+        //   encryptKey 가 실패 경로로만 평문 노출된다(가장 약한 채널이 보호 수준을 정한다).
+        //   그리고 이 폴백 자체가 던지면(로그 transport 장애 등) finish 이벤트 밖으로 예외가 새어
+        //   막으려던 워커 종료가 그대로 남는다 → 폴백도 한 번 더 감싼다. 여기선 절대 던지지 않는다.
+        try {
+          this.logger.warn(
+            `접근 로그 생성 실패 (${method} ${this.maskUrl(originalUrl)} ${res.statusCode}): ${
+              (error as Error)?.message ?? String(error)
+            }`,
+          );
+        } catch {
+          // 로그 sink 자체가 죽은 상황. 더 할 수 있는 게 없고, 여기서 던지면 프로세스가 죽는다.
+        }
       }
     });
     next();
