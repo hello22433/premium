@@ -74,3 +74,32 @@ describe('FileService.getOriginalName — 메타데이터 조회 실패 처리',
     expect(logged).toContain('private/5/');
   });
 });
+
+/**
+ * ★ '객체 없음' 판정을 isNotFoundError 로 통일한 회귀.
+ * 예전엔 여기서 `e.name ?? e.Code` 로 따로 판정해, Code 에만 코드가 실린 에러가 name='Error' 에 가려
+ * 정상 폴백인데도 경고가 나갔다(같은 질문에 답이 둘이면 언젠가 갈린다).
+ */
+describe('FileService.getOriginalName — 판정 통일 + 로그 안전', () => {
+  const url = 'https://b.s3.amazonaws.com/private/5/0123456789abcdef-해지 신청서.pdf';
+  const makeSut = (headImpl: jest.Mock) => {
+    const sut = new FileService({ headOriginalName: headImpl } as any);
+    (sut as any).logger = { warn: jest.fn() };
+    return sut;
+  };
+
+  it('★Code 에만 NoSuchKey 가 실린 에러도 정상 폴백으로 본다 (경고 없음)', async () => {
+    const sut = makeSut(jest.fn().mockRejectedValue(Object.assign(new Error('x'), { Code: 'NoSuchKey' })));
+    expect(await sut.getOriginalName(url)).toBe('해지 신청서.pdf');
+    expect((sut as any).logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('★경고에 개행을 넣을 수 없다 (key·메시지 둘 다 정제)', async () => {
+    const sut = makeSut(
+      jest.fn().mockRejectedValue(Object.assign(new Error('a\nERROR 가짜'), { name: 'AccessDenied' })),
+    );
+    await sut.getOriginalName('https://b.s3.amazonaws.com/private/5%0aFAKE/0123456789abcdef-a.pdf');
+    const logged = (sut as any).logger.warn.mock.calls[0][0] as string;
+    expect(logged).not.toContain('\n');
+  });
+});

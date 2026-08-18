@@ -52,13 +52,14 @@ export class FileService {
       // ★ key 를 그대로 쓰면 안 된다 — `private/{업로더id}/{uuid}-{원본명}` 이라 접근 로그에서 가려 놓은
       //   원본명이 여기로 다시 샌다(같은 값을 한쪽 채널에서만 가리는 꼴). 그리고 key 는 클라이언트가 준
       //   URL 을 decode 한 값이라 `%0a` 로 개행을 넣어 가짜 로그 줄을 만들 수 있다.
-      //   → 마스킹 + 제어문자 제거. 메시지도 같은 이유로 정제한다(SDK 메시지에 key 가 실릴 수 있다).
+      //   → maskStorageKeyForLog 가 마스킹과 제어문자 제거를 둘 다 한다(그 함수 주석 참조).
+      //   메시지·code 도 같은 이유로 정제한다 — SDK 메시지에 key 가 그대로 실릴 수 있고, code 는 외부
+      //   SDK 가 채우는 값이라 형태 보장이 없다.
       const rawMessage = error instanceof Error ? error.message : String(error);
-      const errorCode = (error as { name?: string; Code?: string })?.name ?? (error as { Code?: string })?.Code;
       this.logger.error(
-        `S3 다운로드 실패 (key=${maskStorageKeyForLog(key)}, code=${errorCode ?? 'unknown'}): ${sanitizeForLog(
-          rawMessage,
-        )}`,
+        `S3 다운로드 실패 (key=${maskStorageKeyForLog(key)}, code=${sanitizeForLog(
+          this.resolveErrorCode(error),
+        )}): ${sanitizeForLog(rawMessage)}`,
         error instanceof Error ? sanitizeForLog(error.stack ?? '') : undefined,
       );
       if (this.isNotFoundError(error)) {
@@ -90,8 +91,21 @@ export class FileService {
       return false;
     }
     // 코드가 아예 없는 형태에서만 404 폴백.
-    // ※ HeadObject 계열('NotFound')은 아직 이 판정을 안 거친다(downloadWithPath = GetObject 전용). 선반영이다.
     return e?.$metadata?.httpStatusCode === 404;
+  }
+
+  /**
+   * 로그에 남길 에러 코드 문자열.
+   *
+   * ★ `e.name ?? e.Code` 로 쓰면 안 된다 — JS Error 는 name 이 항상 채워져 있어(new Error('x').name === 'Error')
+   *   Code 분기가 영영 안 읽힌다. isNotFoundError 가 그 회귀를 겪고 두 축을 다 보게 고쳤는데, 정작 로그는
+   *   같은 패턴을 그대로 쓰고 있었다 → 버킷 오설정(Code=NoSuchBucket)이 로그엔 `code=Error` 로만 보였다.
+   *   그래서 있는 것을 다 이어 붙인다(`Error/NoSuchBucket`). 어느 쪽도 조용히 버리지 않는다.
+   */
+  private resolveErrorCode(error: unknown): string {
+    const e = error as { name?: string; Code?: string };
+    const codes = [e?.name, e?.Code].filter((v): v is string => typeof v === 'string' && v.length > 0);
+    return codes.length === 0 ? 'unknown' : [...new Set(codes)].join('/');
   }
 
   /** S3 URL 의 객체를 메모리 버퍼로 읽는다(엑셀 파싱 등 서버 내 처리용). */
@@ -169,13 +183,16 @@ export class FileService {
       // 객체가 없는 것(NotFound/NoSuchKey)은 레거시 첨부의 정상 폴백이라 조용히 넘긴다.
       // 그 외(권한·자격증명·버킷 오설정·네트워크)는 '원본명 기능이 통째로 꺼진' 상태인데 응답은 200 이라
       // 아무 신호도 안 선다 → 반드시 남긴다. key 는 원본명이 새지 않게 마스킹해서 남긴다.
-      const e = error as { name?: string; Code?: string; message?: string };
-      const code = e?.name ?? e?.Code;
-      if (code !== 'NotFound' && code !== 'NoSuchKey') {
+      // ★ '객체 없음' 판정은 isNotFoundError 로 통일한다. 여기서 `e.name ?? e.Code` 로 따로 판정하면
+      //   Code 에만 코드가 실린 에러가 name='Error' 에 가려 정상 폴백인데도 warn 이 나간다(그 반대도 마찬가지).
+      //   같은 질문에 답이 두 개면 언젠가 갈린다.
+      // ★ key 뿐 아니라 code·message 도 정제한다 — 셋 다 외부에서 온 값이고, 한 곳만 빼면 그리로 샌다.
+      if (!this.isNotFoundError(error)) {
+        const rawMessage = error instanceof Error ? error.message : String(error);
         this.logger.warn(
-          `원본명 메타데이터 조회 실패 — key 복원으로 폴백 (key=${maskStorageKeyForLog(key)}, code=${code ?? 'unknown'}): ${
-            e?.message ?? String(error)
-          }`,
+          `원본명 메타데이터 조회 실패 — key 복원으로 폴백 (key=${maskStorageKeyForLog(key)}, code=${sanitizeForLog(
+            this.resolveErrorCode(error),
+          )}): ${sanitizeForLog(rawMessage)}`,
         );
       }
     }

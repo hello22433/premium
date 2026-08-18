@@ -102,3 +102,56 @@ describe('FileService.downloadWithPath — 오류 처리', () => {
     expect(Logger.prototype.error).toHaveBeenCalled();
   });
 });
+
+/**
+ * ★ 실패 로그의 '내용' 회귀.
+ *
+ * 위 스펙들은 Logger.error 가 불렸는지만 본다. 그래서 maskStorageKeyForLog(key) 를 key 로 되돌려도
+ * 전부 초록이었다 — 마스킹이 아무것에도 지켜지지 않는 상태였다. 여기서 실제 문자열을 본다.
+ */
+describe('FileService.downloadWithPath — 실패 로그의 내용', () => {
+  const makeSut = (downloadImpl: jest.Mock) => new FileService({ downloadFileToLocalWithPath: downloadImpl } as any);
+
+  let logged: string;
+  beforeEach(() => {
+    logged = '';
+    jest.spyOn(Logger.prototype, 'error').mockImplementation((msg: any) => {
+      logged = String(msg);
+      return undefined;
+    });
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it('★원본 파일명을 남기지 않는다 (접근 로그에서 가려놓고 여기서 새면 안 된다)', async () => {
+    const sut = makeSut(jest.fn().mockRejectedValue(Object.assign(new Error('boom'), { name: 'AccessDenied' })));
+    await expect(
+      sut.downloadWithPath('/tmp', 't', 'https://b.s3.amazonaws.com/private/5/0123456789abcdef-해지 신청서.pdf'),
+    ).rejects.toBeInstanceOf(InternalServerErrorException);
+    expect(logged).not.toContain('해지');
+    expect(logged).toContain('private/5/');
+  });
+
+  it('★key 의 개행으로 가짜 로그 줄을 만들 수 없다 (%0a → 실제 개행)', async () => {
+    const sut = makeSut(jest.fn().mockRejectedValue(Object.assign(new Error('boom'), { name: 'AccessDenied' })));
+    await expect(
+      sut.downloadWithPath('/tmp', 't', 'https://b.s3.amazonaws.com/private/5%0aERROR-가짜/0123456789abcdef-a.pdf'),
+    ).rejects.toBeInstanceOf(InternalServerErrorException);
+    expect(logged).not.toContain('\n');
+  });
+
+  it('★에러 메시지의 개행도 없앤다 (SDK 메시지에 key 가 실릴 수 있다)', async () => {
+    const sut = makeSut(jest.fn().mockRejectedValue(new Error('line1\nERROR 가짜줄')));
+    await expect(
+      sut.downloadWithPath('/tmp', 't', 'https://b.s3.amazonaws.com/private/5/0123456789abcdef-a.pdf'),
+    ).rejects.toBeInstanceOf(InternalServerErrorException);
+    expect(logged).not.toContain('\n');
+  });
+
+  it('★Code 에만 코드가 실린 에러도 로그에 드러난다 (name ?? Code 로 하나만 고르면 code=Error 만 보인다)', async () => {
+    const sut = makeSut(jest.fn().mockRejectedValue(Object.assign(new Error('no bucket'), { Code: 'NoSuchBucket' })));
+    await expect(
+      sut.downloadWithPath('/tmp', 't', 'https://b.s3.amazonaws.com/private/5/0123456789abcdef-a.pdf'),
+    ).rejects.toBeInstanceOf(InternalServerErrorException);
+    expect(logged).toContain('NoSuchBucket');
+  });
+});
