@@ -47,11 +47,18 @@ export function parseFilePathList(filePath: string | null | undefined): string[]
  * (과거엔 key.split('.') 를 써서, 확장자 없는 key 면 경로 전체가 확장자가 되어 존재하지 않는
  *  디렉토리 경로를 만들고 createWriteStream 이 ENOENT 로 실패 → 다운로드 500 이 났다.)
  * 사용자에게 보이는 이름은 Content-Disposition 의 fileName 이므로 로컬 확장자는 표시와 무관하다.
+ *
+ * ★ key 는 클라이언트가 준 URL 을 decode 한 값이라 확장자 자리에 아무 문자나 올 수 있다. 영숫자만
+ *   통과시킨다 — 널바이트(`%00`)가 들어가면 createWriteStream 이 동기로 던져 사용자가 원하는 만큼
+ *   ERROR 로그를 찍게 할 수 있고, 역슬래시가 들어가면 윈도우에서 tmpdir 밖 경로가 된다(운영은 리눅스).
  */
+const SAFE_EXTENSION_PATTERN = /^[A-Za-z0-9]{1,10}$/;
+
 export function resolveDownloadExtension(key: string): string {
   const base = key.split('/').pop() ?? '';
   const dot = base.lastIndexOf('.');
-  return dot > 0 && dot < base.length - 1 ? base.slice(dot + 1) : 'bin';
+  const candidate = dot > 0 && dot < base.length - 1 ? base.slice(dot + 1) : '';
+  return SAFE_EXTENSION_PATTERN.test(candidate) ? candidate : 'bin';
 }
 
 /**

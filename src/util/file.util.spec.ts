@@ -262,3 +262,30 @@ describe('maskStorageKeyForLog / sanitizeForLog — 로그 줄 위조 차단', (
     expect(out.endsWith('(잘림)')).toBe(true);
   });
 });
+
+/**
+ * 확장자는 클라이언트가 준 URL 에서 온다 — 널바이트가 섞이면 createWriteStream 이 동기로 던지고,
+ * 역슬래시가 섞이면 윈도우에서 tmpdir 밖 경로가 된다. 영숫자만 통과시킨다.
+ */
+describe('resolveDownloadExtension — 확장자 화이트리스트', () => {
+  it.each([
+    ['private/5/a-x.pdf', 'pdf'],
+    ['private/5/a-x.XLSX', 'XLSX'],
+    ['private/5/a-x', 'bin'],
+    ['private/5/a-x.', 'bin'],
+  ])('%s → %s', (key, expected) => {
+    expect(resolveDownloadExtension(key)).toBe(expected);
+  });
+
+  it('★널바이트가 섞인 확장자는 bin 으로 떨어뜨린다', () => {
+    expect(resolveDownloadExtension('private/5/a-x.p\u0000ng')).toBe('bin');
+  });
+
+  it('★역슬래시가 섞인 확장자는 bin 으로 떨어뜨린다 (경로 탈출 방지)', () => {
+    expect(resolveDownloadExtension('private/5/a-x.p\ng')).toBe('bin');
+  });
+
+  it('비정상적으로 긴 확장자도 bin', () => {
+    expect(resolveDownloadExtension(`private/5/a-x.${'a'.repeat(50)}`)).toBe('bin');
+  });
+});
