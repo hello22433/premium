@@ -215,3 +215,50 @@ describe('UserDriveService.create — 첨부 거절의 관측', () => {
     expect(logged).toContain('private/99/');
   });
 });
+
+/**
+ * ★ 거절 로그 자체가 로그 줄 위조 통로가 되면 안 된다.
+ *
+ * warnAttachmentRejected 가 받는 값 중 ownerSegment 는 key 를 split 한 조각이라 클라이언트가 정한다.
+ * key 는 extractStorageKey 의 decodeURIComponent 를 지나므로 %0A 가 실제 개행이 되고, 이 로그는
+ * 정규식을 '통과 못 했을 때' 찍히므로 개행이 든 세그먼트는 항상 이 경로로 온다.
+ * (마스킹만 하고 정제를 빼먹어 같은 결함을 이미 한 번 냈다 — 그래서 정제는 함수 안에서 끝낸다.)
+ */
+describe('UserDriveService — 거절 로그가 위조 통로가 되지 않는다', () => {
+  const admin = { id: 10, authority: IUserAuthority.OPERATION_ADMIN } as any;
+
+  const makeSut = () => {
+    const driveRepo: any = { insert: jest.fn(), findOne: jest.fn() };
+    const userRepo: any = { findOne: jest.fn().mockResolvedValue({ id: 20 }) };
+    const fileService: any = {
+      extractStorageKey: (url: string) => decodeURIComponent(new URL(url).pathname.replace(/^\/+/, '')),
+      isOwnStorageUrl: jest.fn().mockReturnValue(true),
+    };
+    const sut = new UserDriveService(driveRepo, userRepo, fileService);
+    const logger = { warn: jest.fn(), error: jest.fn(), log: jest.fn() };
+    (sut as any).logger = logger;
+    return { sut, logger };
+  };
+
+  const reject = async (url: string, logger: { warn: jest.Mock }, sut: UserDriveService) => {
+    await expect(
+      sut.create(admin, { title: 't', content: 'c', receiverId: 20, filePath: [url] } as any),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    return logger.warn.mock.calls[0][0] as string;
+  };
+
+  it('★ownerId 세그먼트에 심은 개행으로 가짜 로그 줄을 만들 수 없다', async () => {
+    const { sut, logger } = makeSut();
+    const url = 'https://b.s3.amazonaws.com/private/%0A2026-08-18%20ERROR%20%5B가짜%5D/aaaa-x.pdf';
+    const logged = await reject(url, logger, sut);
+    expect(logged).not.toContain(String.fromCharCode(10));
+    expect(logged).not.toContain(String.fromCharCode(13));
+  });
+
+  it('★세그먼트가 아주 길어도 로그 한 줄이 무한정 늘어나지 않는다', async () => {
+    const { sut, logger } = makeSut();
+    const url = `https://b.s3.amazonaws.com/private/${'x'.repeat(3000)}/aaaa-x.pdf`;
+    const logged = await reject(url, logger, sut);
+    expect(logged.length).toBeLessThan(1500);
+  });
+});

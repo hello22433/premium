@@ -270,10 +270,14 @@ export class UserDriveService {
    *   filePath/fileUrl 을 *** 로 가렸기 때문에, "무슨 key 를 노렸나" 를 되짚을 마지막 흔적까지 사라졌다.
    *   → 시도 자체를 여기서 남긴다. 반복 시도인지 오타인지도 이걸로만 갈린다.
    * ※ 남기는 것은 내부 id 와 마스킹된 key 뿐이다 — 원본 파일명은 남지 않는다(maskStorageKeyForLog).
+   * ★ 값 정제를 이 함수 안에서 끝낸다. 넘어오는 값 중 ownerSegment 는 key 를 split 한 조각이라
+   *   클라이언트가 정하는 문자열이고, key 는 decodeURIComponent 를 지나서 `%0a` 가 실제 개행이 된다.
+   *   게다가 이 로그는 정규식을 '통과 못 했을 때' 찍히므로 개행이 든 세그먼트는 항상 여기로 온다.
+   *   호출부 9곳에서 각각 감싸게 두면 한 곳이 빠진다 — maskStorageKeyForLog 가 겪은 그대로다.
    */
   private warnAttachmentRejected(reason: string, context: Record<string, string | number>): void {
     const detail = Object.entries(context)
-      .map(([key, value]) => `${key}=${value}`)
+      .map(([key, value]) => `${key}=${sanitizeForLog(String(value))}`)
       .join(', ');
     this.logger.warn(`첨부 검증 거절 — ${reason} (${detail})`);
   }
