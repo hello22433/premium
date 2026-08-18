@@ -5,6 +5,7 @@ import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.entity';
 import { PinIssueCommandEntity } from '../../entity/pin.issue.command.entity';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
+import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { SsgRecoveryResult } from '../interface/ssg.recovery.result';
 import { SsgRecoverySweepService } from './ssg-recovery-sweep.service';
@@ -68,6 +69,7 @@ describe('SsgRecoverySweepService', () => {
         { provide: getRepositoryToken(PinIssueCommandEntity), useValue: { createQueryBuilder: jest.fn() } },
         { provide: getRepositoryToken(OrderDeliveryEntity), useValue: { findOne: jest.fn() } },
         { provide: getRepositoryToken(SsgEventEntity), useValue: { findOne: jest.fn() } },
+        { provide: getRepositoryToken(SsgIssueLogEntity), useValue: { count: jest.fn().mockResolvedValue(0) } },
         { provide: SsgRecoveryService, useValue: recoveryService },
         {
           provide: PinIssueCommandService,
@@ -234,13 +236,14 @@ describe('P24 PIN resolution sweep fencing', () => {
 
   const makeService = (
     repo: any,
-    opts: { delivery?: any; ssgEvent?: any; pinCmd?: any; partner?: any; autoResolveMode?: string } = {},
+    opts: { delivery?: any; ssgEvent?: any; ssgIssueLog?: any; pinCmd?: any; partner?: any; autoResolveMode?: string } = {},
   ): any =>
     new SsgRecoverySweepService(
       {} as any,
       repo as any,
       (opts.delivery ?? { findOne: jest.fn() }) as any,
       (opts.ssgEvent ?? { findOne: jest.fn() }) as any,
+      (opts.ssgIssueLog ?? { count: jest.fn().mockResolvedValue(0) }) as any,
       {} as any,
       (opts.pinCmd ?? {}) as any,
       (opts.partner ?? {}) as any,
@@ -639,5 +642,159 @@ describe('P24 PIN resolution sweep fencing', () => {
 
     const eligibility = command.andWhere.mock.calls.find((call: any[]) => String(call[0]).includes(':started'))[0];
     expect(eligibility).toContain('status = :started AND (lease_expires_at IS NULL OR lease_expires_at < :now)');
+  });
+
+  describe('NOT_ATTEMPTED recovery cleanup', () => {
+    const notAttemptedCandidate = (overrides: Record<string, unknown> = {}) =>
+      candidate({
+        deliveryClaimToken: '2026-08-11T00:00:00.000Z',
+        externalIssueCount: 1,
+        status: 'STARTED',
+        resolution: null,
+        ...overrides,
+      });
+
+    const makeNotAttemptedHarness = (opts: {
+      issueThrows?: boolean;
+      ordinalLogCount?: number;
+      ordinalLogThrows?: boolean;
+      cleanupCommandAffected?: number;
+      autoResolveMode?: string;
+    } = {}) => {
+      const {
+        issueThrows = true,
+        ordinalLogCount = 0,
+        ordinalLogThrows = false,
+        cleanupCommandAffected = 1,
+        autoResolveMode = 'on',
+      } = opts;
+
+      const cleanupCommand = query(jest.fn().mockResolvedValue({ affected: cleanupCommandAffected }));
+      const cleanupDelivery = query();
+
+      // claimPinCommand batch path: delivery refresh fails → returns null → tryRecoverNotAttempted runs
+      const claimDeliveryRefresh = query(jest.fn().mockResolvedValue({ affected: 0 }));
+      // tryRecoverNotAttempted ownership tx: reclaimCommandOwnership succeeds
+      const ownershipCommand = query();
+
+      const finder = query(undefined, [notAttemptedCandidate()]);
+
+      const ssgIssueLogMock = {
+        count: ordinalLogThrows
+          ? jest.fn().mockRejectedValue(new Error('DB connection lost'))
+          : jest.fn().mockResolvedValue(ordinalLogCount),
+      };
+
+      const reclaimNotAttemptedAuthority = jest.fn().mockResolvedValue(true);
+      const reacquireDeliveryClaim = jest.fn().mockResolvedValue({ deliveryClaimToken: '2026-08-11T01:00:00.000Z' });
+      const markSucceededAfterDeliveryClaimRelease = jest.fn().mockResolvedValue(true);
+      const issue = issueThrows
+        ? jest.fn().mockRejectedValue(new Error('SSG timeout'))
+        : jest.fn().mockResolvedValue(undefined);
+
+      let txCallCount = 0;
+      const repo = {
+        createQueryBuilder: jest.fn(() => finder),
+        manager: {
+          createQueryBuilder: jest.fn(() => query()),
+          transaction: jest.fn(async (cb: (m: any) => Promise<unknown>) => {
+            txCallCount++;
+            if (txCallCount === 1) {
+              // claimPinCommand batch path — delivery refresh CAS fails → returns null
+              const manager = { createQueryBuilder: jest.fn(() => claimDeliveryRefresh) };
+              return cb(manager);
+            }
+            if (txCallCount === 2) {
+              // tryRecoverNotAttempted Phase 2 ownership tx
+              const manager = { createQueryBuilder: jest.fn(() => ownershipCommand) };
+              return cb(manager);
+            }
+            // txCallCount === 3: cleanup tx (delivery release + command restore/ops_review)
+            let deliveryServed = false;
+            const manager = {
+              createQueryBuilder: jest.fn(() => {
+                if (!deliveryServed) { deliveryServed = true; return cleanupDelivery; }
+                return cleanupCommand;
+              }),
+            };
+            return cb(manager);
+          }),
+        },
+      };
+
+      const service = makeService(repo, {
+        delivery: {
+          findOne: jest.fn().mockResolvedValue({
+            id: 71,
+            ssgEventId: 42,
+            orderProductMapping: { product: { partnerCompany: {} } },
+          }),
+        },
+        ssgEvent: { findOne: jest.fn().mockResolvedValue({ id: 42 }) },
+        ssgIssueLog: ssgIssueLogMock,
+        pinCmd: {
+          recordResolution: jest.fn().mockResolvedValue(true),
+          consumeNotIssuedRetryAuthority: jest.fn(),
+          consumeInitialIssueAuthority: jest.fn(),
+          reclaimNotAttemptedAuthority,
+          reacquireDeliveryClaim,
+          markSucceededAfterDeliveryClaimRelease,
+        },
+        partner: {
+          resolveDeferredSsgIssue: jest.fn(),
+          classifyDeferredSsgIssue: jest.fn().mockResolvedValue({ resolution: 'NOT_ATTEMPTED' }),
+          issue,
+        },
+        autoResolveMode,
+      });
+
+      return { service, ssgIssueLogMock, cleanupCommand, cleanupDelivery, issue, repo };
+    };
+
+    it('pre-external failure keeps new authority and transitions to RETRY_PENDING', async () => {
+      const h = makeNotAttemptedHarness({ issueThrows: true, ordinalLogCount: 0 });
+
+      await h.service.resolvePinIssuesOnce();
+
+      expect(h.cleanupCommand.set).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: PinIssueCommandStatus.RETRY_PENDING,
+          resolution: null,
+          leaseExpiresAt: null,
+        }),
+      );
+      const ownerWhere = h.cleanupCommand.andWhere.mock.calls.find(
+        (call: any[]) => String(call[0]).includes('owner_token'),
+      );
+      expect(ownerWhere[1].ownerToken).not.toBe('dead-worker');
+      const wvWhere = h.cleanupCommand.andWhere.mock.calls.find(
+        (call: any[]) => String(call[0]).includes('workflow_version'),
+      );
+      expect(wvWhere).toBeDefined();
+    });
+
+    it('ordinal log query failure falls back to OPS_REVIEW (fail-closed) and releases delivery claim', async () => {
+      const h = makeNotAttemptedHarness({ issueThrows: true, ordinalLogThrows: true });
+
+      const stats = await h.service.resolvePinIssuesOnce();
+
+      expect(h.cleanupCommand.set).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: PinIssueCommandStatus.OPS_REVIEW_REQUIRED,
+        }),
+      );
+      expect(h.cleanupDelivery.set).toHaveBeenCalledWith(
+        expect.objectContaining({ claimedAt: null, mutationClaimedAt: null }),
+      );
+      expect(stats.opsReview).toBe(1);
+    });
+
+    it('stale authority CAS fails after ownership rotation (no ABA regression)', async () => {
+      const h = makeNotAttemptedHarness({ issueThrows: true, ordinalLogCount: 0, cleanupCommandAffected: 0 });
+
+      const stats = await h.service.resolvePinIssuesOnce();
+
+      expect(stats.skipped).toBe(1);
+    });
   });
 });

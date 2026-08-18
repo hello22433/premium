@@ -6,12 +6,13 @@ import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.entity';
 import { PinIssueCommandEntity } from '../../entity/pin.issue.command.entity';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
+import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
 import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
 import { SsgPinResolution } from '../../partner_company_extern/interface/ssg.issue';
 import { canExecuteOrdinal } from '../../partner_company_extern/domain/ssg.autoresolve.policy';
 import { SsgAutoResolveConfig } from '../../partner_company_extern/application/ssg.autoresolve.config';
 import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
-import { PinIssueCommandStatus } from '../interface/pin.issue.command.status';
+import { PIN_ISSUE_AUTOMATED_TRANSITION_STATUSES, PinIssueCommandStatus } from '../interface/pin.issue.command.status';
 import { SsgRecoveryResult } from '../interface/ssg.recovery.result';
 import { PinIssueCommandAuthority, PinIssueCommandService } from './pin-issue-command.service';
 import { SsgRecoveryService } from './ssg-recovery.service';
@@ -52,6 +53,8 @@ export class SsgRecoverySweepService {
     private readonly orderDeliveryRepository: Repository<OrderDeliveryEntity>,
     @InjectRepository(SsgEventEntity)
     private readonly ssgEventRepository: Repository<SsgEventEntity>,
+    @InjectRepository(SsgIssueLogEntity)
+    private readonly ssgIssueLogRepository: Repository<SsgIssueLogEntity>,
     private readonly ssgRecoveryService: SsgRecoveryService,
     private readonly pinIssueCommandService: PinIssueCommandService,
     private readonly partnerCompanyExternService: PartnerCompanyExternService,
@@ -184,7 +187,25 @@ export class SsgRecoverySweepService {
       const attemptAt = new Date();
       const claim = await this.claimPinCommand(candidate, attemptAt);
       if (!claim) {
-        skipped++;
+        // EP-P30 §7-1: claimPinCommand 실패 = delivery claim CAS 불일치(앱 재시작 후 NULL 로 풀림).
+        // NOT_ATTEMPTED 이면 권한 재점유 + claim 재획득으로 frozen command 를 복구한다.
+        let notAttemptedResult: 'confirmed' | 'ops_review' | null;
+        try {
+          notAttemptedResult = await this.tryRecoverNotAttempted(candidate, attemptAt);
+        } catch (recoverError) {
+          this.logger.error(
+            `[PIN_RESOLUTION_SWEEP] tryRecoverNotAttempted threw for command=${candidate.id}: ${recoverError instanceof Error ? recoverError.message : recoverError}`,
+          );
+          skipped++;
+          continue;
+        }
+        if (notAttemptedResult === 'confirmed') {
+          confirmed++;
+        } else if (notAttemptedResult === 'ops_review') {
+          opsReview++;
+        } else {
+          skipped++;
+        }
         continue;
       }
       // batch 명령은 claim 시 delivery mutation lease 를 새 토큰으로 갱신했다. 이후 발급·완료는
@@ -527,6 +548,56 @@ export class SsgRecoverySweepService {
     return this.pinIssueCommandService.recordResolution(authority, { resolution, status, nextAttemptAt });
   }
 
+  private async recordResolutionWithManager(
+    manager: import('typeorm').EntityManager,
+    authority: PinIssueCommandAuthority,
+    resolution: SsgPinResolution,
+    status: PinIssueCommandStatus,
+  ): Promise<boolean> {
+    const result = await manager
+      .createQueryBuilder()
+      .update(PinIssueCommandEntity)
+      .set({
+        resolution,
+        status,
+        nextAttemptAt: null,
+        resolutionLookupCount: () => 'resolution_lookup_count + 1',
+        resolutionStartedAt: () => 'COALESCE(resolution_started_at, CURRENT_TIMESTAMP(6))',
+        stateEnteredAt: new Date(),
+      })
+      .where('id = :commandId', { commandId: authority.commandId })
+      .andWhere('owner_token = :ownerToken', { ownerToken: authority.ownerToken })
+      .andWhere('generation = :generation', { generation: authority.generation })
+      .andWhere('workflow_version = :workflowVersion', { workflowVersion: authority.workflowVersion })
+      .andWhere('status IN (:...allowedStatuses)', {
+        allowedStatuses: PIN_ISSUE_AUTOMATED_TRANSITION_STATUSES,
+      })
+      .execute();
+    return result.affected === 1;
+  }
+
+  private async restoreCommandAfterPreExternalFailure(
+    manager: import('typeorm').EntityManager,
+    authority: PinIssueCommandAuthority,
+  ): Promise<boolean> {
+    const result = await manager
+      .createQueryBuilder()
+      .update(PinIssueCommandEntity)
+      .set({
+        status: PinIssueCommandStatus.RETRY_PENDING,
+        resolution: null,
+        leaseExpiresAt: null,
+        nextAttemptAt: new Date(Date.now() + 60_000),
+        stateEnteredAt: new Date(),
+      })
+      .where('id = :commandId', { commandId: authority.commandId })
+      .andWhere('owner_token = :ownerToken', { ownerToken: authority.ownerToken })
+      .andWhere('generation = :generation', { generation: authority.generation })
+      .andWhere('workflow_version = :workflowVersion', { workflowVersion: authority.workflowVersion })
+      .execute();
+    return result.affected === 1;
+  }
+
   private async promoteOpsReview(authority: PinIssueCommandAuthority, resolution: SsgPinResolution): Promise<boolean> {
     const result = await this.pinIssueCommandRepository
       .createQueryBuilder()
@@ -559,7 +630,7 @@ export class SsgRecoverySweepService {
       const event = delivery.ssgEventId
         ? await this.ssgEventRepository.findOne({ where: { id: delivery.ssgEventId } })
         : null;
-      await this.partnerCompanyExternService.issue(delivery, event, undefined, authority);
+      await this.partnerCompanyExternService.issue(delivery, event, undefined, authority, 1);
       return this.completeConfirmedCommand(authority, delivery.id, deliveryClaimToken);
     } catch (error) {
       this.logger.error(
@@ -583,7 +654,7 @@ export class SsgRecoverySweepService {
       const event = delivery.ssgEventId
         ? await this.ssgEventRepository.findOne({ where: { id: delivery.ssgEventId } })
         : null;
-      await this.partnerCompanyExternService.issue(delivery, event, undefined, authority);
+      await this.partnerCompanyExternService.issue(delivery, event, undefined, authority, 2);
       return this.completeConfirmedCommand(authority, delivery.id, deliveryClaimToken);
     } catch (error) {
       this.logger.error(
@@ -614,6 +685,144 @@ export class SsgRecoverySweepService {
       command.resolutionLookupCount >= 6 ||
       (command.resolutionStartedAt !== null && now.getTime() - command.resolutionStartedAt.getTime() >= 30 * 60_000)
     );
+  }
+
+  /**
+   * EP-P30 §7-1 NOT_ATTEMPTED frozen command 복구.
+   *
+   * `claimPinCommand` 가 실패한 후보 중 NOT_ATTEMPTED(ssg_issue_log 0행)인 것만 처리한다.
+   * 권한 재점유 CAS(3중 증인) + delivery claim 재획득(NULL → 새 claim) 후 최초 발급을 수행한다.
+   *
+   * 비-batch 명령이거나, NOT_ATTEMPTED 가 아니거나, 게이트가 닫혀 있으면 null 반환(기존 skip 처리).
+   */
+  private async tryRecoverNotAttempted(
+    candidate: PinIssueCommandEntity,
+    attemptAt: Date,
+  ): Promise<'confirmed' | 'ops_review' | null> {
+    const priorClaim = SsgRecoverySweepService.isoClaimDate(candidate.deliveryClaimToken);
+    if (!priorClaim) return null;
+    if (!candidate.ownerToken || !candidate.workflowVersion) return null;
+    if (candidate.externalIssueCount < 1) return null;
+
+    // ── Phase 1: 순수 판정 (durable 변경 0) ──
+    // #4 리뷰: gate·classification 을 ownership rotation 보다 먼저 수행해서
+    // off/observe 에서 durable state 가 변경되지 않도록 한다.
+    const gate = canExecuteOrdinal(this.autoResolveConfig.capabilityFor(candidate), 1);
+    if (!gate.allowed) return null;
+
+    const delivery = await this.orderDeliveryRepository.findOne({
+      where: { id: candidate.orderDeliveryId },
+      relations: { orderProductMapping: { product: { partnerCompany: true } } },
+    });
+    if (!delivery) return null;
+
+    const classification = await this.partnerCompanyExternService.classifyDeferredSsgIssue(delivery.id);
+    if (classification.resolution !== SsgPinResolution.NOT_ATTEMPTED) return null;
+
+    // ── Phase 2: durable 변경 (판정 통과 후에만) ──
+    const ownerToken = randomUUID();
+    const generation = String(BigInt(candidate.generation) + 1n);
+    const workflowVersion = candidate.workflowVersion;
+
+    const authority: PinIssueCommandAuthority = { commandId: candidate.id, ownerToken, generation, workflowVersion };
+    const lease = new Date(attemptAt.getTime() + 5 * 60_000);
+
+    let claimResult: { deliveryClaimToken: string } | null;
+    try {
+      claimResult = await this.pinIssueCommandRepository.manager.transaction(async (manager) => {
+        const commandClaimed = await this.reclaimCommandOwnership(
+          manager,
+          candidate,
+          attemptAt,
+          ownerToken,
+          generation,
+          candidate.status,
+          null,
+        );
+        if (commandClaimed !== 1) return null;
+
+        if (!(await this.pinIssueCommandService.reclaimNotAttemptedAuthority(authority, delivery.id, lease, manager))) {
+          throw new PinIssueCommandClaimConflictError();
+        }
+
+        const deliveryClaim = await this.pinIssueCommandService.reacquireDeliveryClaim(authority, delivery.id, candidate.deliveryClaimToken, manager);
+        if (!deliveryClaim) throw new PinIssueCommandClaimConflictError();
+        return deliveryClaim;
+      });
+    } catch (error) {
+      if (error instanceof PinIssueCommandClaimConflictError) return null;
+      throw error;
+    }
+    if (!claimResult) return null;
+
+    try {
+
+      const event = delivery.ssgEventId
+        ? await this.ssgEventRepository.findOne({ where: { id: delivery.ssgEventId } })
+        : null;
+      await this.partnerCompanyExternService.issue(delivery, event, undefined, authority, 1);
+
+      if (
+        await this.pinIssueCommandService.markSucceededAfterDeliveryClaimRelease(
+          authority,
+          delivery.id,
+          claimResult.deliveryClaimToken,
+        )
+      ) {
+        return 'confirmed';
+      }
+      return null;
+    } catch (error) {
+      this.logger.error(
+        `[PIN_RESOLUTION_SWEEP] NOT_ATTEMPTED recovery failed command=${candidate.id}: ${error instanceof Error ? error.message : error}`,
+      );
+
+      let hasOrdinalLog: number;
+      try {
+        hasOrdinalLog = await this.ssgIssueLogRepository.count({
+          where: { pinIssueCommandId: String(candidate.id), issueOrdinal: 1 },
+        });
+      } catch (logQueryError) {
+        this.logger.error(
+          `[PIN_RESOLUTION_SWEEP] ordinal log query failed command=${candidate.id}, falling back to OPS_REVIEW: ${logQueryError instanceof Error ? logQueryError.message : logQueryError}`,
+        );
+        hasOrdinalLog = 1;
+      }
+
+      try {
+        await this.pinIssueCommandRepository.manager.transaction(async (manager) => {
+          const claimDate = new Date(claimResult!.deliveryClaimToken);
+          const released = await manager
+            .createQueryBuilder()
+            .update(OrderDeliveryEntity)
+            .set({ claimedAt: null, mutationClaimedAt: null })
+            .where('id = :id', { id: delivery.id })
+            .andWhere('claimed_at = :ct', { ct: claimDate })
+            .andWhere('mutation_claimed_at = :mt', { mt: claimDate })
+            .execute();
+          if (released.affected !== 1) {
+            throw new Error(`delivery claim release fencing failed: affected=${released.affected}`);
+          }
+          if (hasOrdinalLog > 0) {
+            const recorded = await this.recordResolutionWithManager(manager, authority, SsgPinResolution.UNKNOWN, PinIssueCommandStatus.OPS_REVIEW_REQUIRED);
+            if (!recorded) {
+              throw new Error('command OPS_REVIEW_REQUIRED CAS failed during cleanup');
+            }
+          } else {
+            const restored = await this.restoreCommandAfterPreExternalFailure(manager, authority);
+            if (!restored) {
+              throw new Error('command restore after pre-external failure CAS failed');
+            }
+          }
+        });
+      } catch (cleanupError) {
+        this.logger.error(
+          `[PIN_RESOLUTION_SWEEP] claim release on failure also failed command=${candidate.id}: ${cleanupError instanceof Error ? cleanupError.message : cleanupError}`,
+        );
+        return null;
+      }
+      return hasOrdinalLog > 0 ? 'ops_review' : null;
+    }
   }
 }
 

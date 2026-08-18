@@ -85,13 +85,18 @@ describe('EP-P30 autoresolve 정책', () => {
       expect(canInsertOrdinal(capability, 2)).toBe(SSG_AUTORESOLVE_PHASE.ORDINAL_2_REISSUE);
     });
 
-    it('P0 배포분에서는 어떤 모드에서도 신규 INSERT 가 열리지 않는다', () => {
-      for (const mode of [SsgAutoResolveMode.OFF, SsgAutoResolveMode.OBSERVE, SsgAutoResolveMode.ON]) {
+    it('P1 배포분에서 mode=on 은 ordinal 1 만 허용하고, off/observe 는 모두 차단한다', () => {
+      for (const mode of [SsgAutoResolveMode.OFF, SsgAutoResolveMode.OBSERVE]) {
         for (const drainable of [false, true]) {
           const capability = resolveSsgAutoResolveCapability(mode, drainable);
           expect(canInsertOrdinal(capability, 1)).toBe(false);
           expect(canInsertOrdinal(capability, 2)).toBe(false);
         }
+      }
+      for (const drainable of [false, true]) {
+        const capability = resolveSsgAutoResolveCapability(SsgAutoResolveMode.ON, drainable);
+        expect(canInsertOrdinal(capability, 1)).toBe(true);
+        expect(canInsertOrdinal(capability, 2)).toBe(false);
       }
     });
   });

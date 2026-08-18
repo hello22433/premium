@@ -8,6 +8,7 @@ import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
 import { SsgIssueLogKeyCollisionError } from '../../partner_company_extern/infra/ssg.issue';
 import { PinIssueCommandEntity } from '../../entity/pin.issue.command.entity';
 import { hasConsumedSsgIssueAuthority, PinIssueCommandAuthority } from './pin-issue-command.service';
+import { PinIssueCommandStatus } from '../interface/pin.issue.command.status';
 import { MarkAttemptedResult, SsgInsertState } from '../interface/ssg.insert.state';
 
 /**
@@ -61,6 +62,9 @@ export interface SsgAttemptPayload {
   expireAt: Date | null;
   encourageAt: Date | null;
   couponNum: string | null;
+  /** EP-P30 §6-A ordinal 기장. sweep 경로만 전달하며, legacy issue() 는 미전달(→ NULL). */
+  pinIssueCommandId?: string | null;
+  issueOrdinal?: number | null;
 }
 
 /**
@@ -137,7 +141,7 @@ export class SsgInsertStateService {
     payload: SsgAttemptPayload,
     authority: PinIssueCommandAuthority | undefined,
   ): Promise<MarkAttemptedResult> {
-    if (!(await this.lockCurrentConsumedIssueAuthority(authority))) {
+    if (!(await this.lockCurrentConsumedIssueAuthority(authority, payload.issueOrdinal))) {
       this.logger.warn(`markAttempted skipped (SSG INSERT authority stale): id=${orderDeliveryId}.`);
       return MarkAttemptedResult.SKIPPED_ACTIVE;
     }
@@ -206,7 +210,10 @@ export class SsgInsertStateService {
    * ATTEMPTED/log state. A stale or missing owner therefore leaves no durable
    * candidate behind for a later HTTP recheck to reject.
    */
-  private async lockCurrentConsumedIssueAuthority(authority: PinIssueCommandAuthority | undefined): Promise<boolean> {
+  private async lockCurrentConsumedIssueAuthority(
+    authority: PinIssueCommandAuthority | undefined,
+    issueOrdinal?: number | null,
+  ): Promise<boolean> {
     if (!authority) {
       return false;
     }
@@ -220,7 +227,19 @@ export class SsgInsertStateService {
       .andWhere('command.generation = :generation', { generation: authority.generation })
       .andWhere('command.workflow_version = :workflowVersion', { workflowVersion: authority.workflowVersion })
       .getOne();
-    return hasConsumedSsgIssueAuthority(command);
+    if (!hasConsumedSsgIssueAuthority(command)) return false;
+    if (issueOrdinal != null && command) {
+      const ordinalStatusMatch =
+        (issueOrdinal === 1 && command.status === PinIssueCommandStatus.STARTED && command.externalIssueCount === 1) ||
+        (issueOrdinal === 2 && command.status === PinIssueCommandStatus.RETRYING && command.externalIssueCount === 2);
+      if (!ordinalStatusMatch) {
+        this.logger.warn(
+          `lockCurrentConsumedIssueAuthority ordinal mismatch: ordinal=${issueOrdinal}, status=${command.status}, count=${command.externalIssueCount}, commandId=${command.id}`,
+        );
+        return false;
+      }
+    }
+    return true;
   }
   /**
    * ATTEMPTED → CONFIRMED.
