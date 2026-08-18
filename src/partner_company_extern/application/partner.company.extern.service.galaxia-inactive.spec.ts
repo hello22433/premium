@@ -137,7 +137,7 @@ describe('PartnerCompanyExternService.refreshCouponStatus â€” GALAXIA INACTIVE ë
           provide: getRepositoryToken(SsgResendDeductPendingEntity),
           useValue: {},
         },
-        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, isEnabledFor: () => false } },
+        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, hasAnyActiveProvider: false, isEnabledFor: () => false } },
         { provide: PartnerSettleProducerService, useValue: {} },
         { provide: SsgAutoResolveConfig, useValue: new SsgAutoResolveConfig({ get: () => 'off' } as any) },
         { provide: SsgPinObservationService, useValue: { record: jest.fn() } },

@@ -82,7 +82,7 @@ describe('PartnerCompanyExternBatchService.backfillCulturelandDailyRange', () =>
         { provide: getRepositoryToken(GiftielExchangeHistoryEntity), useValue: makeRepoMock() },
         { provide: ConfigService, useValue: { getOrThrow: jest.fn().mockReturnValue('test'), get: jest.fn() } },
         { provide: CryptoCipher, useValue: mock<any>() },
-        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, isEnabledFor: () => false } },
+        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, hasAnyActiveProvider: false, isEnabledFor: () => false } },
         { provide: PartnerSettleProducerService, useValue: {} },
       ],
     }).compile();

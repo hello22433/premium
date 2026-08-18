@@ -5,10 +5,9 @@ import { IPartnerCompanyType } from '../../partner_company/interface/partner.com
 /**
  * 원장 producer feature flag (PR1B 명세 §4.6).
  *
- * 배포 기본값은 **전부 off** 다. off 면 producer 는 DB 를 건드리지 않고 즉시 빠져나가며, 기존
- * 배치·push·CS 동작이 1비트도 바뀌지 않아야 한다(§4.6 회귀 요건).
+ * 배포 기본값은 **켜짐** 이다. 비상 시 `'false'` 를 넣어야만 꺼진다(kill switch 용도).
  *
- * - `PARTNER_SETTLE_LEDGER_ENABLED` — 전역 kill switch
+ * - `PARTNER_SETTLE_LEDGER_ENABLED` — 전역 kill switch (미설정=켜짐, 'false'=꺼짐)
  * - `PARTNER_SETTLE_LEDGER_PROVIDERS` — 활성 provider CSV. 단계 활성화용이며
  *   **비어 있으면 아무 provider 도 켜지지 않는다**(빈 값을 "전체 허용" 으로 읽으면 kill switch 를 켜는
  *   순간 6개 provider 가 한꺼번에 원장을 쓰기 시작한다).
@@ -23,9 +22,16 @@ import { IPartnerCompanyType } from '../../partner_company/interface/partner.com
 export class PartnerSettleFeatureFlag {
   constructor(private readonly configService: ConfigService) {}
 
-  /** 전역 kill switch. 이것이 off 면 provider CSV 와 무관하게 전부 no-op 이다. */
+  /** 전역 kill switch. 미설정=켜짐. 설정값은 정규화해서 'true'/'false' 만 인식한다. */
   get isEnabled(): boolean {
-    return this.configService.get('PARTNER_SETTLE_LEDGER_ENABLED') === 'true';
+    const val = this.configService.get('PARTNER_SETTLE_LEDGER_ENABLED');
+    if (val === undefined || val === null) return true;
+    return val.toLowerCase().trim() === 'true';
+  }
+
+  /** 전역 kill switch + 하나 이상의 provider 활성. 조인 전 early exit 용. */
+  get hasAnyActiveProvider(): boolean {
+    return this.isEnabled && this.getActiveProviders().length > 0;
   }
 
   /** NEEDS_REVIEW 해소 API의 별도 kill switch. 미설정은 fail-closed다. */
@@ -64,16 +70,29 @@ export class PartnerSettleFeatureFlag {
     return this.configService.get('PARTNER_DISCOUNT_RETROACTIVE_ENABLED') === 'true';
   }
 
+  private static readonly SETTLEMENT_PROVIDERS: ReadonlySet<string> = new Set([
+    IPartnerCompanyType.SSG,
+    IPartnerCompanyType.GIFT_SHOW,
+    IPartnerCompanyType.DAOU,
+    IPartnerCompanyType.GIFTIEL,
+    IPartnerCompanyType.GALAXIA,
+    IPartnerCompanyType.CULTURELAND,
+  ]);
+
   isEnabledFor(provider: IPartnerCompanyType | null | undefined): boolean {
     if (!provider || !this.isEnabled) return false;
-    return this.activeProviders().includes(provider);
+    return this.getActiveProviders().includes(provider);
   }
 
-  private activeProviders(): string[] {
+  getActiveProviders(): IPartnerCompanyType[] {
     const raw = this.configService.get<string>('PARTNER_SETTLE_LEDGER_PROVIDERS') ?? '';
-    return raw
-      .split(',')
-      .map((value) => value.trim().toUpperCase())
-      .filter((value) => value.length > 0);
+    return [...new Set(
+      raw
+        .split(',')
+        .map((value) => value.trim().toUpperCase())
+        .filter((value): value is IPartnerCompanyType =>
+          PartnerSettleFeatureFlag.SETTLEMENT_PROVIDERS.has(value),
+        ),
+    )];
   }
 }

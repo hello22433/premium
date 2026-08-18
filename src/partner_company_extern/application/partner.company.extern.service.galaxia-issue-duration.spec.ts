@@ -115,7 +115,7 @@ describe('PartnerCompanyExternService - Galaxia issue duration 선택', () => {
         { provide: CryptoCipher, useValue: { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01099998888') } },
         { provide: SsgInsertStateService, useValue: mock<any>() },
         { provide: getRepositoryToken(SsgResendDeductPendingEntity), useValue: {} },
-        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, isEnabledFor: () => false } },
+        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, hasAnyActiveProvider: false, isEnabledFor: () => false } },
         { provide: PartnerSettleProducerService, useValue: {} },
         { provide: SsgAutoResolveConfig, useValue: new SsgAutoResolveConfig({ get: () => 'off' } as any) },
         { provide: SsgPinObservationService, useValue: { record: jest.fn() } },

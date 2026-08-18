@@ -347,7 +347,7 @@ describe('CustomerServiceService.execDiscard — terminal 차단 / CAS 멱등', 
       sut.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
 
     // P6 정산: flag off mock
-    sut.settleFlag = { isEnabled: false, isEnabledFor: () => false };
+    sut.settleFlag = { isEnabled: false, hasAnyActiveProvider: false, isEnabledFor: () => false };
     sut.settleProducer = { findReversibleEntries: jest.fn().mockResolvedValue([]) };
       // 변형 lease (D3-55 후속): acquire=createQueryBuilder CAS, release=update
       const leaseQb: any = {

@@ -180,7 +180,7 @@ describe('PartnerCompanyExternService — EP-P30 판정 레이어 (P0)', () => {
           provide: getRepositoryToken(SsgResendDeductPendingEntity),
           useValue: { createQueryBuilder: jest.fn(() => ({ update: jest.fn().mockReturnThis() })) },
         },
-        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, isEnabledFor: () => false } },
+        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, hasAnyActiveProvider: false, isEnabledFor: () => false } },
         { provide: PartnerSettleProducerService, useValue: {} },
         {
           provide: SsgAutoResolveConfig,

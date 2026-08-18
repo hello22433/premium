@@ -488,7 +488,7 @@ export class PartnerCompanyExternService {
    *   UPDATE 하고 있고 운영에서 정상 동작한다. 같은 구조다.
    */
   @Transactional({ propagation: Propagation.REQUIRES_NEW })
-  async persistIssuedPin(orderDelivery: OrderDeliveryEntity): Promise<void> {
+  async persistIssuedPin(orderDelivery: OrderDeliveryEntity, settlementProvider?: IPartnerCompanyType): Promise<void> {
     await this.orderDeliveryRepository.update(
       { id: orderDelivery.id },
       {
@@ -504,7 +504,7 @@ export class PartnerCompanyExternService {
 
     // ── P1 정산 원장 (B14 §4 P1 — 발행분 ISSUANCE) ──────────────────────────
     // 이미 REQUIRES_NEW 안이므로 same-tx(§6.5). 멱등키 ISS:{orderDeliveryId} 로 중복 0.
-    await this.recordIssuanceSettlement(orderDelivery);
+    await this.recordIssuanceSettlement(orderDelivery, settlementProvider);
   }
 
   @Transactional({ propagation: Propagation.REQUIRED })
@@ -521,6 +521,14 @@ export class PartnerCompanyExternService {
       );
     }
     const type = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
+    if (orderDelivery.choiceSelectProductId && !orderDelivery.choiceSelectProduct?.partnerCompany) {
+      throw new Error(
+        `choice provider relation 미로딩: orderDeliveryId=${orderDelivery.id}, choiceSelectProductId=${orderDelivery.choiceSelectProductId}`,
+      );
+    }
+    const settlementProvider = (
+      orderDelivery.choiceSelectProduct?.partnerCompany?.type ?? type
+    ) as IPartnerCompanyType;
     // issue 결과(배치 재발송 선차감 정합). 기본=재사용(false)·현재 귀속 행사. SSG 신규 INSERT 시 갱신.
     const result: PartnerIssueResult = { ssgNewIssue: false, ssgEventId: orderDelivery.ssgEventId ?? null };
     // ── PIN_INVENTORY 재고형 쿠폰 전용 분기 (rev5 §7.2) ──
@@ -624,7 +632,7 @@ export class PartnerCompanyExternService {
                 );
                 // ssg_issue_log 에서 메모리로만 복원한 PIN — DB order_delivery 는 아직 NULL 이다
                 // (이 분기 진입 조건 자체가 fresh?.barCode 부재). 반드시 durable 반영한다.
-                await this.persistIssuedPin(orderDelivery);
+                await this.persistIssuedPin(orderDelivery, settlementProvider);
                 return result;
               }
               // 정확 매칭 없음: barCode-only 성공 반환은 메타데이터 누락 + cust_info 우회라 위험.
@@ -641,7 +649,7 @@ export class PartnerCompanyExternService {
                 { recoveredFrom: 'DEDUP' },
               );
               // 메모리로만 복원한 PIN — DB order_delivery 는 아직 NULL 이다. 반드시 durable 반영.
-              await this.persistIssuedPin(orderDelivery);
+              await this.persistIssuedPin(orderDelivery, settlementProvider);
               return result;
             }
           }
@@ -665,7 +673,7 @@ export class PartnerCompanyExternService {
         // 이 바코드는 곧 쿠폰 이미지에 찍혀 고객에게 나간다. DB 에 없으면 CS 조회도, 재발송 시
         // 동일 핀 재사용도 불가능하다(!barCode → 다른 바코드 재생성 → 고객이 받은 것과 불일치).
         orderDelivery.barCode = orderBarcodeGenerate();
-        await this.persistIssuedPin(orderDelivery);
+        await this.persistIssuedPin(orderDelivery, settlementProvider);
         return result;
       }
 
@@ -1160,7 +1168,7 @@ export class PartnerCompanyExternService {
       }
 
       // PIN 발급 결과를 order_delivery에도 즉시 반영한다. (조기 return 경로들도 반드시 이걸 탄다)
-      await this.persistIssuedPin(orderDelivery);
+      await this.persistIssuedPin(orderDelivery, settlementProvider);
     } catch (e) {
       this.logger.error(e);
 
@@ -1851,9 +1859,11 @@ export class PartnerCompanyExternService {
    * flag off 면 즉시 리턴(DB 접근 0). flag on 이면 조인 재조회 → producer.record.
    * persistIssuedPin 의 REQUIRES_NEW 안에서 호출되므로 same-tx(§6.5).
    */
-  private async recordIssuanceSettlement(orderDelivery: OrderDeliveryEntity): Promise<void> {
-    // 조인 데이터 없이 provider 를 판정할 수 없으므로 전역 flag 만 먼저 검사한다.
-    if (!this.settleFlag.isEnabled) return;
+  private async recordIssuanceSettlement(
+    orderDelivery: OrderDeliveryEntity,
+    callerProvider?: IPartnerCompanyType,
+  ): Promise<void> {
+    if (!callerProvider || !this.settleFlag.isEnabledFor(callerProvider)) return;
 
     const od = await this.orderDeliveryRepository.findOne({
       where: { id: orderDelivery.id },
@@ -1867,8 +1877,10 @@ export class PartnerCompanyExternService {
     });
     if (!od) return;
 
-    const provider = (od.choiceSelectProduct?.partnerCompany?.type ??
-      od.orderProductMapping?.product?.partnerCompany?.type) as IPartnerCompanyType | undefined;
+    const provider = (
+      od.choiceSelectProduct?.partnerCompany?.type ??
+      od.orderProductMapping?.product?.partnerCompany?.type
+    ) as IPartnerCompanyType | undefined;
     if (!provider || !this.settleFlag.isEnabledFor(provider)) return;
 
     const ctx = buildSettlementContext(od, provider);
