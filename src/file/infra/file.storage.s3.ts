@@ -219,11 +219,18 @@ export class FileStorageS3 implements IFileStorage {
       const localFilePath = join(path, fileTitle + `.${extension}`);
       const writeStream = fs.createWriteStream(localFilePath);
 
-      // pipeline 은 성공/소스오류/대상오류 '모든' 종료 경로에서 콜백을 1회 호출하고 두 스트림을 정리한다.
-      // (컨트롤러의 스트리밍과 같은 관례 — user.drive.controller / order.receipt.controller)
+      // pipeline 은 성공/소스오류/대상오류 등 스트림이 '끝나는' 경로에서 콜백을 1회 호출하고 두 스트림을
+      // 정리한다. (컨트롤러의 스트리밍과 같은 관례 — user.drive.controller / order.receipt.controller)
       // 과거엔 Body.pipe(writeStream) 뒤 writeStream 의 finish/error 만 들었다. 그러면 S3 Body 가
       // 전송 도중 끊길 때(네트워크 리셋 등) ① Promise 가 영영 settle 되지 않아 요청이 매달리고
       // ② 소스 오류가 uncaughtException 으로 튀어 프로세스가 죽을 수 있었다. 실측으로 둘 다 재현됨.
+      //
+      // ⚠️ '모든' 경우가 덮이는 것은 아니다 — 상대가 데이터도 오류도 안 주고 멈추는 것(stall)은 애초에
+      //    '끝나는' 경로가 아니라서 pipeline 이 못 본다. 그리고 이 S3Client 는 requestHandler 를 안 줘서
+      //    connection/request/socket 타임아웃이 전부 꺼져 있다(@smithy/node-http-handler 기본값 0 = 무제한).
+      //    그러면 이 Promise 가 영영 settle 되지 않고 부분 임시파일·소켓이 무기한 남는다.
+      //    타임아웃 값은 같은 클라이언트를 쓰는 대용량 업로드·엑셀 파싱(getBuffer)에 영향이 있어
+      //    운영 판단이 필요하다 → 후속 과제 문서 참조.
       try {
         await new Promise<void>((resolve, reject) => {
           pipeline(Body, writeStream, (err) => (err ? reject(err) : resolve()));
