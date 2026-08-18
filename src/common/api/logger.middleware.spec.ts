@@ -333,6 +333,39 @@ describe('LoggerMiddleware 마스킹', () => {
       warn.mockRestore();
     });
 
+    // ★ 실경로 검증 — 지금까지 maskUrl 을 '직접 호출' 하는 테스트만 있었고, 그게 정상 요청 경로에서
+    //   실제로 불리는지는 아무도 안 봤다(로그 줄에서 maskUrl 호출을 통째로 지워도 전 테스트 초록).
+    //   가드는 넣었는데 실행이 그 가드를 지나는지 확인하지 않은 전형적인 자리라 여기서 못박는다.
+    it('운영에서는 정상 로그도 URL 민감 파라미터를 가린다 (mw.use 실경로)', () => {
+      jest.spyOn(mw as any, 'isProd').mockReturnValue(true);
+      const log = jest.spyOn((mw as any).logger, 'log').mockImplementation(() => undefined);
+      const { res, finish } = makeRes();
+      const url =
+        '/user-drive/1/file/download?fileUrl=https://b.s3.amazonaws.com/private/5/abc-해지신청서.pdf&token=secret123';
+      mw.use({ ...req({ title: 't' }), originalUrl: url } as any, res, () => undefined);
+      finish();
+
+      const logged = String(log.mock.calls[0][0]);
+      expect(logged).not.toContain('private/5');
+      expect(logged).not.toContain('해지신청서');
+      expect(logged).not.toContain('secret123');
+      expect(logged).toContain('/user-drive/1/file/download'); // 경로는 남아야 추적이 된다
+      log.mockRestore();
+      jest.restoreAllMocks();
+    });
+
+    it('개발 환경에서는 기존 정책대로 원문을 남긴다 (마스킹은 운영 한정)', () => {
+      jest.spyOn(mw as any, 'isProd').mockReturnValue(false);
+      const log = jest.spyOn((mw as any).logger, 'log').mockImplementation(() => undefined);
+      const { res, finish } = makeRes();
+      mw.use({ ...req({ title: 't' }), originalUrl: '/x?token=secret123' } as any, res, () => undefined);
+      finish();
+
+      expect(String(log.mock.calls[0][0])).toContain('secret123');
+      log.mockRestore();
+      jest.restoreAllMocks();
+    });
+
     it('정상 body 는 기존대로 로그된다', () => {
       const log = jest.spyOn((mw as any).logger, 'log').mockImplementation(() => undefined);
       const { res, finish } = makeRes();
