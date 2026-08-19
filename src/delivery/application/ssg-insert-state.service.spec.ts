@@ -61,6 +61,17 @@ describe('SsgInsertStateService', () => {
     return chain;
   };
 
+  const makeLockChain = (delivery: { id: number; refundedAt?: Date | null } = { id: 123, refundedAt: null }) => {
+    const chain: any = {
+      select: jest.fn(() => chain),
+      from: jest.fn(() => chain),
+      where: jest.fn(() => chain),
+      setLock: jest.fn(() => chain),
+      getOne: jest.fn(async () => delivery),
+    };
+    return chain;
+  };
+
   const samplePayload: SsgAttemptPayload = {
     barCode: '80000001',
     personalCode: '01312345678',
@@ -107,8 +118,12 @@ describe('SsgInsertStateService', () => {
       },
     } as unknown as jest.Mocked<Repository<OrderDeliverySsgInsertStateEntity>>;
 
+    const refundCountMock = jest.fn().mockResolvedValue(0);
     deliveryRepository = {
       createQueryBuilder: jest.fn(),
+      manager: {
+        getRepository: jest.fn().mockReturnValue({ count: refundCountMock }),
+      },
     } as unknown as jest.Mocked<Repository<OrderDeliveryEntity>>;
 
     issueLogRepository = {
@@ -288,15 +303,19 @@ describe('SsgInsertStateService', () => {
   });
 
   describe('markConfirmed (ATTEMPTED → CONFIRMED)', () => {
-    it('state UPDATE WHERE state=ATTEMPTED 가드 + delivery PIN 컬럼 저장 + true 반환', async () => {
-      const stateChain = makeUpdateChain(async () => ({ affected: 1 }));
+    it('delivery FOR UPDATE 선점 → state UPDATE WHERE state=ATTEMPTED 가드 + delivery PIN 컬럼 저장 + true 반환', async () => {
+      const lockChain = makeLockChain();
       const deliveryChain = makeUpdateChain(async () => ({ affected: 1 }));
+      const stateChain = makeUpdateChain(async () => ({ affected: 1 }));
       (stateRepository.createQueryBuilder as jest.Mock).mockReturnValue(stateChain);
-      (deliveryRepository.createQueryBuilder as jest.Mock).mockReturnValue(deliveryChain);
+      (deliveryRepository.createQueryBuilder as jest.Mock)
+        .mockReturnValueOnce(lockChain)
+        .mockReturnValueOnce(deliveryChain);
 
       const result = await sut.markConfirmed(123, sampleConfirm);
 
       expect(result).toBe(true);
+      expect(lockChain.setLock).toHaveBeenCalledWith('pessimistic_write');
       expect(stateChain.set).toHaveBeenCalledWith({ state: SsgInsertState.CONFIRMED });
       expect(stateChain.andWhere).toHaveBeenCalledWith('state = :prev', { prev: SsgInsertState.ATTEMPTED });
       expect(deliveryChain.set).toHaveBeenCalledWith({
@@ -309,14 +328,48 @@ describe('SsgInsertStateService', () => {
       });
     });
 
-    it('row 없음/CONFIRMED/FAILED 에서 호출 시 state affected=0 → delivery UPDATE 건너뜀 + false 반환', async () => {
+    it('delivery FOR UPDATE 선점 후 state affected=0 → delivery PIN UPDATE 건너뜀 + false 반환', async () => {
+      const lockChain = makeLockChain();
       const stateChain = makeUpdateChain(async () => ({ affected: 0 }));
       (stateRepository.createQueryBuilder as jest.Mock).mockReturnValue(stateChain);
+      (deliveryRepository.createQueryBuilder as jest.Mock).mockReturnValue(lockChain);
 
       const result = await sut.markConfirmed(123, sampleConfirm);
 
       expect(result).toBe(false);
-      expect(deliveryRepository.createQueryBuilder).not.toHaveBeenCalled();
+      expect(lockChain.setLock).toHaveBeenCalledWith('pessimistic_write');
+      expect(deliveryRepository.createQueryBuilder).toHaveBeenCalledTimes(1);
+    });
+
+    it('refund-first 경합: refundedAt 이 설정된 delivery → ConflictException ALREADY_REFUNDED', async () => {
+      const lockChain = makeLockChain({ id: 123, refundedAt: new Date() });
+      (deliveryRepository.createQueryBuilder as jest.Mock).mockReturnValue(lockChain);
+
+      await expect(sut.markConfirmed(123, sampleConfirm)).rejects.toMatchObject({
+        response: { code: 'ALREADY_REFUNDED', orderDeliveryId: 123 },
+      });
+    });
+
+    it('refund-first 경합: refundedAt null 이지만 refund ledger 존재 → ConflictException REFUND_LEDGER_EXISTS', async () => {
+      const lockChain = makeLockChain({ id: 123, refundedAt: null });
+      (deliveryRepository.createQueryBuilder as jest.Mock).mockReturnValue(lockChain);
+      (deliveryRepository.manager.getRepository as jest.Mock).mockReturnValue({
+        count: jest.fn().mockResolvedValue(1),
+      });
+
+      await expect(sut.markConfirmed(123, sampleConfirm)).rejects.toMatchObject({
+        response: { code: 'REFUND_LEDGER_EXISTS', orderDeliveryId: 123 },
+      });
+    });
+
+    it('delivery 미존재 → ConflictException DELIVERY_NOT_FOUND', async () => {
+      const lockChain = makeLockChain(null as any);
+      lockChain.getOne.mockResolvedValue(null);
+      (deliveryRepository.createQueryBuilder as jest.Mock).mockReturnValue(lockChain);
+
+      await expect(sut.markConfirmed(123, sampleConfirm)).rejects.toMatchObject({
+        response: { code: 'DELIVERY_NOT_FOUND', orderDeliveryId: 123 },
+      });
     });
   });
 

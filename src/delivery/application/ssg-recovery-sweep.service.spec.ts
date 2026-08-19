@@ -79,7 +79,7 @@ describe('SsgRecoverySweepService', () => {
             markSucceeded: jest.fn().mockResolvedValue(true),
           },
         },
-        { provide: PartnerCompanyExternService, useValue: { resolveDeferredSsgIssue: jest.fn(), issue: jest.fn() } },
+        { provide: PartnerCompanyExternService, useValue: { resolveDeferredSsgIssue: jest.fn(), classifyDeferredSsgIssue: jest.fn().mockResolvedValue({ resolution: 'UNKNOWN' }), applyConfirmedCandidate: jest.fn(), issue: jest.fn() } },
         { provide: SsgAutoResolveConfig, useValue: new SsgAutoResolveConfig({ get: () => 'off' } as any) },
       ],
     }).compile();
@@ -179,6 +179,9 @@ describe('P24 PIN resolution sweep fencing', () => {
       externalIssueCount: 1,
       resolutionLookupCount: 0,
       resolutionStartedAt: new Date(),
+      notIssuedStreak: 0,
+      autoresolveVersion: 1,
+      resolutionDeadlineAt: new Date('2099-12-31T00:00:00.000Z'),
       ...overrides,
     }) as any;
 
@@ -234,6 +237,33 @@ describe('P24 PIN resolution sweep fencing', () => {
     };
   };
 
+  const ssgIssueLogQb = () => {
+    const qb: any = {
+      select: jest.fn(() => qb),
+      addSelect: jest.fn(() => qb),
+      where: jest.fn(() => qb),
+      andWhere: jest.fn(() => qb),
+      getRawOne: jest.fn().mockResolvedValue(null),
+    };
+    return qb;
+  };
+
+  const wrapPartner = (partner: any): any => {
+    if (!partner) return {};
+    const wrapped = { ...partner };
+    if (partner.resolveDeferredSsgIssue && !partner.classifyDeferredSsgIssue) {
+      const original = partner.resolveDeferredSsgIssue;
+      wrapped.classifyDeferredSsgIssue = jest.fn(async (...args: any[]) => {
+        const resolution = await original(...args);
+        return { resolution, confirmedCandidate: resolution === 'CONFIRMED' ? { barCode: 'mock-pin' } : undefined };
+      });
+    }
+    if (!wrapped.applyConfirmedCandidate) {
+      wrapped.applyConfirmedCandidate = jest.fn();
+    }
+    return wrapped;
+  };
+
   const makeService = (
     repo: any,
     opts: { delivery?: any; ssgEvent?: any; ssgIssueLog?: any; pinCmd?: any; partner?: any; autoResolveMode?: string } = {},
@@ -243,10 +273,10 @@ describe('P24 PIN resolution sweep fencing', () => {
       repo as any,
       (opts.delivery ?? { findOne: jest.fn() }) as any,
       (opts.ssgEvent ?? { findOne: jest.fn() }) as any,
-      (opts.ssgIssueLog ?? { count: jest.fn().mockResolvedValue(0) }) as any,
+      (opts.ssgIssueLog ?? { count: jest.fn().mockResolvedValue(0), createQueryBuilder: jest.fn(() => ssgIssueLogQb()) }) as any,
       {} as any,
       (opts.pinCmd ?? {}) as any,
-      (opts.partner ?? {}) as any,
+      wrapPartner(opts.partner) as any,
       new SsgAutoResolveConfig({
         get: () => opts.autoResolveMode ?? 'off',
       } as any),
@@ -261,7 +291,7 @@ describe('P24 PIN resolution sweep fencing', () => {
     const resolve = jest.fn().mockResolvedValue('PROCESSING');
     const service = makeService(repo, {
       delivery: { findOne: jest.fn().mockResolvedValue({ id: 71 }) },
-      pinCmd: { recordResolution: jest.fn().mockResolvedValue(true), consumeNotIssuedRetryAuthority: jest.fn() },
+      pinCmd: { recordResolution: jest.fn().mockResolvedValue(true), consumeNotIssuedRetryAuthority: jest.fn(), releaseClaimForRetryPending: jest.fn().mockResolvedValue(true), reacquireDeliveryClaim: jest.fn() },
       partner: { resolveDeferredSsgIssue: resolve },
     });
 
@@ -305,21 +335,44 @@ describe('P24 PIN resolution sweep fencing', () => {
     expect(eligibility).toContain('status = :retrying');
   });
 
-  it('escalates before a seventh lookup', async () => {
+  // HIGH 1: observe/off 모드에서 commandTransition 미허용이면 claim 시도 없이 skip.
+  it('skips candidates when commandTransition is false (observe mode)', async () => {
     const command = query();
-    const promote = query();
-    const finder = query(undefined, [candidate({ resolutionLookupCount: 6 })]);
+    const finder = query(undefined, [candidate({ autoresolveVersion: null })]);
     const resolve = jest.fn();
-    const service = makeService(sweepRepo({ finder, command, direct: promote }), {
+    const service = makeService(sweepRepo({ finder, command }), {
       delivery: { findOne: jest.fn().mockResolvedValue({ id: 71 }) },
       pinCmd: { recordResolution: jest.fn(), consumeNotIssuedRetryAuthority: jest.fn() },
       partner: { resolveDeferredSsgIssue: resolve },
+      autoResolveMode: 'observe',
     });
 
-    await service.resolvePinIssuesOnce();
+    const stats = await service.resolvePinIssuesOnce();
+
+    expect(command.execute).not.toHaveBeenCalled();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(stats.skipped).toBe(1);
+  });
+
+  // HIGH 3: deadline 산출 불가 → OPS 즉시 승격 (영구 비활성화 방지).
+  it('promotes to OPS when deadline is uncomputable (no expireDay, no stored deadline)', async () => {
+    const command = query();
+    const promote = query();
+    const deliveryRefresh = query();
+    const finder = query(undefined, [
+      candidate({ resolutionDeadlineAt: null }),
+    ]);
+    const resolve = jest.fn();
+    const service = makeService(sweepRepo({ finder, command, deliveryRefresh, direct: promote }), {
+      delivery: { findOne: jest.fn().mockResolvedValue({ id: 71, orderProductMapping: { product: {} } }) },
+      pinCmd: { recordResolution: jest.fn(), consumeNotIssuedRetryAuthority: jest.fn(), reacquireDeliveryClaim: jest.fn() },
+      partner: { resolveDeferredSsgIssue: resolve },
+    });
+
+    const stats = await service.resolvePinIssuesOnce();
 
     expect(resolve).not.toHaveBeenCalled();
-    expect(promote.execute).toHaveBeenCalled();
+    expect(stats.opsReview).toBe(1);
   });
 
   it('replays expired count-2 NOT_ISSUED through resolver only, without another INSERT', async () => {
@@ -331,7 +384,7 @@ describe('P24 PIN resolution sweep fencing', () => {
     const service = makeService(sweepRepo({ finder, command }), {
       delivery: { findOne: jest.fn().mockResolvedValue({ id: 71, ssgEventId: 42 }) },
       ssgEvent: { findOne: jest.fn().mockResolvedValue({ id: 42 }) },
-      pinCmd: { recordResolution: record, consumeNotIssuedRetryAuthority: jest.fn(), markSucceeded: jest.fn() },
+      pinCmd: { recordResolution: record, consumeNotIssuedRetryAuthority: jest.fn(), markSucceeded: jest.fn(), reacquireDeliveryClaim: jest.fn().mockResolvedValue({ deliveryClaimToken: '2026-08-11T02:00:00.000Z' }), markSucceededAfterDeliveryClaimRelease: jest.fn().mockResolvedValue(true) },
       partner: { resolveDeferredSsgIssue: resolve, issue },
     });
 
@@ -359,13 +412,14 @@ describe('P24 PIN resolution sweep fencing', () => {
         resolution: null,
       }),
     ]);
-    const markSucceededAfterDeliveryClaimRelease = jest.fn().mockResolvedValue(true);
+    const markSucceededWithPinAfterDeliveryClaimRelease = jest.fn().mockResolvedValue(true);
     const service = makeService(sweepRepo({ finder, command, deliveryRefresh }), {
-      delivery: { findOne: jest.fn().mockResolvedValue({ id: 71 }) },
+      delivery: { findOne: jest.fn().mockResolvedValue({ id: 71, orderProductMapping: { product: {} } }) },
       pinCmd: {
         recordResolution: jest.fn(),
         consumeNotIssuedRetryAuthority: jest.fn(),
-        markSucceededAfterDeliveryClaimRelease,
+        markSucceededWithPinAfterDeliveryClaimRelease,
+        reacquireDeliveryClaim: jest.fn().mockResolvedValue({ deliveryClaimToken: '2026-08-11T02:00:00.000Z' }),
       },
       partner: { resolveDeferredSsgIssue: jest.fn().mockResolvedValue('CONFIRMED'), issue: jest.fn() },
     });
@@ -389,7 +443,10 @@ describe('P24 PIN resolution sweep fencing', () => {
     const rotated = command.set.mock.calls[0][0].deliveryClaimToken;
     expect(rotated).toEqual(expect.any(String));
     expect(rotated).not.toBe('2026-08-03T01:00:00.000Z');
-    expect(markSucceededAfterDeliveryClaimRelease).toHaveBeenCalledWith(expect.any(Object), 71, rotated);
+    expect(markSucceededWithPinAfterDeliveryClaimRelease).toHaveBeenCalledWith(
+      expect.any(Object), 71, rotated,
+      expect.objectContaining({ barCode: 'mock-pin' }),
+    );
     expect(stats.confirmed).toBe(1);
   });
 
@@ -408,7 +465,7 @@ describe('P24 PIN resolution sweep fencing', () => {
     const issue = jest.fn();
     const service = makeService(sweepRepo({ finder, command, deliveryRefresh }), {
       delivery: { findOne: jest.fn().mockResolvedValue({ id: 71, ssgEventId: null }) },
-      pinCmd: { consumeInitialIssueAuthority, consumeNotIssuedRetryAuthority: jest.fn(), recordResolution: jest.fn() },
+      pinCmd: { consumeInitialIssueAuthority, consumeNotIssuedRetryAuthority: jest.fn(), recordResolution: jest.fn(), reacquireDeliveryClaim: jest.fn() },
       partner: { resolveDeferredSsgIssue: jest.fn(), issue },
     });
 
@@ -436,7 +493,7 @@ describe('P24 PIN resolution sweep fencing', () => {
     const repo = sweepRepo({ finder, command, deliveryRefresh });
     const service = makeService(repo, {
       delivery: { findOne: jest.fn().mockResolvedValue({ id: 71, ssgEventId: null }) },
-      pinCmd: { consumeInitialIssueAuthority, consumeNotIssuedRetryAuthority: jest.fn(), recordResolution: jest.fn() },
+      pinCmd: { consumeInitialIssueAuthority, consumeNotIssuedRetryAuthority: jest.fn(), recordResolution: jest.fn(), reacquireDeliveryClaim: jest.fn() },
       partner: { resolveDeferredSsgIssue: jest.fn(), issue },
     });
 
@@ -481,14 +538,16 @@ describe('P24 PIN resolution sweep fencing', () => {
     const resolve = jest.fn();
     const issue = jest.fn();
     const service = makeService(sweepRepo({ finder, command, deliveryRefresh }), {
-      delivery: { findOne: jest.fn().mockResolvedValue({ id: 71, ssgEventId: null }) },
+      delivery: { findOne: jest.fn().mockResolvedValue({ id: 71, ssgEventId: null, orderProductMapping: { product: {} } }) },
       pinCmd: {
         consumeInitialIssueAuthority,
         consumeNotIssuedRetryAuthority: jest.fn(),
         recordResolution: jest.fn(),
         markSucceededAfterDeliveryClaimRelease,
+        reacquireDeliveryClaim: jest.fn().mockResolvedValue({ deliveryClaimToken: '2026-08-11T02:00:00.000Z' }),
       },
       partner: { resolveDeferredSsgIssue: resolve, issue },
+      autoResolveMode: 'on',
     });
 
     const stats = await service.resolvePinIssuesOnce();
@@ -499,6 +558,33 @@ describe('P24 PIN resolution sweep fencing', () => {
     const rotated = command.set.mock.calls[0][0].deliveryClaimToken;
     expect(markSucceededAfterDeliveryClaimRelease).toHaveBeenCalledWith(expect.any(Object), 71, rotated);
     expect(stats.confirmed).toBe(1);
+  });
+
+  it('OFF 모드 drain 대상 count-0 STARTED 명령은 ordinal-1 게이트에 막혀 OPS 승격', async () => {
+    const command = query();
+    const deliveryRefresh = query();
+    const finder = query(undefined, [
+      candidate({ status: 'STARTED', externalIssueCount: 0, resolution: null, deliveryClaimToken: ISO, autoresolveVersion: 1 }),
+    ]);
+    const consumeInitialIssueAuthority = jest.fn();
+    const issue = jest.fn();
+    const service = makeService(sweepRepo({ finder, command, deliveryRefresh }), {
+      delivery: { findOne: jest.fn().mockResolvedValue({ id: 71, ssgEventId: null, orderProductMapping: { product: {} } }) },
+      pinCmd: {
+        consumeInitialIssueAuthority,
+        recordResolution: jest.fn(),
+        markSucceededAfterDeliveryClaimRelease: jest.fn(),
+        reacquireDeliveryClaim: jest.fn(),
+      },
+      partner: { resolveDeferredSsgIssue: jest.fn(), issue },
+      autoResolveMode: 'off',
+    });
+
+    const stats = await service.resolvePinIssuesOnce();
+
+    expect(consumeInitialIssueAuthority).not.toHaveBeenCalled();
+    expect(issue).not.toHaveBeenCalled();
+    expect(stats.opsReview).toBe(1);
   });
 
   /**
@@ -514,26 +600,29 @@ describe('P24 PIN resolution sweep fencing', () => {
     const consumeInitialIssueAuthority = jest.fn();
     const consumeNotIssuedRetryAuthority = jest.fn().mockResolvedValue(true);
     const markSucceededAfterDeliveryClaimRelease = jest.fn().mockResolvedValue(true);
+    const releaseClaimForRetryPending = jest.fn().mockResolvedValue(true);
     const issue = jest.fn();
     const resolve = jest.fn().mockResolvedValue('NOT_ISSUED');
     const recordResolution = jest.fn().mockResolvedValue(true);
     const service = makeService(sweepRepo({ finder, command, deliveryRefresh }), {
-      delivery: { findOne: jest.fn().mockResolvedValue({ id: 71, ssgEventId: 42 }) },
+      delivery: { findOne: jest.fn().mockResolvedValue({ id: 71, ssgEventId: 42, orderProductMapping: { product: {} } }) },
       ssgEvent: { findOne: jest.fn().mockResolvedValue({ id: 42 }) },
       pinCmd: {
         consumeInitialIssueAuthority,
         consumeNotIssuedRetryAuthority,
         recordResolution,
         markSucceededAfterDeliveryClaimRelease,
+        releaseClaimForRetryPending,
+        reacquireDeliveryClaim: jest.fn().mockResolvedValue({ deliveryClaimToken: '2026-08-11T02:00:00.000Z' }),
         markSucceeded: jest.fn(),
       },
       partner: { resolveDeferredSsgIssue: resolve, issue },
       autoResolveMode,
     });
-    return { service, resolve, issue, consumeInitialIssueAuthority, consumeNotIssuedRetryAuthority, recordResolution };
+    return { service, resolve, issue, consumeInitialIssueAuthority, consumeNotIssuedRetryAuthority, recordResolution, releaseClaimForRetryPending };
   };
 
-  it('P30 게이트가 닫혀 있으면 NOT_ISSUED 판정도 재발급 권한을 소비하지 않고 운영 확인으로 간다', async () => {
+  it('P30 게이트가 닫혀 있으면 NOT_ISSUED 판정도 재발급 권한을 소비하지 않고 claim 해제 + RETRY_PENDING', async () => {
     const h = notIssuedRetryHarness();
 
     const stats = await h.service.resolvePinIssuesOnce();
@@ -542,15 +631,18 @@ describe('P24 PIN resolution sweep fencing', () => {
     expect(h.consumeInitialIssueAuthority).not.toHaveBeenCalled();
     expect(h.consumeNotIssuedRetryAuthority).not.toHaveBeenCalled();
     expect(h.issue).not.toHaveBeenCalled();
-    expect(h.recordResolution).toHaveBeenCalledWith(
+    expect(h.releaseClaimForRetryPending).toHaveBeenCalledWith(
       expect.any(Object),
-      expect.objectContaining({ resolution: 'NOT_ISSUED', status: PinIssueCommandStatus.OPS_REVIEW_REQUIRED }),
+      71,
+      expect.any(String),
+      expect.objectContaining({ resolution: 'NOT_ISSUED' }),
     );
-    expect(stats.opsReview).toBe(1);
+    expect(stats.retryPending).toBe(1);
   });
 
   // 배포 상수를 뒤집는 것만으로는 재발급이 열리지 않는다 — 실행 증거(§5-4) 수집은 P3 소관이다.
   // 그래도 count-1 STARTED 회수 경로가 **최초 INSERT 를 재실행하지 않는다**는 원래 불변식은 그대로다.
+  // P2 streak 로직: streak < 3 이면 gate 열림 여부와 무관하게 claim 해제 + RETRY_PENDING.
   it('routes a reclaimed batch count-1 STARTED command through the resolver, never re-INSERTing the initial call', async () => {
     (SSG_AUTORESOLVE_PHASE as { ORDINAL_2_REISSUE: boolean }).ORDINAL_2_REISSUE = true;
     try {
@@ -560,10 +652,15 @@ describe('P24 PIN resolution sweep fencing', () => {
 
       expect(h.resolve).toHaveBeenCalledTimes(1);
       expect(h.consumeInitialIssueAuthority).not.toHaveBeenCalled();
-      // 증거 미수집 → fail-closed. 권한 소비도 INSERT 도 없고 운영 확인으로 간다.
       expect(h.consumeNotIssuedRetryAuthority).not.toHaveBeenCalled();
       expect(h.issue).not.toHaveBeenCalled();
-      expect(stats.opsReview).toBe(1);
+      expect(h.releaseClaimForRetryPending).toHaveBeenCalledWith(
+        expect.any(Object),
+        71,
+        expect.any(String),
+        expect.objectContaining({ resolution: 'NOT_ISSUED' }),
+      );
+      expect(stats.retryPending).toBe(1);
     } finally {
       (SSG_AUTORESOLVE_PHASE as { ORDINAL_2_REISSUE: boolean }).ORDINAL_2_REISSUE = false;
     }
@@ -604,6 +701,7 @@ describe('P24 PIN resolution sweep fencing', () => {
         consumeNotIssuedRetryAuthority: jest.fn(),
         recordResolution,
         markSucceededAfterDeliveryClaimRelease: jest.fn(),
+        reacquireDeliveryClaim: jest.fn(),
       },
       partner: { resolveDeferredSsgIssue: resolve, issue },
     });
@@ -644,6 +742,134 @@ describe('P24 PIN resolution sweep fencing', () => {
     expect(eligibility).toContain('status = :started AND (lease_expires_at IS NULL OR lease_expires_at < :now)');
   });
 
+  // HIGH 2: CONFIRMED 후 delivery claim 재획득. deliveryClaimToken=null 이면 reacquireDeliveryClaim 호출.
+  it('reacquires delivery claim before completing CONFIRMED when token is null (post-release re-entry)', async () => {
+    const command = query();
+    const finder = query(undefined, [
+      candidate({ status: 'RETRY_PENDING', deliveryClaimToken: null }),
+    ]);
+    const reacquireDeliveryClaim = jest.fn().mockResolvedValue({ deliveryClaimToken: '2026-08-11T03:00:00.000Z' });
+    const markSucceededWithPinAfterDeliveryClaimRelease = jest.fn().mockResolvedValue(true);
+    const service = makeService(sweepRepo({ finder, command }), {
+      delivery: { findOne: jest.fn().mockResolvedValue({ id: 71, orderProductMapping: { product: {} } }) },
+      pinCmd: {
+        recordResolution: jest.fn(),
+        consumeNotIssuedRetryAuthority: jest.fn(),
+        releaseClaimForRetryPending: jest.fn().mockResolvedValue(true),
+        reacquireDeliveryClaim,
+        markSucceededWithPinAfterDeliveryClaimRelease,
+      },
+      partner: { resolveDeferredSsgIssue: jest.fn().mockResolvedValue('CONFIRMED') },
+    });
+
+    const stats = await service.resolvePinIssuesOnce();
+
+    expect(reacquireDeliveryClaim).toHaveBeenCalledWith(expect.any(Object), 71);
+    expect(markSucceededWithPinAfterDeliveryClaimRelease).toHaveBeenCalledWith(
+      expect.any(Object),
+      71,
+      '2026-08-11T03:00:00.000Z',
+      expect.objectContaining({ barCode: 'mock-pin' }),
+    );
+    expect(stats.confirmed).toBe(1);
+  });
+
+  // HIGH 2: delivery claim 재획득 실패 → 완료 불가 (취소·환불·폐기 경합).
+  it('skips CONFIRMED when delivery claim reacquisition fails (concurrent cancel/refund)', async () => {
+    const command = query();
+    const finder = query(undefined, [
+      candidate({ status: 'RETRY_PENDING', deliveryClaimToken: null }),
+    ]);
+    const reacquireDeliveryClaim = jest.fn().mockResolvedValue(null);
+    const markSucceededWithPinAfterDeliveryClaimRelease = jest.fn();
+    const markSucceededAfterDeliveryClaimRelease = jest.fn();
+    const service = makeService(sweepRepo({ finder, command }), {
+      delivery: { findOne: jest.fn().mockResolvedValue({ id: 71, orderProductMapping: { product: {} } }) },
+      pinCmd: {
+        recordResolution: jest.fn(),
+        consumeNotIssuedRetryAuthority: jest.fn(),
+        releaseClaimForRetryPending: jest.fn().mockResolvedValue(true),
+        reacquireDeliveryClaim,
+        markSucceededWithPinAfterDeliveryClaimRelease,
+        markSucceededAfterDeliveryClaimRelease,
+      },
+      partner: { resolveDeferredSsgIssue: jest.fn().mockResolvedValue('CONFIRMED') },
+    });
+
+    const stats = await service.resolvePinIssuesOnce();
+
+    expect(reacquireDeliveryClaim).toHaveBeenCalled();
+    expect(markSucceededWithPinAfterDeliveryClaimRelease).not.toHaveBeenCalled();
+    expect(markSucceededAfterDeliveryClaimRelease).not.toHaveBeenCalled();
+    expect(stats.skipped).toBe(1);
+  });
+
+  // HIGH 4: deadline 승격 트랜잭션에서 command CAS 실패 시 rollback (delivery claim 불일치 방지).
+  it('rolls back deadline promotion when command CAS fails (no partial commit)', async () => {
+    const commandCasFail = query(jest.fn().mockResolvedValue({ affected: 0 }));
+    const deliveryRelease = query();
+    const finder = query(undefined, [
+      candidate({
+        status: 'RETRY_PENDING',
+        deliveryClaimToken: '2026-08-03T01:00:00.000Z',
+        resolutionDeadlineAt: new Date('2026-08-01T00:00:00.000Z'),
+      }),
+    ]);
+    const repo = sweepRepo({ finder, command: query(), deliveryRefresh: query() });
+    // Override transaction to use per-step mocks
+    let txCalled = false;
+    repo.manager.transaction = jest.fn(async (cb: (m: any) => Promise<unknown>) => {
+      if (!txCalled) {
+        // claimPinCommand batch path
+        txCalled = true;
+        let dServed = false;
+        const manager = { createQueryBuilder: jest.fn(() => {
+          if (!dServed) { dServed = true; return query(); } // deliveryRefresh OK
+          return query(); // command OK
+        })};
+        return cb(manager);
+      }
+      // promoteOpsReviewWithClaimRelease tx
+      let dServed2 = false;
+      const manager = { createQueryBuilder: jest.fn(() => {
+        if (!dServed2) { dServed2 = true; return deliveryRelease; } // delivery release OK
+        return commandCasFail; // command CAS FAIL → should throw
+      })};
+      try {
+        return await cb(manager);
+      } catch (e) {
+        // rollback simulation
+        throw e;
+      }
+    });
+    const service = makeService(repo, {
+      delivery: { findOne: jest.fn().mockResolvedValue({ id: 71, orderProductMapping: { product: { expireDay: 30 } } }) },
+      pinCmd: {
+        recordResolution: jest.fn().mockResolvedValue(true),
+        consumeNotIssuedRetryAuthority: jest.fn(),
+        releaseClaimForRetryPending: jest.fn().mockResolvedValue(true),
+        reacquireDeliveryClaim: jest.fn(),
+      },
+      partner: { resolveDeferredSsgIssue: jest.fn() },
+    });
+
+    const stats = await service.resolvePinIssuesOnce();
+
+    // command CAS 실패 → PinIssueCommandClaimConflictError → catch → false
+    expect(stats.skipped).toBe(1);
+  });
+
+  // HIGH 1: autoresolveVersion 원자 기록 — claim 시 COALESCE(autoresolve_version, 1) 설정.
+  it('sets autoresolveVersion atomically during claim via COALESCE', async () => {
+    const command = query();
+    const service = makeService(sweepRepo({ command }));
+
+    await service.claimPinCommand(candidate({ autoresolveVersion: null }), new Date());
+
+    const setArg = command.set.mock.calls[0][0];
+    expect(setArg.autoresolveVersion).toBeDefined();
+  });
+
   describe('NOT_ATTEMPTED recovery cleanup', () => {
     const notAttemptedCandidate = (overrides: Record<string, unknown> = {}) =>
       candidate({
@@ -651,6 +877,7 @@ describe('P24 PIN resolution sweep fencing', () => {
         externalIssueCount: 1,
         status: 'STARTED',
         resolution: null,
+        autoresolveVersion: 1,
         ...overrides,
       });
 
@@ -683,6 +910,7 @@ describe('P24 PIN resolution sweep fencing', () => {
         count: ordinalLogThrows
           ? jest.fn().mockRejectedValue(new Error('DB connection lost'))
           : jest.fn().mockResolvedValue(ordinalLogCount),
+        createQueryBuilder: jest.fn(() => ssgIssueLogQb()),
       };
 
       const reclaimNotAttemptedAuthority = jest.fn().mockResolvedValue(true);
@@ -796,5 +1024,6 @@ describe('P24 PIN resolution sweep fencing', () => {
 
       expect(stats.skipped).toBe(1);
     });
+
   });
 });

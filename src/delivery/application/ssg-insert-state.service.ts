@@ -1,10 +1,11 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { ConflictException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Repository } from 'typeorm';
 import { Propagation, Transactional } from 'typeorm-transactional';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliverySsgInsertStateEntity } from '../../entity/order.delivery.ssg.insert.state.entity';
 import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
+import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.entity';
 import { SsgIssueLogKeyCollisionError } from '../../partner_company_extern/infra/ssg.issue';
 import { PinIssueCommandEntity } from '../../entity/pin.issue.command.entity';
 import { hasConsumedSsgIssueAuthority, PinIssueCommandAuthority } from './pin-issue-command.service';
@@ -253,6 +254,49 @@ export class SsgInsertStateService {
    */
   @Transactional({ propagation: Propagation.REQUIRES_NEW })
   async markConfirmed(orderDeliveryId: number, pinInfo: SsgConfirmInfo): Promise<boolean> {
+    // delivery row 를 FOR UPDATE 로 먼저 잠가 환불 tx 와 직렬화한다.
+    // 환불의 lockDeliveryAndVerifyRefundable 이 같은 row 를 FOR UPDATE 하므로,
+    // 이 lock 에 블로킹돼 커밋 전 CONFIRMED 를 못 보고 ledger 를 INSERT 하는 race 를 막는다.
+    const delivery = await this.deliveryRepository
+      .createQueryBuilder()
+      .select(['d.id', 'd.refundedAt'])
+      .from(OrderDeliveryEntity, 'd')
+      .where('d.id = :id', { id: orderDeliveryId })
+      .setLock('pessimistic_write')
+      .getOne();
+
+    if (!delivery) {
+      throw new ConflictException({
+        code: 'DELIVERY_NOT_FOUND',
+        orderDeliveryId,
+      });
+    }
+
+    // refund-first 경합 차단: 환불 tx 가 먼저 커밋됐으면 PIN 확정 불가.
+    if (delivery.refundedAt) {
+      this.logger.warn(
+        `[markConfirmed] 환불 완료 후 PIN 확정 차단. orderDeliveryId=${orderDeliveryId}`,
+      );
+      throw new ConflictException({
+        code: 'ALREADY_REFUNDED',
+        orderDeliveryId,
+      });
+    }
+
+    // refundedAt 은 save() 등으로 덮일 수 있으므로 ledger row 도 이중 확인.
+    const refundLedgerExists = await this.deliveryRepository.manager
+      .getRepository(OrderDeliveryRefundEntity)
+      .count({ where: { orderDeliveryId } });
+    if (refundLedgerExists > 0) {
+      this.logger.warn(
+        `[markConfirmed] 환불 ledger 존재 후 PIN 확정 차단. orderDeliveryId=${orderDeliveryId}`,
+      );
+      throw new ConflictException({
+        code: 'REFUND_LEDGER_EXISTS',
+        orderDeliveryId,
+      });
+    }
+
     const stateResult = await this.stateRepository
       .createQueryBuilder()
       .update(OrderDeliverySsgInsertStateEntity)

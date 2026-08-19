@@ -1100,6 +1100,9 @@ export class PartnerCompanyExternService {
             }
 
             // INSERT 성공 → durable state CONFIRMED 마킹 (PIN 정보 best-effort 저장).
+            // markConfirmed 는 REQUIRES_NEW 독립 tx 에서 ssg_insert_state + delivery UPDATE 를
+            // 원자적으로 커밋한다. 환불 tx 의 lockDeliveryAndVerifyRefundable 가 delivery FOR UPDATE 시
+            // 이 tx 의 커밋을 기다리므로 CONFIRMED 를 반드시 본다.
             await this.ssgInsertStateService.markConfirmed(orderDelivery.id, {
               barCode: orderDelivery.barCode,
               personalCode: orderDelivery.personalCode,

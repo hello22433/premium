@@ -112,6 +112,23 @@ export class PinIssueCommandEntity {
   @Column({ type: 'datetime', precision: 6, nullable: true, comment: '터미널 확정 시각' })
   resolvedAt: Date | null;
 
+  @Column({
+    type: 'smallint',
+    name: 'not_issued_streak',
+    default: 0,
+    comment: '연속 tryYn=N 관측 횟수 (§5-4, streak CAS)',
+  })
+  notIssuedStreak: number;
+
+  @Column({
+    type: 'datetime',
+    precision: 6,
+    name: 'resolution_deadline_at',
+    nullable: true,
+    comment: 'resolver 최초 진입 시 1회 저장, 이후 불변 (§7-3)',
+  })
+  resolutionDeadlineAt: Date | null;
+
   /**
    * EP-P30 §9-3 drain marker. 새 autoresolve resolver 가 **실제로 이 command 를 변경했는가**.
    *
