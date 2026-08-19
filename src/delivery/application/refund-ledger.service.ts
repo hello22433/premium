@@ -7,10 +7,12 @@ import {
   OrderDeliveryRefundRestoreType,
   OrderDeliveryRefundSourcePath,
 } from '../../entity/order.delivery.refund.entity';
+import { OrderDeliverySsgInsertStateEntity } from '../../entity/order.delivery.ssg.insert.state.entity';
 import { RefundAttemptEntity } from '../../entity/refund.attempt.entity';
 import { DeliveryCutoverGuardService, RefundExecutionFencing } from './delivery-cutover-guard.service';
 import { LegacyDeliveryEntryPoint } from '../interface/legacy.delivery.entry.point';
 import { REFUND_EXECUTING_STATUSES } from '../interface/refund.attempt.status';
+import { SsgInsertState } from '../interface/ssg.insert.state';
 
 export interface ClaimRefundInput {
   orderDeliveryId: number;
@@ -112,9 +114,12 @@ export class RefundLedgerService {
       return;
     }
 
-    await this.assertUpstreamGate(input);
-    await this.insertLedger(this.refundRepository, input);
-    await this.markRefundedAt(this.deliveryRepository, input.orderDeliveryId);
+    await this.dataSource.transaction(async (manager) => {
+      await this.lockDeliveryAndVerifyRefundable(manager, input.orderDeliveryId);
+      await this.assertUpstreamGate(input, manager);
+      await this.insertLedger(manager.getRepository(OrderDeliveryRefundEntity), input);
+      await this.markRefundedAt(manager.getRepository(OrderDeliveryEntity), input.orderDeliveryId);
+    });
   }
 
   async release(orderDeliveryId: number): Promise<void> {
@@ -186,6 +191,7 @@ export class RefundLedgerService {
 
   async claimWithManager(manager: EntityManager, input: ClaimRefundInput): Promise<void> {
     await this.lockExecutingAttempt(manager, input);
+    await this.lockDeliveryAndVerifyRefundable(manager, input.orderDeliveryId);
     await this.assertUpstreamGate(input, manager);
     await this.insertLedger(manager.getRepository(OrderDeliveryRefundEntity), input);
     if (!input.refundExecution) {
@@ -232,6 +238,41 @@ export class RefundLedgerService {
         refundAttemptId: fencing.refundAttemptId,
         orderDeliveryId: input.orderDeliveryId,
       });
+    }
+  }
+
+  /**
+   * delivery 행 FOR UPDATE 잠금 + PIN 확정 후 환불 차단.
+   * PIN 확정 트랜잭션(markSucceededWithPinAfterDeliveryClaimRelease)이 같은 행을 UPDATE 하므로
+   * 이 잠금에서 두 경로가 직렬화된다.
+   */
+  private async lockDeliveryAndVerifyRefundable(manager: EntityManager, orderDeliveryId: number): Promise<void> {
+    const delivery = await manager.getRepository(OrderDeliveryEntity).findOne({
+      where: { id: orderDeliveryId },
+      lock: { mode: 'pessimistic_write' },
+      select: ['id', 'refundedAt', 'discardedAt', 'destroyedAt'],
+    });
+    if (!delivery) {
+      throw new BadRequestException(`발송건이 존재하지 않습니다. (orderDeliveryId: ${orderDeliveryId})`);
+    }
+    if (delivery.refundedAt) {
+      throw new BadRequestException(`이미 환불된 발송건입니다. (orderDeliveryId: ${orderDeliveryId})`);
+    }
+
+    if (!delivery.discardedAt && !delivery.destroyedAt) {
+      const confirmedPin = await manager
+        .createQueryBuilder()
+        .from(OrderDeliverySsgInsertStateEntity, 's')
+        .where('s.order_delivery_id = :id', { id: orderDeliveryId })
+        .andWhere('s.state = :confirmed', { confirmed: SsgInsertState.CONFIRMED })
+        .getCount();
+      if (confirmedPin > 0) {
+        this.logger.warn(`[REFUND_LEDGER] PIN 확정 완료 후 환불 차단. orderDeliveryId=${orderDeliveryId}`);
+        throw new ConflictException({
+          code: 'PIN_ALREADY_CONFIRMED',
+          orderDeliveryId,
+        });
+      }
     }
   }
 

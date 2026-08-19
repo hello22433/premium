@@ -212,6 +212,56 @@ export function aggregateSsgPinResolutions<T>(results: ReadonlyArray<{ candidate
   };
 }
 
+/** §5-4 연속 확인 임계. dead(tryYn='N') 판정이 이 횟수 연속으로 나오면 NOT_ISSUED 확정. */
+export const SSG_NOT_ISSUED_STREAK_THRESHOLD = 3;
+
+/**
+ * §7-2 재조회 백오프 — 경과시간 기준.
+ *
+ * resolutionStartedAt 로부터의 경과시간에 따라 next_attempt_at 간격을 결정한다.
+ * @returns 밀리초 단위 대기 시간.
+ */
+export function computeResolutionBackoffMs(resolutionStartedAt: Date | null, now: Date): number {
+  if (!resolutionStartedAt) return 5 * 60_000;
+  const elapsedMs = now.getTime() - resolutionStartedAt.getTime();
+  if (elapsedMs < 30 * 60_000) return 5 * 60_000;
+  if (elapsedMs < 6 * 3600_000) return 30 * 60_000;
+  return 2 * 3600_000;
+}
+
+/**
+ * §7-3 resolution_deadline_at 산출.
+ *
+ * resolver 최초 진입 시 1회 저장하고 이후 불변. 불변 기준으로 계산한다:
+ *   1) 후보 expire_at 최대값
+ *   2) → NULL 이면 candidate.inserted_at + (expireDay - 1)일
+ *   3) → 후보 없으면 command.created_at + (expireDay - 1)일
+ *
+ * expireDay 해석: snapshotProductExpireDay → product.expireDay → null(산출 불가).
+ * @returns Date 또는 null(산출 불가 → OPS_REVIEW_REQUIRED).
+ */
+export function computeResolutionDeadline(params: {
+  candidateExpireAt: Date | null;
+  candidateInsertedAt: Date | null;
+  commandCreatedAt: Date;
+  snapshotProductExpireDay: number | null | undefined;
+  productExpireDay: number | null | undefined;
+}): Date | null {
+  if (params.candidateExpireAt) {
+    if (Number.isNaN(params.candidateExpireAt.getTime())) return null;
+    return params.candidateExpireAt;
+  }
+
+  const expireDay = params.snapshotProductExpireDay ?? params.productExpireDay ?? null;
+  if (expireDay === null || !Number.isFinite(expireDay) || !Number.isInteger(expireDay) || expireDay < 1) return null;
+
+  const baseDate = params.candidateInsertedAt ?? params.commandCreatedAt;
+  const deadline = new Date(baseDate.getTime());
+  deadline.setDate(deadline.getDate() + expireDay - 1);
+  if (Number.isNaN(deadline.getTime())) return null;
+  return deadline;
+}
+
 /** 관측 버킷 — 다중 인스턴스 중복 관측을 UNIQUE 로 막기 위한 5분 내림 정렬 시각 (§9-3). */
 export const SSG_OBSERVATION_BUCKET_MS = 5 * 60_000;
 

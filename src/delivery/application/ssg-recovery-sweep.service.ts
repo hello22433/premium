@@ -7,9 +7,14 @@ import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.en
 import { PinIssueCommandEntity } from '../../entity/pin.issue.command.entity';
 import { SsgEventEntity } from '../../entity/ssg.event.entity';
 import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
-import { PartnerCompanyExternService } from '../../partner_company_extern/application/partner.company.extern.service';
+import { PartnerCompanyExternService, SsgDeferredClassification } from '../../partner_company_extern/application/partner.company.extern.service';
 import { SsgPinResolution } from '../../partner_company_extern/interface/ssg.issue';
-import { canExecuteOrdinal } from '../../partner_company_extern/domain/ssg.autoresolve.policy';
+import {
+  canExecuteOrdinal,
+  computeResolutionBackoffMs,
+  computeResolutionDeadline,
+  SSG_NOT_ISSUED_STREAK_THRESHOLD,
+} from '../../partner_company_extern/domain/ssg.autoresolve.policy';
 import { SsgAutoResolveConfig } from '../../partner_company_extern/application/ssg.autoresolve.config';
 import { IOrderDeliveryStatus } from '../interface/order.delivery.status';
 import { PIN_ISSUE_AUTOMATED_TRANSITION_STATUSES, PinIssueCommandStatus } from '../interface/pin.issue.command.status';
@@ -181,6 +186,13 @@ export class SsgRecoverySweepService {
     let skipped = 0;
 
     for (const candidate of candidates) {
+      // §9-3: commandTransition 미허용이면 durable 변경 금지 — claim 시도 자체를 건너뛴다.
+      const capability = this.autoResolveConfig.capabilityFor(candidate);
+      if (!capability.commandTransition) {
+        skipped++;
+        continue;
+      }
+
       // 후보마다 claim 시점의 새 시각을 쓴다. 100개까지 외부 조회·INSERT 를 순차 실행하므로,
       // sweep 시작 now 를 재사용하면 뒤 후보의 lease_expires_at(now+5분)·rotate 토큰이 claim 하는
       // 순간 이미 만료돼 다른 worker 가 즉시 재회수 → fencing 이 깨진다.
@@ -191,10 +203,10 @@ export class SsgRecoverySweepService {
         // NOT_ATTEMPTED 이면 권한 재점유 + claim 재획득으로 frozen command 를 복구한다.
         let notAttemptedResult: 'confirmed' | 'ops_review' | null;
         try {
-          notAttemptedResult = await this.tryRecoverNotAttempted(candidate, attemptAt);
+          notAttemptedResult = await this.tryRecoverFromClaimFailure(candidate, attemptAt);
         } catch (recoverError) {
           this.logger.error(
-            `[PIN_RESOLUTION_SWEEP] tryRecoverNotAttempted threw for command=${candidate.id}: ${recoverError instanceof Error ? recoverError.message : recoverError}`,
+            `[PIN_RESOLUTION_SWEEP] tryRecoverFromClaimFailure threw for command=${candidate.id}: ${recoverError instanceof Error ? recoverError.message : recoverError}`,
           );
           skipped++;
           continue;
@@ -220,7 +232,7 @@ export class SsgRecoverySweepService {
         });
         if (!delivery) {
           if (
-            await this.recordResolution(authority, SsgPinResolution.UNKNOWN, PinIssueCommandStatus.OPS_REVIEW_REQUIRED)
+            await this.recordResolution(authority, SsgPinResolution.UNKNOWN, PinIssueCommandStatus.OPS_REVIEW_REQUIRED, null, null, candidate.resolutionLookupCount)
           ) {
             opsReview++;
           } else {
@@ -234,7 +246,7 @@ export class SsgRecoverySweepService {
         // 잘못된 행사 사용 또는 선차감 불일치가 생기므로 운영 확인으로 닫는다.
         if (candidate.status === PinIssueCommandStatus.STARTED && !deliveryClaimToken) {
           if (
-            await this.recordResolution(authority, SsgPinResolution.UNKNOWN, PinIssueCommandStatus.OPS_REVIEW_REQUIRED)
+            await this.recordResolution(authority, SsgPinResolution.UNKNOWN, PinIssueCommandStatus.OPS_REVIEW_REQUIRED, null, null, candidate.resolutionLookupCount)
           ) {
             opsReview++;
           } else {
@@ -242,10 +254,84 @@ export class SsgRecoverySweepService {
           }
           continue;
         }
+
+        // §7-3 마감 산출 (최초 진입 시 1회). 모든 외부 호출/종결 분기 전에 검사한다.
+        let deadline: Date | null;
+        try {
+          deadline = await this.computeDeadlineForCommand(candidate, delivery);
+        } catch (deadlineError) {
+          this.logger.error(
+            `[PIN_RESOLUTION_SWEEP] deadline computation infra error command=${candidate.id}, skipping: ${deadlineError instanceof Error ? deadlineError.message : deadlineError}`,
+          );
+          skipped++;
+          continue;
+        }
+
+        // §7-3 산출 즉시 durable 저장 — 외부 호출 전에 저장해야 장애 시 재계산 방지.
+        if (deadline && !candidate.resolutionDeadlineAt) {
+          if (!(await this.persistDeadline(authority, deadline))) {
+            skipped++;
+            continue;
+          }
+        }
+
+        // §7-3 산출 불가 → 즉시 OPS (expireDay 미설정 등 — 영구 비활성화 방지).
+        if (!deadline && !candidate.resolutionDeadlineAt) {
+          if (
+            await this.promoteOpsReviewWithClaimRelease(
+              authority,
+              candidate.resolution ?? SsgPinResolution.UNKNOWN,
+              delivery.id,
+              deliveryClaimToken,
+              'DEADLINE_UNCOMPUTABLE',
+            )
+          ) {
+            opsReview++;
+          } else {
+            skipped++;
+          }
+          continue;
+        }
+
+        // §7-3 마감 도달 검사 (이미 저장된 값 우선, 없으면 방금 산출한 값).
+        const effectiveDeadline = candidate.resolutionDeadlineAt ?? deadline;
+        if (effectiveDeadline && attemptAt >= effectiveDeadline) {
+          if (
+            await this.promoteOpsReviewWithClaimRelease(
+              authority,
+              candidate.resolution ?? SsgPinResolution.UNKNOWN,
+              delivery.id,
+              deliveryClaimToken,
+              'DEADLINE_EXCEEDED',
+            )
+          ) {
+            opsReview++;
+          } else {
+            skipped++;
+          }
+          continue;
+        }
+
         // crash/lease 회수: STARTED·count=0 은 최초 INSERT 권한을 아직 소비하지 않았으므로 SSG 호출이
         // 확정적으로 없었다. 재조회가 아니라 최초 발급을 이어서 수행한다(권한 소비 0→1 후 issue).
         // count=1 이상은 아래 resolver 경로로 흘러 실제 SSG 상태로만 판정한다(재발급 금지).
         if (candidate.status === PinIssueCommandStatus.STARTED && candidate.externalIssueCount === 0) {
+          if (!canExecuteOrdinal(capability, 1).allowed) {
+            if (
+              await this.promoteOpsReviewWithClaimRelease(
+                authority,
+                candidate.resolution ?? SsgPinResolution.UNKNOWN,
+                delivery.id,
+                deliveryClaimToken,
+                'ORDINAL_1_GATE_CLOSED',
+              )
+            ) {
+              opsReview++;
+            } else {
+              skipped++;
+            }
+            continue;
+          }
           if (await this.executeInitialIssue(authority, delivery, deliveryClaimToken)) {
             confirmed++;
           } else {
@@ -259,14 +345,29 @@ export class SsgRecoverySweepService {
         // confirmed results release the original delivery claim; every other
         // result is retained for operator review.
         if (candidate.externalIssueCount === 2 && candidate.resolution === SsgPinResolution.NOT_ISSUED) {
-          const resolution = await this.partnerCompanyExternService.resolveDeferredSsgIssue(delivery);
+          const { resolution, confirmedCandidate } = await this.partnerCompanyExternService.classifyDeferredSsgIssue(delivery.id);
+          const postLookupAt = new Date();
           if (resolution === SsgPinResolution.CONFIRMED) {
-            if (await this.completeConfirmedCommand(authority, delivery.id, deliveryClaimToken)) {
+            if (effectiveDeadline && postLookupAt >= effectiveDeadline) {
+              if (
+                await this.promoteOpsReviewWithClaimRelease(
+                  authority,
+                  SsgPinResolution.CONFIRMED,
+                  delivery.id,
+                  deliveryClaimToken,
+                  'CONFIRMED_AFTER_DEADLINE',
+                )
+              ) {
+                opsReview++;
+              } else {
+                skipped++;
+              }
+            } else if (await this.completeConfirmedCommandWithApply(authority, delivery, deliveryClaimToken, confirmedCandidate ?? null)) {
               confirmed++;
             } else {
               skipped++;
             }
-          } else if (await this.recordResolution(authority, resolution, PinIssueCommandStatus.OPS_REVIEW_REQUIRED)) {
+          } else if (await this.recordResolution(authority, resolution, PinIssueCommandStatus.OPS_REVIEW_REQUIRED, null, null, candidate.resolutionLookupCount)) {
             opsReview++;
           } else {
             skipped++;
@@ -274,55 +375,91 @@ export class SsgRecoverySweepService {
           continue;
         }
 
-        if (this.isResolutionSlaExceeded(candidate, attemptAt)) {
-          if (await this.promoteOpsReview(authority, candidate.resolution ?? SsgPinResolution.UNKNOWN)) {
-            opsReview++;
-          } else {
-            skipped++;
-          }
-          continue;
-        }
-
-        const resolution = await this.partnerCompanyExternService.resolveDeferredSsgIssue(delivery);
-        const exhausted = this.isResolutionSlaExceeded(candidate, attemptAt);
+        const { resolution, confirmedCandidate } = await this.partnerCompanyExternService.classifyDeferredSsgIssue(delivery.id);
+        const postLookupAt = new Date();
+        const backoffMs = computeResolutionBackoffMs(candidate.resolutionStartedAt, postLookupAt);
+        const nextAttemptAt = new Date(postLookupAt.getTime() + backoffMs);
 
         if (resolution === SsgPinResolution.CONFIRMED) {
-          if (await this.completeConfirmedCommand(authority, delivery.id, deliveryClaimToken)) {
+          // §7-3 만료 후보 차단 — 조회 완료 후 시각으로 검사해 조회 도중 만료를 감지한다.
+          if (effectiveDeadline && postLookupAt >= effectiveDeadline) {
+            if (
+              await this.promoteOpsReviewWithClaimRelease(
+                authority,
+                SsgPinResolution.CONFIRMED,
+                delivery.id,
+                deliveryClaimToken,
+                'CONFIRMED_AFTER_DEADLINE',
+              )
+            ) {
+              opsReview++;
+            } else {
+              skipped++;
+            }
+          } else if (await this.completeConfirmedCommandWithApply(authority, delivery, deliveryClaimToken, confirmedCandidate ?? null)) {
             confirmed++;
           } else {
             skipped++;
           }
-        } else if (
-          resolution === SsgPinResolution.NOT_ISSUED &&
-          !exhausted &&
-          candidate.externalIssueCount === 1 &&
-          canExecuteOrdinal(this.autoResolveConfig.capabilityFor(candidate), 2).allowed
-        ) {
-          // EP-P30 §6-B-3 — 판정만으로 재발급 권한을 소비하지 않는다. 게이트가 닫혀 있으면
-          // recordResolution·consumeNotIssuedRetryAuthority 자체를 실행하지 않고 운영 확인으로 보낸다.
-          // Persist RETRYING before consuming.  A crash after 1 -> 2 leaves the
-          // durable NOT_ISSUED intent reclaimable only by this resolver.
-          const recorded = await this.recordResolution(authority, resolution, PinIssueCommandStatus.RETRYING);
-          if (!recorded || !(await this.pinIssueCommandService.consumeNotIssuedRetryAuthority(authority))) {
-            skipped++;
-            continue;
-          }
-          if (await this.executeNotIssuedRetry(authority, delivery, deliveryClaimToken)) {
+        } else if (resolution === SsgPinResolution.LOOKUP_FAILED) {
+          // §6-B: 조회 실패 → claim 해제 + RETRY_PENDING + 경과시간 백오프.
+          if (
+            await this.pinIssueCommandService.releaseClaimForRetryPending(
+              authority,
+              delivery.id,
+              deliveryClaimToken,
+              { resolution, nextAttemptAt, resolutionDeadlineAt: deadline, expectedLookupCount: candidate.resolutionLookupCount },
+            )
+          ) {
             retryPending++;
           } else {
             skipped++;
           }
-        } else if (
-          resolution === SsgPinResolution.PROCESSING &&
-          !exhausted &&
-          candidate.resolutionLookupCount + 1 < 6
-        ) {
+        } else if (resolution === SsgPinResolution.NOT_ISSUED) {
+          // §6-C: dead(tryYn='N') → streak+1 + claim 해제 + 백오프.
+          // streak 이 임계에 도달하면 NOT_ISSUED 확정. P3 gate 가 열려 있으면 재발급으로 이동.
+          const streakAfter = candidate.notIssuedStreak + 1;
+          const streakConfirmed = streakAfter >= SSG_NOT_ISSUED_STREAK_THRESHOLD;
+
           if (
-            await this.recordResolution(
+            streakConfirmed &&
+            candidate.externalIssueCount === 1 &&
+            canExecuteOrdinal(this.autoResolveConfig.capabilityFor(candidate), 2).allowed
+          ) {
+            // P3 gate open — streak 확정 + 재발급 진입.
+            const recorded = await this.recordResolution(authority, resolution, PinIssueCommandStatus.RETRYING, null, deadline, candidate.resolutionLookupCount);
+            if (!recorded || !(await this.pinIssueCommandService.consumeNotIssuedRetryAuthority(authority))) {
+              skipped++;
+              continue;
+            }
+            if (await this.executeNotIssuedRetry(authority, delivery, deliveryClaimToken)) {
+              retryPending++;
+            } else {
+              skipped++;
+            }
+          } else {
+            // P3 gate closed 또는 streak 미도달 → claim 해제 + RETRY_PENDING + 백오프.
+            if (
+              await this.pinIssueCommandService.releaseClaimForRetryPending(
+                authority,
+                delivery.id,
+                deliveryClaimToken,
+                { resolution, nextAttemptAt, resolutionDeadlineAt: deadline, expectedLookupCount: candidate.resolutionLookupCount },
+              )
+            ) {
+              retryPending++;
+            } else {
+              skipped++;
+            }
+          }
+        } else if (resolution === SsgPinResolution.PROCESSING) {
+          // 아직 협력사 처리 중 → 백오프 재조회.
+          if (
+            await this.pinIssueCommandService.releaseClaimForRetryPending(
               authority,
-              resolution,
-              PinIssueCommandStatus.RETRY_PENDING,
-              new Date(attemptAt.getTime() + 5 * 60_000),
+              delivery.id,
+              deliveryClaimToken,
+              { resolution, nextAttemptAt, resolutionDeadlineAt: deadline, expectedLookupCount: candidate.resolutionLookupCount },
             )
           ) {
             retryPending++;
@@ -330,10 +467,8 @@ export class SsgRecoverySweepService {
             skipped++;
           }
         } else {
-          // UNKNOWN, LOOKUP_FAILED, REGISTERED_UNSENDABLE, NOT_ATTEMPTED, MULTIPLE_CONFIRMED,
-          // a gate-blocked NOT_ISSUED, and SLA exhaustion are operator-owned terminal holds.
-          // None may issue, send, or refund.
-          if (await this.recordResolution(authority, resolution, PinIssueCommandStatus.OPS_REVIEW_REQUIRED)) {
+          // UNKNOWN, REGISTERED_UNSENDABLE, NOT_ATTEMPTED, MULTIPLE_CONFIRMED → 운영 확인.
+          if (await this.recordResolution(authority, resolution, PinIssueCommandStatus.OPS_REVIEW_REQUIRED, null, deadline, candidate.resolutionLookupCount)) {
             opsReview++;
           } else {
             skipped++;
@@ -342,7 +477,7 @@ export class SsgRecoverySweepService {
       } catch (error) {
         // Lookup failure is indistinguishable from an unknown external outcome.
         if (
-          await this.recordResolution(authority, SsgPinResolution.UNKNOWN, PinIssueCommandStatus.OPS_REVIEW_REQUIRED)
+          await this.recordResolution(authority, SsgPinResolution.UNKNOWN, PinIssueCommandStatus.OPS_REVIEW_REQUIRED, null, null, candidate.resolutionLookupCount)
         ) {
           opsReview++;
         } else {
@@ -367,10 +502,6 @@ export class SsgRecoverySweepService {
           AND (c.lease_expires_at IS NULL OR c.lease_expires_at < :now)
         ) OR (
           c.status = :retrying
-          AND (
-            c.resolution = :processing
-            OR (c.resolution = :notIssued AND c.external_issue_count = 2)
-          )
           AND c.lease_expires_at < :now
         ) OR (
           -- crash/lease 회수: STARTED 로 영구 잔류한 명령(권한 소비 전 count=0, 소비 후 SSG 미확정 count=1)을
@@ -383,8 +514,6 @@ export class SsgRecoverySweepService {
           retryPending: PinIssueCommandStatus.RETRY_PENDING,
           retrying: PinIssueCommandStatus.RETRYING,
           started: PinIssueCommandStatus.STARTED,
-          processing: SsgPinResolution.PROCESSING,
-          notIssued: SsgPinResolution.NOT_ISSUED,
           now,
         },
       )
@@ -508,20 +637,18 @@ export class SsgRecoverySweepService {
         deliveryClaimToken,
         leaseExpiresAt: new Date(now.getTime() + 5 * 60_000),
         stateEnteredAt: now,
+        autoresolveVersion: () => 'COALESCE(autoresolve_version, 1)',
       })
       .where('id = :id', { id: candidate.id })
       .andWhere('owner_token = :previousOwnerToken', { previousOwnerToken: candidate.ownerToken })
       .andWhere('generation = :previousGeneration', { previousGeneration: candidate.generation })
       .andWhere('workflow_version = :workflowVersion', { workflowVersion: candidate.workflowVersion })
+      .andWhere('delivery_claim_token <=> :priorClaimToken', { priorClaimToken: candidate.deliveryClaimToken ?? null })
       .andWhere(
         `(
           (status = :retryPending AND (next_attempt_at IS NULL OR next_attempt_at <= :now) AND (lease_expires_at IS NULL OR lease_expires_at < :now))
           OR (
             status = :retrying
-            AND (
-              resolution = :processing
-              OR (resolution = :notIssued AND external_issue_count = 2)
-            )
             AND lease_expires_at < :now
           )
           OR (status = :started AND (lease_expires_at IS NULL OR lease_expires_at < :now))
@@ -530,8 +657,6 @@ export class SsgRecoverySweepService {
           retryPending: PinIssueCommandStatus.RETRY_PENDING,
           retrying: PinIssueCommandStatus.RETRYING,
           started: PinIssueCommandStatus.STARTED,
-          notIssued: SsgPinResolution.NOT_ISSUED,
-          processing: SsgPinResolution.PROCESSING,
           now,
         },
       )
@@ -544,8 +669,16 @@ export class SsgRecoverySweepService {
     resolution: SsgPinResolution,
     status: PinIssueCommandStatus,
     nextAttemptAt: Date | null = null,
+    resolutionDeadlineAt: Date | null = null,
+    expectedLookupCount?: number,
   ): Promise<boolean> {
-    return this.pinIssueCommandService.recordResolution(authority, { resolution, status, nextAttemptAt });
+    return this.pinIssueCommandService.recordResolution(authority, {
+      resolution,
+      status,
+      nextAttemptAt,
+      resolutionDeadlineAt,
+      expectedLookupCount,
+    });
   }
 
   private async recordResolutionWithManager(
@@ -667,35 +800,392 @@ export class SsgRecoverySweepService {
   /**
    * The command service releases and terminalizes in one transaction so a
    * failed delivery CAS cannot make the command terminal.
+   *
+   * delivery claim 이 없으면(§6-B claim 해제 후 재진입) 재획득한 뒤 non-null 토큰으로
+   * 종결한다. 재획득 실패 = 취소·환불·폐기 경합이므로 false 반환(다음 sweep 재시도).
    */
   private async completeConfirmedCommand(
     authority: PinIssueCommandAuthority,
     orderDeliveryId: number,
     deliveryClaimToken: string | null,
   ): Promise<boolean> {
+    let effectiveToken = deliveryClaimToken;
+    if (!effectiveToken) {
+      const reacquired = await this.pinIssueCommandService.reacquireDeliveryClaim(
+        authority,
+        orderDeliveryId,
+      );
+      if (!reacquired) return false;
+      effectiveToken = reacquired.deliveryClaimToken;
+    }
     return this.pinIssueCommandService.markSucceededAfterDeliveryClaimRelease(
       authority,
       orderDeliveryId,
-      deliveryClaimToken,
-    );
-  }
-
-  private isResolutionSlaExceeded(command: PinIssueCommandEntity, now: Date): boolean {
-    return (
-      command.resolutionLookupCount >= 6 ||
-      (command.resolutionStartedAt !== null && now.getTime() - command.resolutionStartedAt.getTime() >= 30 * 60_000)
+      effectiveToken,
     );
   }
 
   /**
-   * EP-P30 §7-1 NOT_ATTEMPTED frozen command 복구.
+   * classify→claim 재획득→PIN+종결+claim해제 원자적 완료.
    *
-   * `claimPinCommand` 가 실패한 후보 중 NOT_ATTEMPTED(ssg_issue_log 0행)인 것만 처리한다.
-   * 권한 재점유 CAS(3중 증인) + delivery claim 재획득(NULL → 새 claim) 후 최초 발급을 수행한다.
-   *
-   * 비-batch 명령이거나, NOT_ATTEMPTED 가 아니거나, 게이트가 닫혀 있으면 null 반환(기존 skip 처리).
+   * PIN 반영, command 종결, claim 해제를 한 트랜잭션으로 묶어 lease 만료 경합 시
+   * PIN만 저장되는 문제를 방지한다. claim CAS 실패 시 PIN도 함께 롤백된다.
    */
-  private async tryRecoverNotAttempted(
+  private async completeConfirmedCommandWithApply(
+    authority: PinIssueCommandAuthority,
+    delivery: OrderDeliveryEntity,
+    deliveryClaimToken: string | null,
+    confirmedCandidate: SsgIssueLogEntity | null,
+    priorClaimToken?: string | null,
+  ): Promise<boolean> {
+    let effectiveToken = deliveryClaimToken;
+    if (!effectiveToken) {
+      const reacquired = priorClaimToken != null
+        ? await this.pinIssueCommandService.reacquireDeliveryClaim(authority, delivery.id, priorClaimToken)
+        : await this.pinIssueCommandService.reacquireDeliveryClaim(authority, delivery.id);
+      if (!reacquired) return false;
+      effectiveToken = reacquired.deliveryClaimToken;
+    }
+    if (confirmedCandidate) {
+      return this.pinIssueCommandService.markSucceededWithPinAfterDeliveryClaimRelease(
+        authority,
+        delivery.id,
+        effectiveToken,
+        {
+          barCode: confirmedCandidate.barCode,
+          personalCode: confirmedCandidate.personalCode,
+          ssgTransactionId: confirmedCandidate.ssgTransactionId,
+          couponNum: confirmedCandidate.couponNum,
+          expireAt: confirmedCandidate.expireAt,
+          encourageAt: confirmedCandidate.encourageAt,
+          ssgEventId: confirmedCandidate.ssgEventId,
+        },
+      );
+    }
+    return this.pinIssueCommandService.markSucceededAfterDeliveryClaimRelease(
+      authority,
+      delivery.id,
+      effectiveToken,
+    );
+  }
+
+  /**
+   * §7-3 마감 산출. delivery 의 상품 정보 + ssg_issue_log 후보 데이터로 deadline 을 계산한다.
+   * command 에 이미 저장돼 있으면 그 값이 우선(COALESCE). 산출 불가 시 null.
+   */
+  private async computeDeadlineForCommand(
+    candidate: PinIssueCommandEntity,
+    delivery: OrderDeliveryEntity,
+  ): Promise<Date | null> {
+    if (candidate.resolutionDeadlineAt) return candidate.resolutionDeadlineAt;
+    const mapping = delivery.orderProductMapping;
+    const product = mapping?.product;
+
+    let candidateExpireAt: Date | null = null;
+    let candidateInsertedAt: Date | null = null;
+    const row = await this.ssgIssueLogRepository
+      .createQueryBuilder('l')
+      .select('MAX(l.expire_at)', 'maxExpireAt')
+      .addSelect('MAX(l.inserted_at)', 'maxInsertedAt')
+      .where('l.order_delivery_id = :odId', { odId: delivery.id })
+      .andWhere('l.superseded_at IS NULL')
+      .getRawOne();
+    if (row?.maxExpireAt) candidateExpireAt = new Date(row.maxExpireAt);
+    if (row?.maxInsertedAt) candidateInsertedAt = new Date(row.maxInsertedAt);
+
+    return computeResolutionDeadline({
+      candidateExpireAt,
+      candidateInsertedAt,
+      commandCreatedAt: candidate.createdAt,
+      snapshotProductExpireDay: mapping?.snapshotProductExpireDay,
+      productExpireDay: product?.expireDay,
+    });
+  }
+
+  /**
+   * §7-3 deadline 을 외부 호출 전에 durable 저장. COALESCE CAS — 이미 저장됐으면 무시.
+   * 장애 시 변경된 상품/로그로 재계산되는 것을 방지한다.
+   *
+   * fail-closed: 저장 실패(DB 예외 또는 CAS 미적중) 시 false 반환. 호출자는 외부 호출을 중단해야 한다.
+   */
+  private async persistDeadline(authority: PinIssueCommandAuthority, deadline: Date): Promise<boolean> {
+    try {
+      const result = await this.pinIssueCommandRepository
+        .createQueryBuilder()
+        .update(PinIssueCommandEntity)
+        .set({
+          resolutionDeadlineAt: () => 'COALESCE(resolution_deadline_at, :deadlineParam)',
+        })
+        .setParameter('deadlineParam', deadline)
+        .where('id = :commandId', { commandId: authority.commandId })
+        .andWhere('owner_token = :ownerToken', { ownerToken: authority.ownerToken })
+        .andWhere('generation = :generation', { generation: authority.generation })
+        .andWhere('workflow_version = :workflowVersion', { workflowVersion: authority.workflowVersion })
+        .execute();
+      return (result.affected ?? 0) >= 1;
+    } catch (error) {
+      this.logger.error(
+        `[PIN_RESOLUTION_SWEEP] deadline persist failed command=${authority.commandId}: ${error instanceof Error ? error.message : error}`,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * §7-3 마감 도달 시 OPS_REVIEW_REQUIRED + claim 해제.
+   * delivery claim 을 풀어야 CS·폐기가 진행되므로, 마감 승격 시에도 claim 을 해제한다.
+   */
+  private async promoteOpsReviewWithClaimRelease(
+    authority: PinIssueCommandAuthority,
+    resolution: SsgPinResolution,
+    orderDeliveryId: number,
+    deliveryClaimToken: string | null,
+    reason: string,
+  ): Promise<boolean> {
+    this.logger.warn(
+      `[PIN_RESOLUTION_SWEEP] command=${authority.commandId} deadline exceeded (${reason}), promoting to OPS_REVIEW_REQUIRED`,
+    );
+    const claimedAt = deliveryClaimToken ? new Date(deliveryClaimToken) : null;
+    const validClaim =
+      claimedAt && !Number.isNaN(claimedAt.getTime()) && claimedAt.toISOString() === deliveryClaimToken;
+
+    try {
+      return await this.pinIssueCommandRepository.manager.transaction(async (manager) => {
+        if (validClaim) {
+          const released = await manager
+            .createQueryBuilder()
+            .update(OrderDeliveryEntity)
+            .set({ claimedAt: null, mutationClaimedAt: null })
+            .where('id = :id', { id: orderDeliveryId })
+            .andWhere('claimed_at = :claimedAt', { claimedAt })
+            .andWhere('mutation_claimed_at = :claimedAt', { claimedAt })
+            .execute();
+          if (released.affected !== 1) return false;
+        }
+
+        const result = await manager
+          .createQueryBuilder()
+          .update(PinIssueCommandEntity)
+          .set({
+            status: PinIssueCommandStatus.OPS_REVIEW_REQUIRED,
+            resolution,
+            deliveryClaimToken: null,
+            leaseExpiresAt: null,
+            stateEnteredAt: new Date(),
+          })
+          .where('id = :commandId', { commandId: authority.commandId })
+          .andWhere('owner_token = :ownerToken', { ownerToken: authority.ownerToken })
+          .andWhere('generation = :generation', { generation: authority.generation })
+          .andWhere('workflow_version = :workflowVersion', { workflowVersion: authority.workflowVersion })
+          .andWhere('status IN (:...allowedStatuses)', {
+            allowedStatuses: PIN_ISSUE_AUTOMATED_TRANSITION_STATUSES,
+          })
+          .execute();
+        if (result.affected !== 1) throw new PinIssueCommandClaimConflictError();
+        return true;
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * delivery claim 없이 command 만 회수 후 OPS 승격. claim 실패 복구의 터미널 분기.
+   * 회수와 승격을 한 트랜잭션으로 묶어, 중간 장애 시 RETRYING 고아를 방지한다.
+   */
+  private async reclaimAndPromoteOps(
+    candidate: PinIssueCommandEntity,
+    attemptAt: Date,
+    resolution: SsgPinResolution,
+    reason: string,
+  ): Promise<'ops_review' | null> {
+    const ownerToken = randomUUID();
+    const generation = String(BigInt(candidate.generation) + 1n);
+    const workflowVersion = candidate.workflowVersion!;
+
+    this.logger.warn(
+      `[PIN_RESOLUTION_SWEEP] claim failure recovery command=${candidate.id} reason=${reason}, promoting to OPS_REVIEW_REQUIRED`,
+    );
+
+    try {
+      return await this.pinIssueCommandRepository.manager.transaction(async (manager) => {
+        const affected = await this.reclaimCommandOwnership(
+          manager,
+          candidate,
+          attemptAt,
+          ownerToken,
+          generation,
+          PinIssueCommandStatus.RETRYING,
+          null,
+        );
+        if (affected !== 1) return null;
+
+        const result = await manager
+          .createQueryBuilder()
+          .update(PinIssueCommandEntity)
+          .set({ status: PinIssueCommandStatus.OPS_REVIEW_REQUIRED, resolution, stateEnteredAt: new Date(), leaseExpiresAt: null })
+          .where('id = :commandId', { commandId: candidate.id })
+          .andWhere('owner_token = :ownerToken', { ownerToken })
+          .andWhere('generation = :generation', { generation })
+          .andWhere('workflow_version = :workflowVersion', { workflowVersion })
+          .andWhere('status = :status', { status: PinIssueCommandStatus.RETRYING })
+          .execute();
+        if (result.affected !== 1) return null;
+        return 'ops_review' as const;
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * claim 실패 복구에서 non-NOT_ATTEMPTED resolution 을 정상 흐름으로 합류시킨다.
+   *
+   * - CONFIRMED → command 회수 후 completeConfirmedCommandWithApply (delivery claim 재획득 포함)
+   * - PROCESSING/LOOKUP_FAILED → command 회수 후 RETRY_PENDING + 백오프
+   * - 기타 (UNKNOWN, MULTIPLE_CONFIRMED 등) → command 회수 후 OPS
+   */
+  private async recoverClaimFailureByResolution(
+    candidate: PinIssueCommandEntity,
+    attemptAt: Date,
+    delivery: OrderDeliveryEntity,
+    classification: SsgDeferredClassification,
+    deadline: Date | null,
+  ): Promise<'confirmed' | 'ops_review' | null> {
+    const { resolution, confirmedCandidate } = classification;
+
+    if (resolution === SsgPinResolution.CONFIRMED) {
+      const ownerToken = randomUUID();
+      const generation = String(BigInt(candidate.generation) + 1n);
+      const workflowVersion = candidate.workflowVersion!;
+
+      const affected = await this.reclaimCommandOwnership(
+        this.pinIssueCommandRepository.manager,
+        candidate,
+        attemptAt,
+        ownerToken,
+        generation,
+        PinIssueCommandStatus.RETRYING,
+        candidate.deliveryClaimToken,
+      );
+      if (affected !== 1) return null;
+
+      const authority: PinIssueCommandAuthority = { commandId: candidate.id, ownerToken, generation, workflowVersion };
+
+      if (deadline && !candidate.resolutionDeadlineAt) {
+        if (!(await this.persistDeadline(authority, deadline))) {
+          try {
+            const restored = await this.restoreCommandAfterPreExternalFailure(
+              this.pinIssueCommandRepository.manager,
+              authority,
+            );
+            if (!restored) {
+              this.logger.error(
+                `[PIN_RESOLUTION_SWEEP] CONFIRMED deadline persist + command restore both failed command=${candidate.id}`,
+              );
+            }
+          } catch (cleanupError) {
+            this.logger.error(
+              `[PIN_RESOLUTION_SWEEP] CONFIRMED deadline persist cleanup failed command=${candidate.id}: ${cleanupError instanceof Error ? cleanupError.message : cleanupError}`,
+            );
+          }
+          return null;
+        }
+      }
+
+      this.logger.log(
+        `[PIN_RESOLUTION_SWEEP] claim failure CONFIRMED recovery command=${candidate.id}, attempting completeConfirmedCommandWithApply`,
+      );
+      if (await this.completeConfirmedCommandWithApply(authority, delivery, null, confirmedCandidate ?? null, candidate.deliveryClaimToken)) {
+        return 'confirmed';
+      }
+      if (await this.promoteOpsReview(authority, resolution)) {
+        return 'ops_review';
+      }
+      return null;
+    }
+
+    if (
+      resolution === SsgPinResolution.PROCESSING ||
+      resolution === SsgPinResolution.LOOKUP_FAILED
+    ) {
+      const ownerToken = randomUUID();
+      const generation = String(BigInt(candidate.generation) + 1n);
+      const workflowVersion = candidate.workflowVersion!;
+
+      const affected = await this.reclaimCommandOwnership(
+        this.pinIssueCommandRepository.manager,
+        candidate,
+        attemptAt,
+        ownerToken,
+        generation,
+        PinIssueCommandStatus.RETRYING,
+        null,
+      );
+      if (affected !== 1) return null;
+
+      const authority: PinIssueCommandAuthority = { commandId: candidate.id, ownerToken, generation, workflowVersion };
+      const backoffMs = computeResolutionBackoffMs(candidate.resolutionStartedAt, attemptAt);
+      const nextAttemptAt = new Date(attemptAt.getTime() + backoffMs);
+      this.logger.log(
+        `[PIN_RESOLUTION_SWEEP] claim failure ${resolution} recovery command=${candidate.id}, setting RETRY_PENDING`,
+      );
+      if (await this.recordResolution(authority, resolution, PinIssueCommandStatus.RETRY_PENDING, nextAttemptAt, deadline, candidate.resolutionLookupCount)) {
+        return null;
+      }
+      return null;
+    }
+
+    if (resolution === SsgPinResolution.NOT_ISSUED) {
+      const ownerToken = randomUUID();
+      const generation = String(BigInt(candidate.generation) + 1n);
+      const workflowVersion = candidate.workflowVersion!;
+
+      const affected = await this.reclaimCommandOwnership(
+        this.pinIssueCommandRepository.manager,
+        candidate,
+        attemptAt,
+        ownerToken,
+        generation,
+        PinIssueCommandStatus.RETRYING,
+        null,
+      );
+      if (affected !== 1) return null;
+
+      const authority: PinIssueCommandAuthority = { commandId: candidate.id, ownerToken, generation, workflowVersion };
+      const backoffMs = computeResolutionBackoffMs(candidate.resolutionStartedAt, attemptAt);
+      const nextAttemptAt = new Date(attemptAt.getTime() + backoffMs);
+      this.logger.log(
+        `[PIN_RESOLUTION_SWEEP] claim failure NOT_ISSUED recovery command=${candidate.id}, setting RETRY_PENDING with streak+1`,
+      );
+      await this.recordResolution(authority, resolution, PinIssueCommandStatus.RETRY_PENDING, nextAttemptAt, deadline, candidate.resolutionLookupCount);
+      return null;
+    }
+
+    return this.reclaimAndPromoteOps(
+      candidate,
+      attemptAt,
+      resolution,
+      'CLAIM_FAILURE_NON_NOT_ATTEMPTED',
+    );
+  }
+
+  /**
+   * EP-P30 §7-1 claim 실패 복구.
+   *
+   * `claimPinCommand` 가 실패한 후보를 처리한다. delivery claim CAS 실패가 주 원인이며,
+   * 이 경우 delivery 는 이미 다른 actor 에게 탈취/상태변경됐다.
+   *
+   * 분기:
+   *   - NOT_ATTEMPTED + gate 열림 + deadline 유효 → 발급 복구
+   *   - deadline 만료/산출불가 → command 회수 + OPS 승격
+   *   - CONFIRMED → command 회수 + 정상 확인 흐름 합류
+   *   - PROCESSING/LOOKUP_FAILED → command 회수 + RETRY_PENDING + 백오프
+   *   - 기타 → command 회수 + OPS 승격
+   *
+   * 비-batch 명령이거나 ownerToken/workflowVersion 없으면 null(기존 skip).
+   */
+  private async tryRecoverFromClaimFailure(
     candidate: PinIssueCommandEntity,
     attemptAt: Date,
   ): Promise<'confirmed' | 'ops_review' | null> {
@@ -705,10 +1195,8 @@ export class SsgRecoverySweepService {
     if (candidate.externalIssueCount < 1) return null;
 
     // ── Phase 1: 순수 판정 (durable 변경 0) ──
-    // #4 리뷰: gate·classification 을 ownership rotation 보다 먼저 수행해서
-    // off/observe 에서 durable state 가 변경되지 않도록 한다.
-    const gate = canExecuteOrdinal(this.autoResolveConfig.capabilityFor(candidate), 1);
-    if (!gate.allowed) return null;
+    const capability = this.autoResolveConfig.capabilityFor(candidate);
+    if (!capability.commandTransition) return null;
 
     const delivery = await this.orderDeliveryRepository.findOne({
       where: { id: candidate.orderDeliveryId },
@@ -716,8 +1204,56 @@ export class SsgRecoverySweepService {
     });
     if (!delivery) return null;
 
+    // §7-3 deadline 검사
+    const deadline = await this.computeDeadlineForCommand(candidate, delivery);
+    const effectiveDeadline = candidate.resolutionDeadlineAt ?? deadline;
+    const deadlineExpired = effectiveDeadline && attemptAt >= effectiveDeadline;
+    const deadlineUncomputable = !deadline && !candidate.resolutionDeadlineAt;
+
+    // deadline 만료/산출불가 → command 만 회수 후 OPS 승격 (delivery claim 없이)
+    if (deadlineExpired || deadlineUncomputable) {
+      return this.reclaimAndPromoteOps(
+        candidate,
+        attemptAt,
+        candidate.resolution ?? SsgPinResolution.UNKNOWN,
+        deadlineExpired ? 'DEADLINE_EXCEEDED' : 'DEADLINE_UNCOMPUTABLE',
+      );
+    }
+
     const classification = await this.partnerCompanyExternService.classifyDeferredSsgIssue(delivery.id);
-    if (classification.resolution !== SsgPinResolution.NOT_ATTEMPTED) return null;
+
+    // §7-3 외부 조회 완료 후 deadline 재검사 — 조회 도중 만료를 감지한다.
+    const postLookupAt = new Date();
+    if (effectiveDeadline && postLookupAt >= effectiveDeadline) {
+      return this.reclaimAndPromoteOps(
+        candidate,
+        attemptAt,
+        classification.resolution,
+        'DEADLINE_EXCEEDED_DURING_CLAIM_FAILURE_LOOKUP',
+      );
+    }
+
+    // NOT_ATTEMPTED 외 상태 → resolution 별 정상 흐름 합류.
+    if (classification.resolution !== SsgPinResolution.NOT_ATTEMPTED) {
+      return this.recoverClaimFailureByResolution(
+        candidate,
+        attemptAt,
+        delivery,
+        classification,
+        deadline,
+      );
+    }
+
+    // NOT_ATTEMPTED + gate 확인. gate 불가(off-drain: insertOrdinal1=false) 시 OPS 종결.
+    const gate = canExecuteOrdinal(capability, 1);
+    if (!gate.allowed) {
+      return this.reclaimAndPromoteOps(
+        candidate,
+        attemptAt,
+        SsgPinResolution.NOT_ATTEMPTED,
+        'CLAIM_FAILURE_NOT_ATTEMPTED_GATE_CLOSED',
+      );
+    }
 
     // ── Phase 2: durable 변경 (판정 통과 후에만) ──
     const ownerToken = randomUUID();
@@ -755,8 +1291,33 @@ export class SsgRecoverySweepService {
     }
     if (!claimResult) return null;
 
-    try {
+    if (deadline && !candidate.resolutionDeadlineAt) {
+      if (!(await this.persistDeadline(authority, deadline))) {
+        try {
+          await this.pinIssueCommandRepository.manager.transaction(async (manager) => {
+            const claimDate = new Date(claimResult!.deliveryClaimToken);
+            const released = await manager
+              .createQueryBuilder()
+              .update(OrderDeliveryEntity)
+              .set({ claimedAt: null, mutationClaimedAt: null })
+              .where('id = :id', { id: delivery.id })
+              .andWhere('claimed_at = :ct', { ct: claimDate })
+              .andWhere('mutation_claimed_at = :mt', { mt: claimDate })
+              .execute();
+            if (released.affected !== 1) throw new Error('claim release CAS failed');
+            const restored = await this.restoreCommandAfterPreExternalFailure(manager, authority);
+            if (!restored) throw new Error('command restore CAS failed');
+          });
+        } catch (cleanupError) {
+          this.logger.error(
+            `[PIN_RESOLUTION_SWEEP] deadline persist cleanup failed command=${candidate.id}: ${cleanupError instanceof Error ? cleanupError.message : cleanupError}`,
+          );
+        }
+        return null;
+      }
+    }
 
+    try {
       const event = delivery.ssgEventId
         ? await this.ssgEventRepository.findOne({ where: { id: delivery.ssgEventId } })
         : null;

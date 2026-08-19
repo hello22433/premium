@@ -6,7 +6,7 @@ jest.mock('typeorm-transactional', () => ({
   addTransactionalDataSources: jest.fn(),
 }));
 
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { DataSource, EntityManager, QueryFailedError, Repository } from 'typeorm';
@@ -32,6 +32,7 @@ describe('RefundLedgerService', () => {
   let sut: RefundLedgerService;
   let refundRepository: jest.Mocked<Repository<OrderDeliveryRefundEntity>>;
   let deliveryRepository: jest.Mocked<Repository<OrderDeliveryEntity>>;
+  let claimManager: EntityManager;
 
   const makeInsertChain = (executeImpl: () => Promise<unknown>) => {
     const chain: any = {
@@ -49,6 +50,16 @@ describe('RefundLedgerService', () => {
       set: jest.fn(() => chain),
       where: jest.fn(() => chain),
       execute: jest.fn(executeImpl),
+    };
+    return chain;
+  };
+
+  const makeSsgCountChain = (count = 0) => {
+    const chain: any = {
+      from: jest.fn(() => chain),
+      where: jest.fn(() => chain),
+      andWhere: jest.fn(() => chain),
+      getCount: jest.fn(async () => count),
     };
     return chain;
   };
@@ -99,7 +110,22 @@ describe('RefundLedgerService', () => {
     deliveryRepository = {
       createQueryBuilder: jest.fn(),
       update: jest.fn(),
+      findOne: jest.fn(async () => ({
+        id: baseInput.orderDeliveryId,
+        refundedAt: null,
+        discardedAt: null,
+        destroyedAt: null,
+      })),
     } as unknown as jest.Mocked<Repository<OrderDeliveryEntity>>;
+
+    claimManager = {
+      getRepository: jest.fn((entity: any) => {
+        if (entity === OrderDeliveryRefundEntity) return refundRepository;
+        if (entity === OrderDeliveryEntity) return deliveryRepository;
+        throw new Error('unexpected entity');
+      }),
+      createQueryBuilder: jest.fn().mockReturnValue(makeSsgCountChain()),
+    } as unknown as EntityManager;
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -117,7 +143,7 @@ describe('RefundLedgerService', () => {
         { provide: getRepositoryToken(OrderDeliveryRefundEntity), useValue: refundRepository },
         { provide: getRepositoryToken(OrderDeliveryEntity), useValue: deliveryRepository },
         // 전환 건 claim 은 attempt 잠금과 INSERT 를 한 트랜잭션으로 묶는다(미전환 건은 사용하지 않는다).
-        { provide: DataSource, useValue: { transaction: jest.fn() } },
+        { provide: DataSource, useValue: { transaction: jest.fn(async (cb: any) => await cb(claimManager)) } },
       ],
     }).compile();
 
@@ -210,13 +236,43 @@ describe('RefundLedgerService', () => {
       expect(updateChain.execute).not.toHaveBeenCalled();
     });
 
+    it('PIN 확정 완료 후 환불 차단 (ConflictException)', async () => {
+      (claimManager as any).createQueryBuilder.mockReturnValue(makeSsgCountChain(1));
+
+      const insertChain = makeInsertChain(async () => ({ identifiers: [{ id: 1 }] }));
+      const updateChain = makeUpdateChain(async () => ({ affected: 1 }));
+      refundRepository.createQueryBuilder.mockReturnValue(insertChain);
+      deliveryRepository.createQueryBuilder.mockReturnValue(updateChain);
+
+      await expect(sut.claim(baseInput)).rejects.toBeInstanceOf(ConflictException);
+      expect(insertChain.execute).not.toHaveBeenCalled();
+      expect(updateChain.execute).not.toHaveBeenCalled();
+    });
+
+    it('폐기 후에는 PIN 확정 상태여도 환불 허용', async () => {
+      (claimManager as any).createQueryBuilder.mockReturnValue(makeSsgCountChain(1));
+      (deliveryRepository.findOne as jest.Mock).mockResolvedValue({
+        id: baseInput.orderDeliveryId,
+        refundedAt: null,
+        discardedAt: new Date(),
+        destroyedAt: null,
+      });
+
+      const insertChain = makeInsertChain(async () => ({ identifiers: [{ id: 1 }] }));
+      const updateChain = makeUpdateChain(async () => ({ affected: 1 }));
+      refundRepository.createQueryBuilder.mockReturnValue(insertChain);
+      deliveryRepository.createQueryBuilder.mockReturnValue(updateChain);
+
+      await sut.claim(baseInput);
+      expect(insertChain.execute).toHaveBeenCalledTimes(1);
+    });
+
     /**
-     * CRITICAL #1 회귀 테스트:
-     * claim()이 단일 트랜잭션이 아니므로 INSERT 성공 + markRefundedAt UPDATE 실패 시
-     * ledger row는 남고 order_delivery.refunded_at은 NULL로 유지되어 두 source가 분기된다.
-     * 현재 코드는 이 시나리오에서 호출자에게 에러를 던지고 종료하지만 ledger row는 정리되지 않는다.
+     * 원자성 확인 (기존 divergence 수정됨):
+     * claim()이 단일 트랜잭션으로 통합되어 INSERT 성공 + markRefundedAt UPDATE 실패 시
+     * 트랜잭션 전체가 롤백된다. 에러는 호출자에게 그대로 전파된다.
      */
-    it('[비원자성 노출] INSERT 성공 후 markRefundedAt 실패 시 INSERT는 롤백되지 않는다 (divergence)', async () => {
+    it('[원자성 확인] INSERT 성공 후 markRefundedAt 실패 시 트랜잭션 에러 전파', async () => {
       const insertChain = makeInsertChain(async () => ({ identifiers: [{ id: 1 }] }));
       const updateChain = makeUpdateChain(async () => {
         throw new Error('UPDATE failed');
@@ -288,6 +344,16 @@ describe('RefundLedgerService', () => {
   });
 
   describe('claimWithManager() / releaseWithManager()', () => {
+    const makeDeliveryRepoWithLock = (updateChain: any) => ({
+      createQueryBuilder: jest.fn().mockReturnValue(updateChain),
+      findOne: jest.fn(async () => ({
+        id: baseInput.orderDeliveryId,
+        refundedAt: null,
+        discardedAt: null,
+        destroyedAt: null,
+      })),
+    });
+
     const makeManager = (refundRepo: any, deliveryRepo: any): EntityManager =>
       ({
         getRepository: jest.fn((entity: any) => {
@@ -295,13 +361,14 @@ describe('RefundLedgerService', () => {
           if (entity === OrderDeliveryEntity) return deliveryRepo;
           throw new Error('unexpected entity');
         }),
+        createQueryBuilder: jest.fn().mockReturnValue(makeSsgCountChain()),
       }) as unknown as EntityManager;
 
     it('claimWithManager: manager.getRepository 경로로 INSERT + UPDATE 호출', async () => {
       const insertChain = makeInsertChain(async () => ({ identifiers: [{ id: 1 }] }));
       const updateChain = makeUpdateChain(async () => ({ affected: 1 }));
       const refundRepo = { createQueryBuilder: jest.fn().mockReturnValue(insertChain) };
-      const deliveryRepo = { createQueryBuilder: jest.fn().mockReturnValue(updateChain) };
+      const deliveryRepo = makeDeliveryRepoWithLock(updateChain);
       const manager = makeManager(refundRepo, deliveryRepo);
 
       await sut.claimWithManager(manager, baseInput);
@@ -318,7 +385,7 @@ describe('RefundLedgerService', () => {
       });
       const updateChain = makeUpdateChain(async () => ({ affected: 1 }));
       const refundRepo = { createQueryBuilder: jest.fn().mockReturnValue(insertChain) };
-      const deliveryRepo = { createQueryBuilder: jest.fn().mockReturnValue(updateChain) };
+      const deliveryRepo = makeDeliveryRepoWithLock(updateChain);
       const manager = makeManager(refundRepo, deliveryRepo);
 
       await expect(sut.claimWithManager(manager, baseInput)).rejects.toBeInstanceOf(BadRequestException);
