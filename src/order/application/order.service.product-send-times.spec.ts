@@ -10,7 +10,7 @@ import { ViewScopeType } from '../../entity/user.view.scope.entity';
  * getList() — productSendTimes 필드 검증
  * 배열 채움 게이트: 혼합 발송(IMMEDIATE+RESERVE) 또는 RESERVE 분 단위 distinct ≥ 2.
  * 게이트 통과 시 배열 = RESERVE ∪ IMMEDIATE 전 매핑 (각 항목 sendType 포함, Case-G 포함).
- * per-mapping actualSendAt은 가장 최근 COMPLETE/COMPLETE_SMS 건 기준.
+ * per-mapping actualSendAt은 활성(deletedAt == null) 배송 중 actualSendAt MAX (상태 무관).
  */
 
 const BASE_USER = {
@@ -241,7 +241,7 @@ describe('OrderService getList — productSendTimes', () => {
       expect(itemA.actualSendAt).not.toBeNull();
     });
 
-    it('FAIL 상태 delivery는 actualSendAt 산정 제외', async () => {
+    it('FAIL 상태여도 actualSendAt 이 있으면 산정 포함', async () => {
       const mappings = [
         makeMapping(1, '상품A', 'RESERVE', new Date('2026-07-01T09:00:00'), [
           makeDelivery(1, IOrderDeliveryStatus.FAIL, new Date('2026-07-01T09:01:00')),
@@ -251,12 +251,12 @@ describe('OrderService getList — productSendTimes', () => {
       const service = setupService([makeOrder(mappings)]);
       const result = await service.getList(BASE_USER, BASE_QUERY);
       const itemA = result.list[0].productSendTimes!.find((t: any) => t.productName === '상품A')!;
-      expect(itemA.actualSendAt).toBeNull();
+      expect(itemA.actualSendAt).toContain('09:01');
     });
   });
 
-  describe('재발송(resend) — 가장 최근 COMPLETE 건 기준', () => {
-    it('재발송이 있을 때 최초 건이 아닌 마지막 COMPLETE 건의 actualSendAt 반환', async () => {
+  describe('재발송(resend) — 활성 배송 MAX actualSendAt 기준', () => {
+    it('재발송이 있을 때 최초 건이 아닌 가장 최근 actualSendAt 반환', async () => {
       const firstSendAt = new Date('2026-07-01T09:05:00');
       const resendAt = new Date('2026-07-01T10:30:00');
       const mappings = [
