@@ -1250,7 +1250,7 @@ export class OrderService {
         // 활성 행 중 actualSendAt 이 있는 것들의 MAX — EXISTS 필터와 기준 통일
         const maxSendAt = (order.orderProductMappings ?? [])
           .flatMap((m) => m.orderDeliveries ?? [])
-          .filter((d) => d.deletedAt == null && d.actualSendAt)
+          .filter((d) => d.deletedAt == null && d.replacedFromId == null && d.actualSendAt)
           .reduce<Date | null>((max, d) => (max === null || d.actualSendAt! > max ? d.actualSendAt! : max), null);
         if (maxSendAt) {
           actualSendAt = format(maxSendAt, DateFormatStr);
@@ -1302,12 +1302,12 @@ export class OrderService {
       // per-mapping actualSendAt: 활성 행 중 actualSendAt MAX — EXISTS 필터·상위 actualSendAt과 기준 통일
       const resolveMappingActualSendAt = (
         deliveries:
-          | { deletedAt?: Date | null; actualSendAt?: Date | null }[]
+          | { deletedAt?: Date | null; replacedFromId?: number | null; actualSendAt?: Date | null }[]
           | null
           | undefined,
       ): string | null => {
         const maxActualSendAt = (deliveries ?? [])
-          .filter((d) => d.deletedAt == null && d.actualSendAt)
+          .filter((d) => d.deletedAt == null && d.replacedFromId == null && d.actualSendAt)
           .reduce<Date | null>((max, d) => (max === null || d.actualSendAt! > max ? d.actualSendAt! : max), null);
         return maxActualSendAt ? format(maxActualSendAt, DateFormatStr) : null;
       };
@@ -7034,7 +7034,7 @@ export class OrderService {
           // 활성 행 중 actualSendAt MAX — 목록 표시와 동일 기준
           for (const mapping of order.orderProductMappings) {
             for (const delivery of (mapping.orderDeliveries ?? [])) {
-              if (delivery.deletedAt == null && delivery.actualSendAt) {
+              if (delivery.deletedAt == null && delivery.replacedFromId == null && delivery.actualSendAt) {
                 if (actualSendAt === null || delivery.actualSendAt > actualSendAt) {
                   actualSendAt = delivery.actualSendAt;
                 }
@@ -8217,6 +8217,7 @@ export class OrderService {
         INNER JOIN order_product_mapping opm_send ON opm_send.id = od_send.order_product_mapping_id
         WHERE opm_send.order_id = order.id
           AND od_send.deleted_at IS NULL
+          AND od_send.replaced_from_id IS NULL
           AND opm_send.deleted_at IS NULL
           AND ${conditions.join(' AND ')}
       )`,
