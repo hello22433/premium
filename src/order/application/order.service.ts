@@ -7264,17 +7264,20 @@ export class OrderService {
         PhoneUtil.normalizeDeliveryTarget(deliveryTarget),
       );
 
-      // 쿠폰이미지 만들기
-      const { path: imagePath } = await DeliveryCreateCouponImage(
-        orderProductMapping.product.imagePath,
-        orderProductMapping.product.name,
-        barCode,
-        orderProductMapping.product.brand!.nameKorean,
-        expireDate,
-        orderProductMapping.topImagePath,
-        orderProductMapping.midImagePath,
-        orderProductMapping.product.type,
-      );
+      // 초이스쿠폰은 선택 전이므로 바코드 이미지 불필요 (선택링크만 발송)
+      const isChoiceCoupon = orderProductMapping.product.type === IProductType.CHOICE;
+      const imagePath = isChoiceCoupon
+        ? ''
+        : (await DeliveryCreateCouponImage(
+            orderProductMapping.product.imagePath,
+            orderProductMapping.product.name,
+            barCode,
+            orderProductMapping.product.brand!.nameKorean,
+            expireDate,
+            orderProductMapping.topImagePath,
+            orderProductMapping.midImagePath,
+            orderProductMapping.product.type,
+          )).path;
 
       // 한도 선점과 이력 INSERT 를 한 트랜잭션으로 묶는다. 선점만 커밋되고 이력이 없는 상태가 생기면
       // 그 선점은 회수할 근거가 사라진다(잔류 정리는 이력 행을 기준으로 회수한다). 둘을 함께 커밋해
