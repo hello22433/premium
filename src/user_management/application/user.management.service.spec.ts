@@ -36,7 +36,7 @@ import { PasswordBcryptEncrypt } from '../../auth/infrastructure/password.bcrypt
 import { IUserSettleCondition } from '../../user/interface/user.settle.condition';
 import { IUserSettleMethod } from '../../user/interface/user.settle.method';
 import { UserSettlePeriodConditionEnum } from '../../user/interface/user.settle.period.condition.enum';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, InternalServerErrorException } from '@nestjs/common';
 import { IUserAuthority } from '../../user/interface/user.authority';
 import { IUserStatus } from '../../user/interface/user.status';
 import { IExternalApiSsgRequestStatus } from '../../external_api/interface/external.api.ssg.request.status';
@@ -208,6 +208,72 @@ describe('user management service test', () => {
       expect(result.list[0].id).toBe(1);
       expect(result.totalPage).toBe(1);
       expect(result.totalCount).toBe(1);
+    });
+
+    it('WALLET 모드 + 정산코드 wallet 존재 시 최대서비스한도/충전잔액을 wallet snapshot 으로 반환한다', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
+      queryBuilder.getManyAndCount.mockResolvedValue([
+        [{ ...UserEntityTest(), id: 1, settlementCode: 'company-0', company: { maximumLimit: 999, balance: 111 } }],
+        1,
+      ]);
+      walletAccountRepository.find.mockResolvedValue([
+        { ownerType: 'SETTLEMENT_CODE', ownerId: 'company-0', creditLimit: 5_000_000, depositBalance: 300_000 },
+      ]);
+
+      const result = await sut.getList({ page: 1, take: 10 } as UserManagementGetListReqQueryDto);
+
+      expect(walletAccountRepository.find).toHaveBeenCalledWith({
+        where: { ownerType: 'SETTLEMENT_CODE', ownerId: expect.anything() },
+      });
+      expect(result.list[0].maximumLimit).toBe(5_000_000);
+      expect(result.list[0].balance).toBe(300_000);
+    });
+
+    it('WALLET 모드인데 정산코드는 배정됐고 wallet 행이 없으면 legacy 폴백 없이 fail-closed 한다', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.WALLET;
+      queryBuilder.getManyAndCount.mockResolvedValue([
+        [
+          {
+            ...UserEntityTest(),
+            id: 1,
+            settlementCode: 'missing-code',
+            company: { maximumLimit: 999, balance: 111, balanceManagementType: 'COMPANY' },
+          },
+        ],
+        1,
+      ]);
+      walletAccountRepository.find.mockResolvedValue([]);
+
+      const err = await sut.getList({ page: 1, take: 10 } as UserManagementGetListReqQueryDto).catch((e) => e);
+
+      expect(err).toBeInstanceOf(InternalServerErrorException);
+      expect(err.getStatus()).toBe(500);
+      expect(err.getResponse()).toEqual({
+        statusCode: 500,
+        code: 'WALLET_ACCOUNT_INTEGRITY_ERROR',
+        message: '정산코드 Wallet 정보를 찾을 수 없습니다.',
+      });
+    });
+
+    it('LEGACY 모드에서는 wallet 조회 없이 기존 legacy 값을 그대로 반환한다', async () => {
+      walletCutoverConfig.pr3SettleMode = WalletCutoverMode.LEGACY;
+      queryBuilder.getManyAndCount.mockResolvedValue([
+        [
+          {
+            ...UserEntityTest(),
+            id: 1,
+            settlementCode: 'company-0',
+            company: { maximumLimit: 999, balance: 111, balanceManagementType: 'COMPANY' },
+          },
+        ],
+        1,
+      ]);
+
+      const result = await sut.getList({ page: 1, take: 10 } as UserManagementGetListReqQueryDto);
+
+      expect(walletAccountRepository.find).not.toHaveBeenCalled();
+      expect(result.list[0].maximumLimit).toBe(999);
+      expect(result.list[0].balance).toBe(111);
     });
   });
 

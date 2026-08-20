@@ -1,6 +1,7 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, InternalServerErrorException } from '@nestjs/common';
 import { Brackets } from 'typeorm';
 import { SettleService } from './settle.service';
+import { WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
 
 const mockExcelRowCommit = jest.fn();
 const mockExcelAddRow = jest.fn().mockReturnValue({ commit: mockExcelRowCommit });
@@ -554,5 +555,159 @@ describe('SettleService — confirmSingleOrderTx (#20 fix)', () => {
     await expect(
       (svc as any).confirmSingleOrderTx(ORDER_ID, { netAmount: 5_000, hasPending: false }),
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// getUserPerList — 최대서비스한도/선입금금액 wallet 소스 전환 회귀 테스트
+// ────────────────────────────────────────────────────────────────────────────
+
+function makeUserPerQb(overrides: Record<string, any> = {}): any {
+  return {
+    leftJoinAndSelect: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    andWhere: jest.fn().mockReturnThis(),
+    orderBy: jest.fn().mockReturnThis(),
+    select: jest.fn().mockReturnThis(),
+    addSelect: jest.fn().mockReturnThis(),
+    groupBy: jest.fn().mockReturnThis(),
+    getMany: jest.fn().mockResolvedValue([]),
+    getRawMany: jest.fn().mockResolvedValue([]),
+    ...overrides,
+  };
+}
+
+function makeOverdueQb(overrides: Record<string, any> = {}): any {
+  return {
+    select: jest.fn().mockReturnThis(),
+    addSelect: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    andWhere: jest.fn().mockReturnThis(),
+    getRawMany: jest.fn().mockResolvedValue([]),
+    ...overrides,
+  };
+}
+
+function makeUserPerUser(overrides: Record<string, any> = {}): any {
+  return {
+    id: 1,
+    email: 'user@test.com',
+    companyId: 9,
+    company: { businessName: '고객사', maximumLimit: 999, balance: 111, balanceManagementType: 'ACCOUNT' },
+    personName: '담당자',
+    settleCondition: 'POST_PAYMENT',
+    settlePeriodCondition: null,
+    settlePeriodCount: null,
+    settlementCode: 'company-0',
+    balance: 111,
+    allSettleAmount: 50,
+    ...overrides,
+  };
+}
+
+describe('SettleService — getUserPerList (최대서비스한도/선입금금액 wallet 소스)', () => {
+  it('WALLET 모드 + 정산코드 wallet 존재 시 wallet snapshot 값을 사용한다', async () => {
+    const user = makeUserPerUser();
+    const qb = makeUserPerQb({ getMany: jest.fn().mockResolvedValue([user]) });
+    const svc = makeService({
+      userRepository: { createQueryBuilder: jest.fn().mockReturnValue(qb) },
+      orderRepository: { createQueryBuilder: jest.fn().mockReturnValue(makeOverdueQb()), manager: {} },
+      walletCutoverConfig: { pr3SettleMode: WalletCutoverMode.WALLET },
+      walletAccountRepository: {
+        find: jest.fn().mockResolvedValue([
+          {
+            ownerType: 'SETTLEMENT_CODE',
+            ownerId: 'company-0',
+            creditLimit: 5_000_000,
+            depositBalance: 300_000,
+            creditUsedAmount: 20_000,
+            creditExcessAmount: 0,
+            settleCondition: 'PRE_PAYMENT',
+          },
+        ]),
+      },
+      logger: { warn: jest.fn() },
+    });
+
+    const result = await svc.getUserPerList({ page: 1, take: 10 });
+
+    expect(svc.walletAccountRepository.find).toHaveBeenCalledWith({
+      where: { ownerType: 'SETTLEMENT_CODE', ownerId: expect.anything() },
+    });
+    expect(result.list[0].maximumLimit).toBe(5_000_000);
+    expect(result.list[0].balance).toBe(300_000);
+    expect(result.list[0].serviceAmount).toBe(20_000);
+    expect(result.list[0].remainServiceAmount).toBe(5_280_000);
+    expect(result.list[0].settleCondition).toBe('PRE_PAYMENT');
+  });
+
+  it('WALLET 모드에서 공유 정산코드 계정들이 동일한 settleCondition 을 반환한다', async () => {
+    const user1 = makeUserPerUser({ id: 1, settlementCode: 'shared-code', settleCondition: 'POST_PAYMENT' });
+    const user2 = makeUserPerUser({ id: 2, settlementCode: 'shared-code', settleCondition: 'POST_PAYMENT' });
+    const qb = makeUserPerQb({ getMany: jest.fn().mockResolvedValue([user1, user2]) });
+    const svc = makeService({
+      userRepository: { createQueryBuilder: jest.fn().mockReturnValue(qb) },
+      orderRepository: { createQueryBuilder: jest.fn().mockReturnValue(makeOverdueQb()), manager: {} },
+      walletCutoverConfig: { pr3SettleMode: WalletCutoverMode.WALLET },
+      walletAccountRepository: {
+        find: jest.fn().mockResolvedValue([
+          {
+            ownerType: 'SETTLEMENT_CODE',
+            ownerId: 'shared-code',
+            creditLimit: 1_000_000,
+            depositBalance: 0,
+            creditUsedAmount: 0,
+            creditExcessAmount: 0,
+            settleCondition: 'PRE_PAYMENT',
+          },
+        ]),
+      },
+      logger: { warn: jest.fn() },
+    });
+
+    const result = await svc.getUserPerList({ page: 1, take: 10 });
+
+    expect(result.list[0].settleCondition).toBe('PRE_PAYMENT');
+    expect(result.list[1].settleCondition).toBe('PRE_PAYMENT');
+  });
+
+  it('WALLET 모드인데 정산코드는 배정됐고 wallet 행이 없으면 legacy 폴백 없이 fail-closed 한다', async () => {
+    const user = makeUserPerUser({ settlementCode: 'missing-code' });
+    const qb = makeUserPerQb({ getMany: jest.fn().mockResolvedValue([user]) });
+    const svc = makeService({
+      userRepository: { createQueryBuilder: jest.fn().mockReturnValue(qb) },
+      orderRepository: { createQueryBuilder: jest.fn().mockReturnValue(makeOverdueQb()), manager: {} },
+      walletCutoverConfig: { pr3SettleMode: WalletCutoverMode.WALLET },
+      walletAccountRepository: { find: jest.fn().mockResolvedValue([]) },
+      logger: { warn: jest.fn() },
+    });
+
+    const err = await svc.getUserPerList({ page: 1, take: 10 }).catch((e: any) => e);
+
+    expect(err).toBeInstanceOf(InternalServerErrorException);
+    expect(err.getStatus()).toBe(500);
+    expect(err.getResponse()).toEqual({
+      statusCode: 500,
+      code: 'WALLET_ACCOUNT_INTEGRITY_ERROR',
+      message: '정산코드 Wallet 정보를 찾을 수 없습니다.',
+    });
+  });
+
+  it('LEGACY 모드에서는 wallet 조회 없이 기존 legacy(회사합산) 값을 그대로 반환한다', async () => {
+    const user = makeUserPerUser();
+    const qb = makeUserPerQb({ getMany: jest.fn().mockResolvedValue([user]) });
+    const svc = makeService({
+      userRepository: { createQueryBuilder: jest.fn().mockReturnValue(qb) },
+      orderRepository: { createQueryBuilder: jest.fn().mockReturnValue(makeOverdueQb()), manager: {} },
+      walletCutoverConfig: { pr3SettleMode: WalletCutoverMode.LEGACY },
+      walletAccountRepository: { find: jest.fn() },
+      logger: { warn: jest.fn() },
+    });
+
+    const result = await svc.getUserPerList({ page: 1, take: 10 });
+
+    expect(svc.walletAccountRepository.find).not.toHaveBeenCalled();
+    expect(result.list[0].maximumLimit).toBe(999);
+    expect(result.list[0].balance).toBe(111);
   });
 });
