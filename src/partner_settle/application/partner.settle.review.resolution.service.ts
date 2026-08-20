@@ -647,7 +647,8 @@ export class PartnerSettleReviewResolutionService {
     const opm = await manager
       .getRepository(OrderProductMappingEntity)
       .createQueryBuilder('opm')
-      .where('opm.orderDeliveryId = :orderDeliveryId', { orderDeliveryId })
+      .innerJoin('opm.orderDeliveries', 'od')
+      .where('od.id = :orderDeliveryId', { orderDeliveryId })
       .getOne();
     if (!opm) return null;
     return {
