@@ -281,6 +281,40 @@ describe('PartnerSettleReviewResolutionService', () => {
     );
   });
 
+  it('loads the immutable OPM snapshot through its order delivery relation', async () => {
+    const opm = {
+      snapshotProductPrice: 12345,
+      snapshotProductCategory: 'MOBILE',
+      snapshotProductClassificationId: 99,
+      snapshotProductBrandName: '브랜드',
+    };
+    const queryBuilder = {
+      innerJoin: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockResolvedValue(opm),
+    };
+    const repository = { createQueryBuilder: jest.fn().mockReturnValue(queryBuilder) };
+    const manager = { getRepository: jest.fn().mockReturnValue(repository) };
+    const service = new PartnerSettleReviewResolutionService({} as never, pricingResolver as never, {} as never);
+
+    await expect((service as any).loadSnapshot(2, manager)).resolves.toEqual({
+      price: 12345,
+      category: 'MOBILE',
+      classificationId: 99,
+      brandNameKorean: '브랜드',
+    });
+    expect(queryBuilder.innerJoin).toHaveBeenCalledWith('opm.orderDeliveries', 'od');
+    expect(queryBuilder.where).toHaveBeenCalledWith('od.id = :orderDeliveryId', { orderDeliveryId: 2 });
+  });
+
+  it('does not query when loading a snapshot without an order delivery', async () => {
+    const manager = { getRepository: jest.fn() };
+    const service = new PartnerSettleReviewResolutionService({} as never, pricingResolver as never, {} as never);
+
+    await expect((service as any).loadSnapshot(null, manager)).resolves.toBeNull();
+    expect(manager.getRepository).not.toHaveBeenCalled();
+  });
+
   it('blocks self approval before changing ledger state', async () => {
     const pending = proposal();
     const proposalQb = {
