@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { PartnerCompanyExternHistoryService } from './partner.company.extern.history.service';
-import { DeliveryFailureSotReader, DeliveryFailureSotView } from './delivery.failure.sot.reader';
+import { Auto504FailureView, DeliveryFailureSotReader, DeliveryFailureSotView } from './delivery.failure.sot.reader';
 import { PartnerCompanyExternHistoryEntity } from '../../entity/partner.company.extern.history.entity';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { DeliveryWorkflowEntity } from '../../entity/delivery.workflow.entity';
@@ -69,7 +69,11 @@ describe('실패내역 화면 SoT 렌더', () => {
     ...overrides,
   });
 
-  const buildSut = async (rows: OrderDeliveryEntity[], sotMap: Map<number, DeliveryFailureSotView>) => {
+  const buildSut = async (
+    rows: OrderDeliveryEntity[],
+    sotMap: Map<number, DeliveryFailureSotView>,
+    auto504Map: Map<number, Auto504FailureView> = new Map(),
+  ) => {
     const qb: Record<string, jest.Mock> = {
       leftJoinAndSelect: jest.fn().mockReturnThis(),
       leftJoin: jest.fn().mockReturnThis(),
@@ -104,7 +108,13 @@ describe('실패내역 화면 SoT 렌더', () => {
         { provide: PartnerCompanyExternService, useValue: {} },
         { provide: SsgInsertStateService, useValue: {} },
         { provide: DeliveryCutoverGuardService, useValue: {} },
-        { provide: DeliveryFailureSotReader, useValue: { loadMigrated: jest.fn().mockResolvedValue(sotMap) } },
+        {
+          provide: DeliveryFailureSotReader,
+          useValue: {
+            loadMigrated: jest.fn().mockResolvedValue(sotMap),
+            loadNonMigratedAuto504Failed: jest.fn().mockResolvedValue(auto504Map),
+          },
+        },
       ],
     }).compile();
 
@@ -127,6 +137,36 @@ describe('실패내역 화면 SoT 렌더', () => {
     expect(row.lastResolvedAt).toBe('2026-08-02T09:30:00');
     expect(row.resendable).toBe(false);
     expect(row.resendBlockReason).toContain('MANUAL_RESEND');
+  });
+
+  it('전환 건의 AUTO_504 재발송 성공은 원본 504를 보존하면서 재발송완료로 표시한다', async () => {
+    const { sut } = await buildSut(
+      [makeDelivery({ status: IOrderDeliveryStatus.COMPLETE })],
+      new Map([
+        [
+          100,
+          makeSot({
+            workflowStatus: DeliveryWorkflowStatus.COMPLETED,
+            workflowStatusKo: '전달 완료',
+            resent: true,
+            channel: 'MMS',
+            sendReason: 'AUTO_504_RESEND',
+            lastResolvedAt: new Date('2026-08-11T14:34:29'),
+            deliveredAt: new Date('2026-08-11T14:34:29'),
+          }),
+        ],
+      ]),
+    );
+
+    const row = (await sut.getHistoryList({ page: 1, take: 20 } as never)).list[0];
+
+    expect(row.failType).toBe('RESEND');
+    expect(row.failTypeKo).toBe('재발송완료');
+    expect(row.errorCode).toBe('GEMTEK_RESULT_504');
+    expect(row.workflowStatus).toBe(DeliveryWorkflowStatus.COMPLETED);
+    expect(row.channel).toBe('MMS');
+    expect(row.sendReason).toBe('AUTO_504_RESEND');
+    expect(row.lastResolvedAt).toBe('2026-08-11T14:34:29');
   });
 
   it('전환 건의 workflow 판정과 legacy status 미러가 어긋나면 workflow 를 채택하고 불일치로 집계한다', async () => {
@@ -164,6 +204,54 @@ describe('실패내역 화면 SoT 렌더', () => {
     expect(row.resendable).toBe(true);
     expect(row.mirrorMismatch).toBe(false);
     expect(res.mirrorMismatchCount).toBe(0);
+  });
+
+  it('미전환 AUTO_504 최종 실패는 실패 확정 시각과 코드를 표시한다', async () => {
+    const resolvedAt = new Date('2026-08-02T09:30:00');
+    const auto504: Auto504FailureView = {
+      failureCode: makeSot().failureCode,
+      resolvedAt,
+      autoResendCount: 2,
+      channel: 'LMS',
+      sendReason: 'AUTO_504',
+    };
+    const { sut } = await buildSut(
+      [makeDelivery({ status: IOrderDeliveryStatus.COMPLETE, resendAt: new Date('2026-08-02T09:00:00') })],
+      new Map(),
+      new Map([[100, auto504]]),
+    );
+
+    const row = (await sut.getHistoryList({ page: 1, take: 20 } as never)).list[0];
+
+    expect(row.failType).toBe(FailType.SEND_FAIL);
+    expect(row.createdAt).toBe('2026-08-02T09:30:00');
+    expect(row.lastResolvedAt).toBe('2026-08-02T09:30:00');
+    expect(row.errorCode).toBe('GEMTEK_RESULT_504');
+    expect(row.autoResendCount).toBe(2);
+    expect(row.resendAt).toBeNull();
+    expect(row.resendable).toBe(false);
+  });
+
+  it('FAIL 필터는 미전환 AUTO_504 최종 실패를 포함한다', async () => {
+    const { sut, qb } = await buildSut([], new Map());
+
+    await sut.getHistoryList({ page: 1, take: 20, sendStatus: 'FAIL' } as never);
+
+    const filters = qb.andWhere.mock.calls.map(([condition]) => String(condition)).join('\n');
+    expect(filters).toContain(
+      "OR EXISTS (SELECT 1 FROM message_attempt ma2 WHERE ma2.order_delivery_id = `orderDelivery`.`id` AND ma2.attempt_type = 'AUTO_504' AND ma2.status = 'FAILED_FINAL'",
+    );
+  });
+
+  it('RESEND 필터는 미전환 AUTO_504 최종 실패를 제외한다', async () => {
+    const { sut, qb } = await buildSut([], new Map());
+
+    await sut.getHistoryList({ page: 1, take: 20, sendStatus: 'RESEND' } as never);
+
+    const filters = qb.andWhere.mock.calls.map(([condition]) => String(condition)).join('\n');
+    expect(filters).toContain(
+      "AND NOT EXISTS (SELECT 1 FROM message_attempt ma2 WHERE ma2.order_delivery_id = `orderDelivery`.`id` AND ma2.attempt_type = 'AUTO_504' AND ma2.status = 'FAILED_FINAL'",
+    );
   });
 
   it('legacy 일괄 재발송 대상 조회는 전환 건 제외 술어를 건다', async () => {
@@ -357,9 +445,14 @@ describe('실패내역 화면 SoT 렌더', () => {
       expect(alias).toBe('sortDate');
 
       // 한쪽만 고치면 "필터에는 걸리는데 화면 날짜는 다른" 상태가 되므로 순서까지 본다.
-      const 칸순서 = ['state_entered_at', 'actual_send_at', 'failed_at', 'send_request_at', 'updated_at'].map((c) =>
-        expr.indexOf(c),
-      );
+      const 칸순서 = [
+        'state_entered_at',
+        'ma3.resolved_at',
+        'actual_send_at',
+        'failed_at',
+        'send_request_at',
+        'updated_at',
+      ].map((c) => expr.indexOf(c));
       expect(칸순서.every((i) => i >= 0)).toBe(true);
       expect(칸순서).toEqual([...칸순서].sort((a, b) => a - b));
 
@@ -368,6 +461,7 @@ describe('실패내역 화면 SoT 렌더', () => {
       // 한 칸이라도 이 검사가 빠지면 그 칸에서 갈라지므로 다섯 칸 전부 본다.
       for (const col of [
         '`wf`.`state_entered_at`',
+        'ma3.resolved_at',
         '`orderDelivery`.`actual_send_at`',
         '`orderDelivery`.`failed_at`',
         '`orderDelivery`.`send_request_at`',
@@ -375,6 +469,13 @@ describe('실패내역 화면 SoT 렌더', () => {
       ]) {
         expect(expr).toContain(`YEAR(${col}) > 0 AND MONTH(${col}) > 0 AND DAY(${col}) > 0`);
       }
+
+      const filters = qb.andWhere.mock.calls.map(([condition]) => String(condition)).join('\n');
+      expect(filters).toContain(
+        'YEAR(ma2.resolved_at) > 0 AND MONTH(ma2.resolved_at) > 0 AND DAY(ma2.resolved_at) > 0',
+      );
+      expect(expr).toContain('YEAR(ma3.resolved_at) > 0 AND MONTH(ma3.resolved_at) > 0 AND DAY(ma3.resolved_at) > 0');
+      expect(expr).toContain('ORDER BY ma3.resolved_at DESC, ma3.id DESC LIMIT 1');
     });
   });
 });
@@ -425,12 +526,39 @@ describe('DeliveryFailureSotReader', () => {
       { find: jest.fn().mockResolvedValue(pinCommands) } as never,
     );
 
+  const buildAuto504Reader = (attempts: MessageAttemptEntity[]) => {
+    const qb = {
+      leftJoin: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue(attempts),
+    };
+    return new DeliveryFailureSotReader(
+      {} as never,
+      { createQueryBuilder: jest.fn().mockReturnValue(qb) } as never,
+      {} as never,
+    );
+  };
+
   it('마지막 실패 결과 코드를 Gemtek 네임스페이스로 표기하고 자동 재발송 횟수를 센다', async () => {
     const reader = buildReader(
       [workflow()],
       [
-        attempt({ id: '1', status: MessageAttemptStatus.RETRIED, resolvedAt: new Date('2026-08-02T09:10:00') }),
-        attempt({ id: '2', attemptType: MessageAttemptType.AUTO_504 }),
+        attempt({
+          id: '1',
+          status: MessageAttemptStatus.RETRIED,
+          resolvedAt: new Date('2026-08-11T14:30:25'),
+        }),
+        attempt({
+          id: '2',
+          attemptType: MessageAttemptType.AUTO_504,
+          status: MessageAttemptStatus.SUCCEEDED,
+          sendReason: 'AUTO_504_RESEND',
+          gemtekResult: '0',
+          resolvedAt: new Date('2026-08-11T14:34:29'),
+        }),
       ],
       [pinCommand()],
     );
@@ -443,7 +571,9 @@ describe('DeliveryFailureSotReader', () => {
     expect(view.resent).toBe(true);
     expect(view.pinIssued).toBe(true);
     expect(view.pinIssueFailed).toBe(false);
-    expect(view.lastResolvedAt).toEqual(new Date('2026-08-02T09:30:00'));
+    expect(view.channel).toBe('SMS');
+    expect(view.sendReason).toBe('AUTO_504_RESEND');
+    expect(view.lastResolvedAt).toEqual(new Date('2026-08-11T14:34:29'));
   });
 
   it('PIN 발급이 확정 실패면 협력사 응답 네임스페이스로 표기한다', async () => {
@@ -483,5 +613,54 @@ describe('DeliveryFailureSotReader', () => {
     const view = (await reader.loadMigrated([100])).get(100)!;
 
     expect(view.failureCode).toBeNull();
+  });
+
+  it('미전환 AUTO_504 실패의 최신 날짜가 무효면 이전 유효 실패를 선택한다', async () => {
+    const invalidLatest = attempt({
+      id: '3',
+      attemptType: MessageAttemptType.AUTO_504,
+      resolvedAt: new Date('2026-00-00T00:00:00'),
+      gemtekResult: '999',
+    });
+    const validPrevious = attempt({
+      id: '2',
+      attemptType: MessageAttemptType.AUTO_504,
+      resolvedAt: new Date('2026-08-02T09:30:00'),
+      gemtekResult: '504',
+    });
+    const reader = buildAuto504Reader([invalidLatest, validPrevious]);
+
+    const view = (await reader.loadNonMigratedAuto504Failed([100])).get(100)!;
+
+    expect(view.resolvedAt).toEqual(validPrevious.resolvedAt);
+    expect(view.failureCode?.code).toBe('GEMTEK_RESULT_504');
+    expect(view.autoResendCount).toBe(2);
+  });
+
+  it('미전환 AUTO_504가 TRACKING 상태뿐이면 실패 맵에 포함하지 않는다', async () => {
+    const reader = buildAuto504Reader([
+      attempt({
+        attemptType: MessageAttemptType.AUTO_504,
+        status: MessageAttemptStatus.TRACKING,
+        gemtekResult: null,
+        resolvedAt: null,
+      }),
+    ]);
+
+    expect((await reader.loadNonMigratedAuto504Failed([100])).size).toBe(0);
+  });
+
+  it('미전환 AUTO_504 최종 실패는 실제 Gemtek 결과 코드를 반환한다', async () => {
+    const reader = buildAuto504Reader([
+      attempt({
+        attemptType: MessageAttemptType.AUTO_504,
+        status: MessageAttemptStatus.FAILED_FINAL,
+        gemtekResult: '520',
+      }),
+    ]);
+
+    const view = (await reader.loadNonMigratedAuto504Failed([100])).get(100)!;
+
+    expect(view.failureCode?.code).toBe('GEMTEK_RESULT_520');
   });
 });

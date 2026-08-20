@@ -72,6 +72,21 @@ export interface DeliveryFailureSotView {
 }
 
 /**
+ * 미전환 건의 AUTO_504 FAILED_FINAL 렌더 데이터.
+ *
+ * 미전환 건은 `order_delivery.status`가 COMPLETE 유지라 실패 목록에 안 걸리는데,
+ * `message_attempt`에 AUTO_504 FAILED_FINAL이 있으면 504 자동 재발송이 최종 실패한 건이다.
+ * 이 뷰는 해당 건을 실패 목록에 노출하기 위한 최소 렌더 데이터를 담는다.
+ */
+export interface Auto504FailureView {
+  failureCode: FailureCodeView | null;
+  resolvedAt: Date;
+  autoResendCount: number;
+  channel: string | null;
+  sendReason: string | null;
+}
+
+/**
  * 컷오버 전환 건(`cutover_migrated_at IS NOT NULL`)의 화면 SoT 로더.
  *
  * 목록 페이지(최대 take 건)에 대해서만 호출하며, 3개 테이블을 각각 1회 조회해 N+1 을 만들지 않는다.
@@ -129,6 +144,55 @@ export class DeliveryFailureSotReader {
         ),
       );
     }
+    return views;
+  }
+
+  /**
+   * 미전환 건 중 AUTO_504 FAILED_FINAL 시도가 있는 건의 렌더 데이터를 반환한다.
+   *
+   * DB에서 resolved_at DESC, id DESC로 정렬해 배송별 최신 실패 시도를 선택한다.
+   * autoResendCount는 해당 배송의 전체 AUTO_504 시도 개수(FAILED_FINAL 외 상태 포함).
+   */
+  async loadNonMigratedAuto504Failed(orderDeliveryIds: number[]): Promise<Map<number, Auto504FailureView>> {
+    const views = new Map<number, Auto504FailureView>();
+    if (orderDeliveryIds.length === 0) {
+      return views;
+    }
+
+    const attempts = await this.attemptRepository
+      .createQueryBuilder('ma')
+      .leftJoin(DeliveryWorkflowEntity, 'wf', 'wf.orderDeliveryId = ma.orderDeliveryId')
+      .where('ma.orderDeliveryId IN (:...ids)', { ids: orderDeliveryIds })
+      .andWhere('ma.attemptType = :type', { type: MessageAttemptType.AUTO_504 })
+      .andWhere('(wf.cutoverMigratedAt IS NULL OR wf.id IS NULL)')
+      .orderBy('ma.orderDeliveryId', 'ASC')
+      .addOrderBy('ma.resolvedAt', 'DESC')
+      .addOrderBy('ma.id', 'DESC')
+      .getMany();
+
+    if (attempts.length === 0) {
+      return views;
+    }
+
+    const byDelivery = groupBy(attempts, (a) => a.orderDeliveryId);
+
+    for (const [odId, odAttempts] of byDelivery) {
+      const latestFailed = odAttempts.find(
+        (a) => a.status === MessageAttemptStatus.FAILED_FINAL && isValidDate(a.resolvedAt),
+      );
+      const resolvedAt = latestFailed?.resolvedAt;
+      if (!latestFailed || !isValidDate(resolvedAt)) {
+        continue;
+      }
+      views.set(odId, {
+        failureCode: describeGemtekResult(latestFailed.gemtekResult),
+        resolvedAt,
+        autoResendCount: odAttempts.length,
+        channel: latestFailed.channel ?? null,
+        sendReason: latestFailed.sendReason ?? null,
+      });
+    }
+
     return views;
   }
 
@@ -194,6 +258,11 @@ function lastTerminalResolvedAt(attempts: MessageAttemptEntity[]): Date | null {
     return null;
   }
   return terminal.reduce((latest, a) => (a.resolvedAt! > latest ? a.resolvedAt! : latest), terminal[0].resolvedAt!);
+}
+
+function isValidDate(value: Date | null | undefined): value is Date {
+  const time = value?.getTime?.();
+  return typeof time === 'number' && !Number.isNaN(time);
 }
 
 function groupBy<T>(rows: T[], key: (row: T) => number): Map<number, T[]> {
