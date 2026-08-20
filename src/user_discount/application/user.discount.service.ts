@@ -66,7 +66,8 @@ export class UserDiscountService {
       .addOrderBy('discount.primaryCategory', 'ASC')
       .addOrderBy('discount.group', 'ASC')
       .addOrderBy('discount.classificationId', 'ASC')
-      .addOrderBy('CAST(discount.range AS UNSIGNED)', 'ASC');
+      .addOrderBy('CAST(discount.range AS UNSIGNED)', 'ASC')
+      .addOrderBy("FIELD(discount.compare_condition, 'LESS', 'LESS_THAN', 'OVER', 'MORE_THAN', 'ALL')", 'ASC');
 
     // 전체 데이터 조회
     const allDiscounts = await queryBuilder.getMany();
