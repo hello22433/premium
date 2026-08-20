@@ -108,7 +108,10 @@ describe('PartnerCompanyExternHistoryService.resendFailedDelivery', () => {
         { provide: SsgInsertStateService, useValue: ssgInsertStateService },
         {
           provide: DeliveryFailureSotReader,
-          useValue: { loadMigrated: jest.fn().mockResolvedValue(new Map()) },
+          useValue: {
+            loadMigrated: jest.fn().mockResolvedValue(new Map()),
+            loadNonMigratedAuto504Failed: jest.fn().mockResolvedValue(new Map()),
+          },
         },
       ],
     }).compile();
