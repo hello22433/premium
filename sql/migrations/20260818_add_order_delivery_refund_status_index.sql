@@ -51,9 +51,6 @@
 --      LEFT JOIN user_company c ON c.id = u.company_id AND c.deleted_at IS NULL
 --      WHERE od.deleted_at IS NULL AND od.refund_status IS NOT NULL;
 
--- MDL 대기로 뒤따르는 쿼리를 막지 않도록, 못 잡으면 DDL 이 먼저 실패한다.
-SET SESSION lock_wait_timeout = 5;
-
 SET @idx_exists := (
   SELECT COUNT(DISTINCT INDEX_NAME)
   FROM information_schema.STATISTICS
@@ -73,18 +70,25 @@ SET @idx_ok := (
     AND INDEX_NAME = 'idx_order_delivery_refund_status_register_at'
 );
 
-SET @drop_sql := IF(
+-- 정의가 다르면 DROP 후 재생성하지 않는다: 둘이 각각 auto-commit 이라 사이에서 실패하면 인덱스가
+-- 사라진 채 남고, 운영자가 의도해 만든 동명 인덱스를 말없이 지우게 된다.
+-- 중단에 SIGNAL 을 쓰지 못하는 이유 — prepared statement 프로토콜이 거부한다(ERROR 1295).
+SET @guard_sql := IF(
   @idx_exists > 0 AND @idx_ok = 0,
-  'ALTER TABLE `order_delivery` DROP INDEX `idx_order_delivery_refund_status_register_at`, ALGORITHM=INPLACE, LOCK=NONE',
+  'SELECT 1 FROM `ABORT_same_index_name_has_different_definition`',
   'SELECT 1'
 );
 
-PREPARE s FROM @drop_sql;
+PREPARE s FROM @guard_sql;
 EXECUTE s;
 DEALLOCATE PREPARE s;
 
+-- MDL 대기로 뒤따르는 쿼리를 막지 않도록, 못 잡으면 DDL 이 먼저 실패한다.
+-- 연결이 재사용되면 후속 DDL 까지 물려받으므로 아래에서 되돌린다.
+SET SESSION lock_wait_timeout = 5;
+
 SET @create_sql := IF(
-  @idx_ok = 0,
+  @idx_exists = 0,
   'ALTER TABLE `order_delivery` ADD INDEX `idx_order_delivery_refund_status_register_at` (`refund_status`, `refund_register_at`), ALGORITHM=INPLACE, LOCK=NONE',
   'SELECT 1'
 );
@@ -92,6 +96,8 @@ SET @create_sql := IF(
 PREPARE s FROM @create_sql;
 EXECUTE s;
 DEALLOCATE PREPARE s;
+
+SET SESSION lock_wait_timeout = DEFAULT;
 
 -- 검증
 SHOW INDEX FROM `order_delivery` WHERE Key_name = 'idx_order_delivery_refund_status_register_at';
