@@ -33,11 +33,17 @@ const BASE_QUERY = {
   status: undefined,
 } as any;
 
-const makeDelivery = (id: number, status: IOrderDeliveryStatus, actualSendAt: Date | null) => ({
+const makeDelivery = (
+  id: number,
+  status: IOrderDeliveryStatus,
+  actualSendAt: Date | null,
+  replacedFromId: number | null = null,
+) => ({
   id,
   status,
   actualSendAt,
   resendAt: null,
+  replacedFromId,
 });
 
 const makeMapping = (
@@ -305,6 +311,26 @@ describe('OrderService getList — productSendTimes', () => {
       const result = await service.getList(BASE_USER, BASE_QUERY);
       const itemA = result.list[0].productSendTimes!.find((t: any) => t.productName === '상품A')!;
       expect(itemA.actualSendAt).not.toBeNull();
+    });
+  });
+
+  describe('폐기후재발행(discard-reissue) — replacedFromId 필터', () => {
+    it('폐기후재발행(replacedFromId != null) 행은 actualSendAt MAX 에서 제외', async () => {
+      const originalSendAt = new Date('2026-07-24T10:00:00');
+      const reissueSendAt = new Date('2026-08-19T14:14:15');
+      const mappings = [
+        makeMapping(1, '상품A', 'RESERVE', new Date('2026-07-24T09:00:00'), [
+          makeDelivery(1, IOrderDeliveryStatus.COMPLETE, originalSendAt),
+          makeDelivery(2, IOrderDeliveryStatus.COMPLETE, reissueSendAt, 1),
+        ]),
+        makeMapping(2, '상품B', 'RESERVE', new Date('2026-07-24T14:00:00'), []),
+      ];
+      const service = setupService([makeOrder(mappings)]);
+      const result = await service.getList(BASE_USER, BASE_QUERY);
+      expect(result.list[0].actualSendAt).toContain('07-24');
+      expect(result.list[0].actualSendAt).not.toContain('08-19');
+      const itemA = result.list[0].productSendTimes!.find((t: any) => t.productName === '상품A')!;
+      expect(itemA.actualSendAt).toContain('07-24');
     });
   });
 
