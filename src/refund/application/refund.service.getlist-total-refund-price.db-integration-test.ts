@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
 import * as mysql from 'mysql2/promise';
-import { DataSource } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { SnakeNamingStrategy } from 'typeorm-naming-strategies';
 import {
   addTransactionalDataSource,
@@ -47,6 +47,16 @@ describe('RefundService.getList — totalRefundPrice DB 통합', () => {
 
   const auditContext = { user: {} as ILoginUserInfo, ipAddress: '127.0.0.1' };
 
+  // deliveryTarget/bankAccount 는 암호문이라 평문 픽스처를 그대로 읽도록 항등 stub 을 쓴다.
+  const cipherStub = {
+    safeDecryptDeliveryTarget: (v: string) => v,
+    safeDecryptAccountNumber: (v: string) => v,
+    encryptDeliveryTarget: (v: string) => v,
+  } as unknown as CryptoCipher;
+
+  const buildService = (repository: Repository<OrderDeliveryEntity>): RefundService =>
+    new RefundService(cipherStub, { createLog: async () => undefined } as unknown as ActivityLogService, repository);
+
   beforeAll(async () => {
     initializeTransactionalContext();
     deleteDataSourceByName('default');
@@ -87,18 +97,7 @@ describe('RefundService.getList — totalRefundPrice DB 통합', () => {
     await dataSource.initialize();
     addTransactionalDataSource(dataSource);
 
-    // deliveryTarget/bankAccount 는 암호문이라 평문 픽스처를 그대로 읽도록 항등 stub 을 쓴다.
-    const cipherStub = {
-      safeDecryptDeliveryTarget: (v: string) => v,
-      safeDecryptAccountNumber: (v: string) => v,
-      encryptDeliveryTarget: (v: string) => v,
-    } as unknown as CryptoCipher;
-
-    service = new RefundService(
-      cipherStub,
-      { createLog: async () => undefined } as unknown as ActivityLogService,
-      dataSource.getRepository(OrderDeliveryEntity),
-    );
+    service = buildService(dataSource.getRepository(OrderDeliveryEntity));
 
     await seedFixtures(dataSource);
   });
@@ -121,13 +120,42 @@ describe('RefundService.getList — totalRefundPrice DB 통합', () => {
     expect(res.totalRefundPrice).toBe(8000);
   });
 
-  // 어느 한쪽에 반올림이 들어가면 여기서만 갈린다 — 다른 픽스처는 전부 정수라 no-op 이다.
+  // 행 계산(JS)에 반올림이 들어가면 여기서만 갈린다 — 다른 픽스처는 전부 정수라 no-op 이다.
+  // 집계 SQL 의 DECIMAL CAST 는 이 테스트로 잠기지 않는다(아래 div_precision_increment 테스트 참조).
   it('환불금액이 소수로 떨어져도 총합이 행별 환불금액의 단순 합과 일치한다', async () => {
     const res = await service.getList({ page: 1, take: 10, userBusinessName: COMPANY_C } as any, auditContext);
 
     const rowSum = res.list.reduce((acc, row) => acc + row.refundPrice, 0);
     expect(rowSum).toBe(499.5);
     expect(res.totalRefundPrice).toBe(rowSum);
+  });
+
+  // 집계식의 CAST(... AS DECIMAL(20,4)) 가 방어하는 환경은 div_precision_increment=0 이다.
+  // MySQL 에서 `/` 결과 스케일은 첫 피연산자 스케일 + div_precision_increment 이므로, CAST 가 없으면
+  // int/int 가 스케일 0 이 되어 499.5 가 499 로 반올림된다. 기본값 4 에서는 CAST 없이도 499.5000 이
+  // 나오기 때문에 위 테스트만으로는 CAST 를 지워도 통과한다.
+  // 풀에 SET SESSION 을 걸면 어느 커넥션이 쿼리를 받을지 보장되지 않아 QueryRunner 로 고정한다.
+  it('div_precision_increment=0 인 세션에서도 총합이 소수를 잃지 않는다', async () => {
+    const queryRunner = dataSource.createQueryRunner();
+    await queryRunner.connect();
+
+    try {
+      await queryRunner.query('SET SESSION div_precision_increment = 0');
+      const scopedService = buildService(queryRunner.manager.getRepository(OrderDeliveryEntity));
+
+      const res = await scopedService.getList({ page: 1, take: 10, userBusinessName: COMPANY_C } as any, auditContext);
+
+      const rowSum = res.list.reduce((acc, row) => acc + row.refundPrice, 0);
+      expect(rowSum).toBe(499.5);
+      expect(res.totalRefundPrice).toBe(rowSum);
+    } finally {
+      try {
+        // 원복하지 않고 반납하면 풀의 다음 사용자가 incr=0 을 물려받는다.
+        await queryRunner.query('SET SESSION div_precision_increment = DEFAULT');
+      } finally {
+        await queryRunner.release();
+      }
+    }
   });
 
   it('환불건이 아닌 행(refundStatus NULL)은 집계에 섞이지 않는다', async () => {
