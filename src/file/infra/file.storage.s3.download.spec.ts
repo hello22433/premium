@@ -157,6 +157,35 @@ describe('FileStorageS3.downloadFileToLocalWithPath — 본문 stall 감시', ()
     expect(fs.readdirSync(dir)).toHaveLength(0);
   });
 
+  // ★ 처음엔 setInterval(상한) 으로 "직전 tick 과 바이트가 같은가" 만 봤다. 그러면 tick 직후에 청크가
+  //   하나 오고 멈출 때 다음 tick 이 '진행 있음' 으로 소비되고 그다음 tick 에서야 끊겨,
+  //   마지막 진행으로부터 **최대 2배**까지 늦는다(리뷰 지적). 결과만 보는 단언으로는 안 잡힌다.
+  // ★ 처음엔 setInterval(상한) 으로 "직전 tick 과 바이트가 같은가" 만 봤다. 그러면 tick 직후에 청크가
+  //   오면 다음 tick 이 '진행 있음' 으로 소비되고 그다음 tick 에서야 끊겨, 마지막 진행으로부터
+  //   **최대 2배**까지 늦는다(리뷰 지적). 결과만 보는 단언으로는 안 잡힌다 — '언제' 끊기는지를 고정한다.
+  //
+  //   상한 300ms 기준으로 tick 직후(310ms)에 두 번째 청크를 흘리면:
+  //     고친 것 : 마지막 진행 + 300 → 약 320ms 뒤 종료
+  //     옛 방식 : tick(600) 이 '진행 있음' 으로 소비되고 tick(900) 에서 종료 → 약 590ms 뒤
+  it('★마지막 청크 이후 상한 근처에서 끊는다 — 2배까지 기다리지 않는다', async () => {
+    (FileStorageS3 as any).BODY_STALL_TIMEOUT_MS = 300;
+    const body = new Readable({ read() {} });
+    body.push(Buffer.from('first'));
+    const sut = makeSut(body);
+    const pending = expect(sut.downloadFileToLocalWithPath(dir, 'out', 'private/5/abcdef01-a.txt')).rejects.toThrow(
+      /진행되지 않아/,
+    );
+
+    await new Promise((r) => setTimeout(r, 310));
+    body.push(Buffer.from('late-chunk'));
+    const pushedAt = Date.now();
+    await pending;
+    const sinceLastChunk = Date.now() - pushedAt;
+
+    expect(sinceLastChunk).toBeGreaterThanOrEqual(250); // 너무 일찍 끊지 않는다
+    expect(sinceLastChunk).toBeLessThan(450); // 2배(≈590ms)까지 기다리지 않는다
+  });
+
   it('★getFileBuffer 도 같은 방어를 받는다 — 한쪽만 막으면 다른 쪽으로 샌다', async () => {
     const sut = makeSut(stallingBody());
     await expect(sut.getFileBuffer('private/5/abcdef01-a.xlsx')).rejects.toThrow(/진행되지 않아/);

@@ -30,6 +30,18 @@ export class FileStorageS3 implements IFileStorage {
    */
   static readonly BODY_STALL_TIMEOUT_MS = 30_000;
 
+  /**
+   * stall 판정을 위한 확인 주기.
+   *
+   * ★ 주기를 상한과 같게 두면 안 된다 — 처음엔 `setInterval(상한)` 으로 "직전 tick 과 바이트가 같은가"
+   *   만 봤는데, tick 직후에 청크가 하나 오고 멈추면 다음 tick 은 '진행 있음' 으로 소비되고
+   *   그다음 tick 에서야 끊긴다. **마지막 진행으로부터 최대 2배**까지 늦어진다(리뷰 지적, 실측됨).
+   *   그래서 '마지막 진행 시각' 을 따로 들고, 짧은 주기로 경과만 본다 → 오차가 이 주기로 떨어진다.
+   */
+  private static stallCheckIntervalMs(stallMs: number): number {
+    return Math.max(10, Math.min(1_000, Math.floor(stallMs / 10)));
+  }
+
   private readonly logger = new Logger(FileStorageS3.name);
   private s3Client: S3Client;
 
@@ -218,13 +230,16 @@ export class FileStorageS3 implements IFileStorage {
       const stallMs = FileStorageS3.BODY_STALL_TIMEOUT_MS;
       let receivedBytes = 0;
       let lastReceivedBytes = 0;
+      let lastProgressAt = Date.now();
       const stallTimer = setInterval(() => {
         if (receivedBytes !== lastReceivedBytes) {
           lastReceivedBytes = receivedBytes;
+          lastProgressAt = Date.now();
           return;
         }
+        if (Date.now() - lastProgressAt < stallMs) return;
         Body.destroy(new Error(`S3 응답 본문이 ${stallMs}ms 동안 진행되지 않아 중단했습니다.`));
-      }, stallMs);
+      }, FileStorageS3.stallCheckIntervalMs(stallMs));
 
       try {
         for await (const chunk of Body) {
@@ -278,13 +293,16 @@ export class FileStorageS3 implements IFileStorage {
       // pipeline 배선 전에 청크가 새므로 그렇게 하면 안 된다.
       const stallMs = FileStorageS3.BODY_STALL_TIMEOUT_MS;
       let lastBytesWritten = 0;
+      let lastProgressAt = Date.now();
       const stallTimer = setInterval(() => {
         if (writeStream.bytesWritten !== lastBytesWritten) {
           lastBytesWritten = writeStream.bytesWritten;
+          lastProgressAt = Date.now();
           return;
         }
+        if (Date.now() - lastProgressAt < stallMs) return;
         Body.destroy(new Error(`S3 응답 본문이 ${stallMs}ms 동안 진행되지 않아 중단했습니다.`));
-      }, stallMs);
+      }, FileStorageS3.stallCheckIntervalMs(stallMs));
 
       try {
         await new Promise<void>((resolve, reject) => {
