@@ -182,25 +182,50 @@ describe('FileStorageS3.downloadFileToLocalWithPath — 본문 stall 감시', ()
   //
   //   상한 300ms 기준으로 tick 직후(310ms)에 두 번째 청크를 흘리면:
   //     리셋 있음 : 마지막 진행 + 300 → 약 320ms 뒤 종료
-  //     리셋 없음 : 최초 arm 에서 300ms 뒤 이미 종료됐거나, 옛 interval 방식이면 약 590ms 뒤
-  it('★마지막 청크 이후 상한 근처에서 끊는다 — 리셋이 실제로 걸린다', async () => {
-    (FileStorageS3 as any).BODY_STALL_TIMEOUT_MS = 300;
-    const body = new Readable({ read() {} });
-    body.push(Buffer.from('first'));
-    const sut = makeSut(body);
-    const pending = expect(sut.downloadFileToLocalWithPath(dir, 'out', 'private/5/abcdef01-a.txt')).rejects.toThrow(
-      /진행되지 않아/,
-    );
+  // ★ 리뷰 요구 — "매 chunk마다 단발 timer를 clear/reset하고, 마지막 chunk 이후
+  //   BODY_STALL_TIMEOUT_MS 경계에서 reject되는 fake-timer 회귀 테스트를 추가해 주세요."
+  //
+  //   ⚠️ 관측 지점을 잘못 잡으면 이 테스트가 아무것도 안 지킨다. 처음엔 '프라미스가 reject 됐나' 로
+  //   봤는데, 되돌려도 초록이었다. 원인 — destroy 이후 pipeline·writeStream teardown 이 **타이머를
+  //   더 진행시켜야** 끝나서, 이미 발화했는데도 그 시점엔 여전히 pending 으로 보인다.
+  //   (fake timer 자체는 정상이다. advanceTimersByTime 을 나눠 불러도 누적된다 — 따로 확인함.)
+  //   → 발화를 **직접** 보는 값으로 바꾼다. Body.destroy 는 destroyed 를 동기로 세운다.
+  it('★청크가 오면 타이머를 다시 건다 — 상한을 두 번 밀어도 안 끊긴다 (fake timers)', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'] });
+    try {
+      const stallMs = FileStorageS3.BODY_STALL_TIMEOUT_MS;
+      const body = new Readable({ read() {} });
+      body.push(Buffer.from('first'));
+      const sut = makeSut(body);
+      const pending = sut.downloadFileToLocalWithPath(dir, 'out', 'private/5/abcdef01-a.txt').catch(() => undefined);
 
-    await new Promise((r) => setTimeout(r, 200));
-    body.push(Buffer.from('late-chunk'));
-    const pushedAt = Date.now();
-    await pending;
-    const sinceLastChunk = Date.now() - pushedAt;
+      const flush = async () => {
+        for (let i = 0; i < 20; i += 1) await new Promise((r) => setImmediate(r));
+      };
+      await flush();
+      expect(jest.getTimerCount()).toBeGreaterThan(0); // 감시가 실제로 걸렸는지 먼저 고정
 
-    // 리셋이 안 걸리면 최초 arm 기준이라 여기서 100ms 안에 끊긴다.
-    expect(sinceLastChunk).toBeGreaterThanOrEqual(250);
-    expect(sinceLastChunk).toBeLessThan(500);
+      jest.advanceTimersByTime(stallMs - 1);
+      expect(body.destroyed).toBe(false);
+
+      // 여기서 청크가 오면 타이머가 처음부터 다시 걸려야 한다.
+      body.push(Buffer.from('late-chunk'));
+      await flush();
+
+      // 리셋이 없으면 최초 arm 기준 상한을 이미 넘겨 여기서 끊긴다.
+      jest.advanceTimersByTime(stallMs - 1);
+      expect(body.destroyed).toBe(false);
+
+      // 마지막 청크로부터 상한을 채우면 끊긴다.
+      jest.advanceTimersByTime(2);
+      expect(body.destroyed).toBe(true);
+
+      jest.advanceTimersByTime(stallMs * 10); // teardown 이 요구하는 진행을 마저 준다
+      await flush();
+      await pending;
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('★getFileBuffer 도 같은 방어를 받는다 — 한쪽만 막으면 다른 쪽으로 샌다', async () => {
