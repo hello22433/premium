@@ -147,11 +147,15 @@ describe('UserDriveService.getDetail — files 조립', () => {
       expect(fileService.getOriginalName).not.toHaveBeenCalled();
     });
 
-    it('타인 소유라도 업로더가 SUPER 면 → HeadObject (SUPER 교차수정 첨부 과차단 안 함)', async () => {
-      const { sut, fileService } = makeSut([foreign], {}, [77]);
+    // ※ 예전엔 '허용' 이었다 — 업로더가 지금 SUPER 인지 조회해서 통과시켰다. 그 판정은 첨부 당시의
+    //   사실이 아니라 지금 바뀌는 값이라(승격·강등) 같은 첨부가 보였다 안 보였다 했다.
+    //   쓰기 쪽이 ownerId === senderId 를 강제하게 되면서 이 예외 자체가 없어졌다.
+    it('★타인 소유는 업로더가 SUPER 여도 HeadObject 안 한다 (현재 권한을 안 본다)', async () => {
+      const { sut, fileService, userRepo } = makeSut([foreign], {}, [77]);
       const res: any = await sut.getDetail(admin, { id: 1 });
-      expect(res.files).toEqual([{ url: foreign, name: 'meta:u2-secret.xlsx' }]);
-      expect(fileService.getOriginalName).toHaveBeenCalledTimes(1);
+      expect(res.files).toEqual([{ url: foreign, name: 'key:u2-secret.xlsx' }]);
+      expect(fileService.getOriginalName).not.toHaveBeenCalled();
+      expect(userRepo.find).not.toHaveBeenCalled();
     });
 
     it('★우리 버킷 URL 이 아니면 → HeadObject 안 함 (임의 host 로 객체 존재 탐지 차단)', async () => {
@@ -171,14 +175,12 @@ describe('UserDriveService.getDetail — files 조립', () => {
 
     // ★ 목은 where 를 무시하고 넘긴 배열을 그대로 돌려준다. 그래서 where 에서
     //   authority: SUPER_ADMIN 을 지워도 결과 단언만으로는 전부 초록이다(뮤테이션 생존 확인).
-    //   "타인 소유에 HeadObject 를 걸지 말지" 를 가르는 유일한 조건이므로 인자 자체를 고정한다.
-    it('업로더 권한 조회는 SUPER_ADMIN 조건으로만 한다 (조회 인자 고정)', async () => {
-      const { sut, userRepo } = makeSut(['https://b/private/77/u2-secret.xlsx']);
+    // ★ 판정에서 DB 조회가 통째로 사라졌다. 조회가 남아 있으면 그게 곧 '가변 판정' 이라는 뜻이므로
+    //   결과가 아니라 **호출 여부**를 고정한다.
+    it('★업로더 권한 조회를 아예 하지 않는다 (판정이 불변식 한 줄이다)', async () => {
+      const { sut, userRepo } = makeSut([foreign, 'https://b/private/88/u3-c.xlsx']);
       await sut.getDetail(admin, { id: 1 });
-      expect(userRepo.find).toHaveBeenCalledWith({
-        where: { id: In([77]), authority: IUserAuthority.SUPER_ADMIN },
-        select: ['id'],
-      });
+      expect(userRepo.find).not.toHaveBeenCalled();
     });
 
     // ★ 다운로드 쪽에는 같은 가드의 테스트가 있는데(download.spec 의 private// 케이스) 조회 쪽만 없었다.
@@ -192,28 +194,7 @@ describe('UserDriveService.getDetail — files 조립', () => {
       expect(userRepo.find).not.toHaveBeenCalled();
     });
 
-    it('타인 소유가 여러 건이어도 업로더 권한 조회는 1회로 묶는다', async () => {
-      const f2 = 'https://b/private/88/u3-c.xlsx';
-      const { sut, userRepo } = makeSut([foreign, f2, foreign]);
-      await sut.getDetail(admin, { id: 1 });
-      expect(userRepo.find).toHaveBeenCalledTimes(1);
-    });
-
     // ★ 이 조회는 '이름을 예쁘게 보여줄지' 를 정하는 곁가지다. 던지게 두면 제목·본문·답변까지 못 보는
-    //   500 이 된다(나머지 이름 조회는 전부 fail-soft). 보안축은 fail-closed(대상에서 제외)로 유지한다.
-    it('★업로더 권한 조회가 실패해도 상세는 열린다 — 해당 첨부만 key 복원명 + 경고', async () => {
-      const foreign2 = 'https://b/private/77/u2-secret.xlsx';
-      const { sut, fileService, userRepo, logger } = makeSut([foreign2]);
-      userRepo.find.mockRejectedValue(new Error('pool timeout'));
-
-      const res: any = await sut.getDetail(admin, { id: 1 });
-
-      expect(res.title).toBe('t'); // 문서 자체는 정상 응답
-      expect(res.files).toEqual([{ url: foreign2, name: 'key:u2-secret.xlsx' }]);
-      expect(fileService.getOriginalName).not.toHaveBeenCalled(); // fail-closed
-      expect(logger.warn).toHaveBeenCalledTimes(1); // 조용히 열화되지 않는다
-    });
-
     it('발신자 소유만 있으면 업로더 권한 조회를 아예 하지 않는다', async () => {
       const { sut, userRepo } = makeSut([own]);
       await sut.getDetail(admin, { id: 1 });

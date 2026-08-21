@@ -146,9 +146,21 @@ describe('UserDriveService 쓰기 검증 (create/update)', () => {
       expect(driveRepo.save).toHaveBeenCalledTimes(1);
     });
 
-    it('★SUPER 교차수정으로 본인(SUPER) private 새로 추가 → 통과', async () => {
-      const { sut, driveRepo } = makeSut(ownPrivate(10)); // 발신자(10) 문서, SUPER 가 편집
-      await sut.update(super1, updateBody([ownPrivate(10), ownPrivate(1)]));
+    // ※ 예전엔 '통과' 였다(등록자 본인 소유면 됐다). 그런데 그러면 ownerId ≠ senderId 인 행이 생기고,
+    //   읽기 쪽이 그걸 열어 주려고 "업로더가 지금 SUPER 인가" 라는 가변 판정을 들고 있어야 했다.
+    //   쓰기·읽기를 같은 기준(senderId)으로 맞추면서 여기서 막는다 — 조용히 못 받는 것보다
+    //   등록 시점에 400 으로 즉시 알려 주는 쪽이 낫다.
+    it('★SUPER 교차수정으로 본인(SUPER) private 새로 추가 → 400 (발신자 소유가 아님)', async () => {
+      const { sut, driveRepo } = makeSut(ownPrivate(10)); // 발신자(10) 문서, SUPER(1) 가 편집
+      await expect(sut.update(super1, updateBody([ownPrivate(10), ownPrivate(1)]))).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(driveRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('★SUPER 교차수정이어도 발신자 소유 private 을 되보내는 것은 통과 (기존 첨부 보존)', async () => {
+      const { sut, driveRepo } = makeSut(ownPrivate(10));
+      await sut.update(super1, updateBody([ownPrivate(10)]));
       expect(driveRepo.save).toHaveBeenCalledTimes(1);
     });
 

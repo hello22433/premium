@@ -11,7 +11,7 @@ import {
 } from '../../util/file.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import { UserDriveEntity } from '../../entity/user.drive.entity';
-import { In, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { FileService } from '../../file/application/file.service';
 import {
   UserDriveCreateReqDto,
@@ -112,7 +112,7 @@ export class UserDriveService {
 
     const fileUrlList = parseFilePathList(userDrive.filePath);
     // ★ HeadObject 대상은 '다운로드를 허용하는 것' 과 같은 기준으로 좁힌다(resolveHeadableUrls 참조).
-    const headableUrls = await this.resolveHeadableUrls(fileUrlList, userDrive.senderId);
+    const headableUrls = this.resolveHeadableUrls(fileUrlList, userDrive.senderId);
     // 원본 파일명(메타데이터)까지 함께 — FE 가 화면 표시·다운로드명 모두 진짜 이름으로 일관되게.
     // S3 HeadObject 는 상한(MAX_FILE_META_LOOKUP)까지만 — 초과분은 key 복원 폴백(호출 폭주 방지).
     const files = await Promise.all(
@@ -164,7 +164,7 @@ export class UserDriveService {
    * 로컬 경로와 원본 파일명을 돌려준다. 컨트롤러가 Content-Disposition(원본명)으로 스트리밍한다.
    *  - 문서 권한: 상세조회와 동일(assertCanReadDrive) — 관리자 전체, 기업=본인 수신 문서(비DRAFT)만.
    *  - 객체 소유 검증(assertDownloadable): 첨부 소유를 문서 "글쓰기 권한"과 통일한다 — 요청자 권한과
-   *    무관하게 ownerId 가 발신자이거나 업로더가 SUPER 인 첨부만 허용(글 쓸 수 있던 사람이 넣은 것만).
+   *    무관하게 ownerId 가 발신자(senderId)인 첨부만 허용한다. 업로더의 '현재' 권한은 보지 않는다.
    *    filePath 는 신뢰 불가하므로 key 소유까지 검증한다. ※ 주문접수와 달리 정당한 다운로더가
    *    수신자(≠업로더)라 요청자 id 로 비교하지 않는다.
    *  - 원본명: 객체 메타데이터(verbatim) 우선, 없으면 key 복원.
@@ -203,14 +203,12 @@ export class UserDriveService {
    *
    * ★ 왜 좁히나 — HeadObject 는 '그 key 의 진짜 원본 파일명' 을 응답(files[].name)에 실어준다.
    *   즉 다운로드를 안 해도 이름은 새어나간다. 그래서 객체 판정은 다운로드 허용 규칙
-   *   (assertDownloadable: 발신자 소유이거나 업로더가 SUPER)과 같은 기준을 쓴다.
+   *   (assertDownloadable)과 **같은 한 줄**을 쓴다 — `ownerId === senderId`.
    *
-   * ※ 한때 assertDownloadable 에만 "요청자가 관리자면 소유검사 생략" 이 있어 두 판정이 갈렸으나,
-   *   그 우회가 과거에 저장된 타인 소유 private key 를 관리자 경로로 열어 주는 구멍이라 제거했다.
-   *   지금은 두 함수가 같은 객체 판정을 쓴다 — 어느 한쪽에만 요청자 권한 우회를 얹지 마라.
-   *
-   *   쓰기 시점 검증이 생긴 뒤로 타인 소유 key 가 새로 들어올 길은 막혔지만, 그 이전에 저장된 행은
-   *   그대로 남아 있으므로 읽는 쪽에도 같은 판정을 둔다(이중 방어).
+   * ★ 판정에 DB 조회가 없다(전에는 업로더가 지금 SUPER 인지 물었다). 그건 **바뀌는 값**이라
+   *   같은 첨부가 승격·강등으로 보였다 안 보였다 한다. 첨부 당시의 사실이 아니라 지금의 권한을
+   *   근거로 삼는 셈이라 provenance 가 아니다(리뷰 지적). 쓰기 쪽에서 ownerId === senderId 를
+   *   강제하므로 읽기는 그 불변식만 확인하면 된다.
    *
    * 우리 버킷이 아니거나 key 파싱이 실패하면 대상에서 뺀다 — 임의 host 의 pathname 을 우리 버킷 key 로
    * 오인해 조회(객체 존재 여부 탐지)하는 통로가 되지 않게.
@@ -218,46 +216,16 @@ export class UserDriveService {
    *
    * 대상에서 빠진 첨부는 차단이 아니라 key 복원 이름으로 표시된다(sanitize 되어 공백이 _ 로 보일 수 있음).
    */
-  private async resolveHeadableUrls(fileUrlList: string[], senderId: number): Promise<Set<string>> {
-    const candidates: { url: string; ownerId: number }[] = [];
+  private resolveHeadableUrls(fileUrlList: string[], senderId: number): Set<string> {
+    const headable = new Set<string>();
     for (const url of fileUrlList) {
       if (!this.fileService.isOwnStorageUrl(url)) continue;
       const key = this.tryExtractStorageKey(url);
       if (key === null || !key.startsWith('private/')) continue;
       const ownerSegment = key.split('/')[1] ?? '';
       if (!/^[0-9]+$/.test(ownerSegment)) continue;
-      candidates.push({ url, ownerId: Number(ownerSegment) });
-    }
-
-    const headable = new Set(candidates.filter((c) => c.ownerId === senderId).map((c) => c.url));
-
-    // 발신자 소유가 아닌 것만 업로더 권한을 확인한다(SUPER 교차수정 첨부 허용). 조회는 1회로 묶는다.
-    const foreignOwnerIds = [...new Set(candidates.filter((c) => c.ownerId !== senderId).map((c) => c.ownerId))];
-    if (foreignOwnerIds.length === 0) {
-      return headable;
-    }
-
-    // ★ 축을 나눠서 처리한다 — 보안축은 fail-closed(권한을 '확인 못 함' 은 '허용' 이 아니다 → 대상에서 뺀다),
-    //   가용성축은 fail-soft(문서 열람 자체는 막지 않는다). 이 조회는 '이름을 예쁘게 보여줄지' 를 정하는
-    //   곁가지인데, 던지게 두면 제목·본문·답변까지 못 보는 500 이 된다(나머지 이름 조회는 전부 fail-soft 다).
-    //   조용히 열화되면 아무도 모르므로 반드시 남긴다.
-    let superAdminIds: Set<number>;
-    try {
-      const superAdmins = await this.userRepository.find({
-        where: { id: In(foreignOwnerIds), authority: IUserAuthority.SUPER_ADMIN },
-        select: ['id'],
-      });
-      superAdminIds = new Set(superAdmins.map((u) => u.id));
-    } catch (error) {
-      this.logger.warn(
-        `첨부 업로더 권한 조회 실패 — 원본명 조회를 생략하고 key 복원으로 표시 (ownerIds=${foreignOwnerIds.join(
-          ',',
-        )}): ${sanitizeForLog((error as Error)?.message ?? String(error))}`,
-      );
-      return headable;
-    }
-    for (const c of candidates) {
-      if (c.ownerId !== senderId && superAdminIds.has(c.ownerId)) headable.add(c.url);
+      if (Number(ownerSegment) !== senderId) continue;
+      headable.add(url);
     }
     return headable;
   }
@@ -314,11 +282,18 @@ export class UserDriveService {
    *  - host: 우리 S3 버킷 URL 이 아니면 차단.
    *  - private/{ownerId}/... : 첨부 소유(ownerId) 검증을 문서함 "글쓰기(수정) 권한"과 통일한다.
    *    문서함 첨부는 그 문서에 글 쓸 수 있는 사람만 넣을 수 있고(create/update 관리자 전용),
-   *    글쓰기 권한은 = 발신자 본인(OPERATION_ADMIN) 또는 최고관리자(SUPER_ADMIN, 아무 문서나 수정 가능)다.
-   *    따라서 ownerId 가 발신자이거나 SUPER 인 첨부만 허용한다(요청자가 관리자여도 동일하게 건다).
-   *      · ownerId === senderId  → 발신자가 올린 첨부(대다수). 조회 없이 통과.
-   *      · 그 외               → SUPER 가 교차수정으로 올린 경우만 허용(그래서 업로더 권한을 조회해 확인).
-   *    이렇게 하면 발신 아닌 다른 운영관리자/기업계정의 key 가 심겨도 차단되면서, SUPER 교차수정은 과차단하지 않는다.
+   *    판정은 `ownerId === senderId` 하나다. 요청자 권한도, 업로더의 '현재' 권한도 보지 않는다.
+   *
+   *    ⚠️ **이전에는 "업로더가 지금 SUPER 이면 허용" 이라는 분기가 있었다. 되살리지 마라.**
+   *    그건 첨부 당시의 사실이 아니라 지금 바뀔 수 있는 값이라, 같은 첨부가 승격·강등으로 보였다
+   *    안 보였다 했고, 우회 쓰기로 남은 타인 소유 key 도 그 소유자가 SUPER 이기만 하면 열렸다.
+   *    쓰기 쪽(assertNewAttachmentsOwnedBySelf)이 ownerId === senderId 를 강제하므로,
+   *    읽기는 그 불변식만 확인하면 되고 DB 조회도 필요 없다.
+   *
+   *    대가 — SUPER 가 남의 문서를 교차수정하며 **새 private 첨부**를 넣는 것은 이제 쓰기 시점에
+   *    400 으로 막힌다(조용히 못 받는 게 아니라 즉시·명시적으로 실패한다). 공개 레거시(image//file/)
+   *    첨부는 영향 없다 — 프론트가 전환하기 전까지 실제 흐름은 그쪽이다. 제대로 지원하려면
+   *    첨부자를 레코드에 남기거나 발신자 네임스페이스로 객체를 복사해야 하고, 후속 문서에 적었다.
    *    ownerId 세그먼트가 없는 구 private key 는 문서함 첨부가 아니므로 차단(NaN → Forbidden).
    *  - image/ · file/ : 전환 전 공개 첨부 호환용으로만 허용. 문서함 레거시 첨부는 /file/image(→ image/)로
    *    올라갔고, 과거 일반 업로드는 /file/upload(→ file/)다. 둘 다 public-read 라 프록시로 서빙해도
@@ -354,27 +329,26 @@ export class UserDriveService {
         throw new ForbiddenException('다운로드할 수 없는 파일입니다.');
       }
       const ownerId = Number(ownerSegment);
-      // "이 문서에 글 쓸 수 있던 사람이 올린 첨부" 만 허용한다 — 발신자 본인이면 즉시 통과,
-      // 아니면 업로더가 SUPER 인 경우(아무 문서나 수정 가능)만 예외 허용.
+      // "발신자가 올린 첨부" 만 허용한다.
       // ★ 요청자가 관리자여도 건너뛰지 않는다. 관리자는 '문서를 볼 권한' 이 넓은 것이지
       //   '아무 S3 객체나 백엔드 자격증명으로 받을 권한' 이 넓은 게 아니다. 쓰기 시점 검증은 앞으로
       //   들어올 것만 막으므로, 그 이전에 저장된 타인 소유 private key 가 남아 있으면 관리자 경로로
       //   그대로 내려받힌다 → 객체 판정은 요청자 권한과 무관하게 건다(resolveHeadableUrls 와 동일).
+      // ★ 판정은 이 한 줄뿐이다 — 요청자 권한도, 업로더의 '현재' 권한도 보지 않는다.
+      //   전에는 ownerId ≠ senderId 일 때 "업로더가 지금 SUPER 인가" 를 조회해 허용했는데,
+      //   그건 첨부 당시의 사실이 아니라 **지금 바뀔 수 있는 값**이라 provenance 가 아니다(리뷰 지적).
+      //   같은 첨부가 승격·강등으로 보였다 안 보였다 하고, 우회 쓰기로 남은 타인 소유 key 도
+      //   그 소유자가 SUPER 이기만 하면 열렸다. 쓰기 쪽이 ownerId === senderId 를 강제하므로
+      //   읽기는 그 불변식만 확인한다.
       if (ownerId !== drive.senderId) {
-        const uploader = await this.userRepository.findOne({
-          where: { id: ownerId },
-          select: ['id', 'authority'],
+        this.warnAttachmentRejected('다운로드: 발신자 소유가 아닌 private 첨부', {
+          driveId: drive.id,
+          requesterId: user.id,
+          senderId: drive.senderId,
+          ownerId,
+          key: maskStorageKeyForLog(key),
         });
-        if (uploader?.authority !== IUserAuthority.SUPER_ADMIN) {
-          this.warnAttachmentRejected('다운로드: 발신자 소유도 SUPER 업로드도 아닌 첨부', {
-            driveId: drive.id,
-            requesterId: user.id,
-            senderId: drive.senderId,
-            ownerId,
-            key: maskStorageKeyForLog(key),
-          });
-          throw new ForbiddenException('다운로드 권한이 없습니다.');
-        }
+        throw new ForbiddenException('다운로드 권한이 없습니다.');
       }
       return;
     }
@@ -398,8 +372,8 @@ export class UserDriveService {
    * 보존되지 않으면 "검증한 것"과 "저장되는 것"이 달라진다 — 배열 원소 하나에 `,https://...` 를 심으면
    * 소유 검증은 URL 1개(본인 소유)로 보고 통과시키지만, 저장 후에는 2개로 복원돼 검증을 거치지 않은
    * 타인 소유 private 객체가 첨부로 들어온다(개수 상한도 함께 우회).
-   * 읽는 쪽(assertDownloadable)이 소유를 다시 보므로 대부분 거기서 막히지만, 밀반입한 업로더가 SUPER 면
-   * 그 판정을 통과해 기업 수신자에게까지 내려간다. 그래서 쓰는 쪽에서 먼저 막는다.
+   * 읽는 쪽(assertDownloadable)이 소유를 다시 보지만, 그건 저장된 값을 근거로 하는 사후 판정이다.
+   * 밀반입은 저장 자체를 막아야 한다 — 그래서 쓰는 쪽에서 먼저 막는다.
    * ※ 한때 여기 "관리자 다운로드는 소유 검사를 건너뛴다" 고 적혀 있었으나 그 우회는 제거됐다
    *   (assertDownloadable 참조). 되살리지 마라.
    *
@@ -438,10 +412,10 @@ export class UserDriveService {
    *  - image/·file/ : 공개(public-read) 레거시 → 심어도 유출이 아니고(이미 공개), FE 전환 전 현행
    *    문서함이 /file/image(→ image/)로 올리므로 호환 위해 허용.
    *  - 그 외 위치·외부 host : 차단.
-   * ※ 기존에 이미 문서에 있던 첨부는 재검증하지 않는다(SUPER 가 교차수정으로 남긴 타인 소유 첨부,
-   *   또는 발신자 소유 첨부를 SUPER 가 재저장할 때 보존하기 위함).
+   * ※ 기존에 이미 문서에 있던 첨부는 재검증하지 않는다 — 관리자가 제목만 고쳐도 목록을 통째로
+   *   되보내는 프론트 구조라, 재검증하면 과거에 저장된 행 때문에 정상 수정이 막힌다.
    */
-  private assertNewAttachmentsOwnedBySelf(newUrls: string[], user: ILoginUserInfo): void {
+  private assertNewAttachmentsOwnedBySelf(newUrls: string[], user: ILoginUserInfo, expectedOwnerId: number): void {
     for (const url of newUrls) {
       if (!this.fileService.isOwnStorageUrl(url)) {
         this.warnAttachmentRejected('등록: 우리 버킷 URL 이 아님', { requesterId: user.id });
@@ -455,13 +429,14 @@ export class UserDriveService {
 
       if (key.startsWith('private/')) {
         const ownerSegment = key.split('/')[1] ?? '';
-        if (!/^\d+$/.test(ownerSegment) || Number(ownerSegment) !== user.id) {
-          this.warnAttachmentRejected('등록: 본인이 올리지 않은 private 첨부', {
+        if (!/^\d+$/.test(ownerSegment) || Number(ownerSegment) !== expectedOwnerId) {
+          this.warnAttachmentRejected('등록: 발신자 소유가 아닌 private 첨부', {
             requesterId: user.id,
+            expectedOwnerId,
             ownerSegment,
             key: maskStorageKeyForLog(key),
           });
-          throw new BadRequestException('본인이 업로드한 첨부만 등록할 수 있습니다.');
+          throw new BadRequestException('발신자 계정으로 업로드한 첨부만 등록할 수 있습니다.');
         }
         continue;
       }
@@ -494,7 +469,8 @@ export class UserDriveService {
     }
 
     // 생성 시 첨부는 전부 신규 → 전량 검증(본인 업로드 private 또는 공개 레거시만).
-    this.assertNewAttachmentsOwnedBySelf(filePath, user);
+    // 생성은 등록자가 곧 발신자다.
+    this.assertNewAttachmentsOwnedBySelf(filePath, user, user.id);
     const storedFilePath = this.toStoredFilePath(filePath);
 
     await this.userDriveRepository.insert({
@@ -541,11 +517,11 @@ export class UserDriveService {
       throw new BadRequestException('고객사가 존재 하지 않습니다.');
     }
 
-    // 새로 추가된 첨부만 검증(기존 목록에 없던 것). 기존 첨부는 보존 — SUPER 가 교차수정 시
-    // 발신자/타관리자 소유 첨부를 되보내도 통과해야 하므로 델타만 본다.
+    // 새로 추가된 첨부만 검증(기존 목록에 없던 것). 프론트가 목록을 통째로 되보내므로
+    // 델타만 본다 — 전량 검증하면 과거에 저장된 행 때문에 정상 수정이 막힌다.
     const existingUrls = parseFilePathList(userDrive.filePath);
     const addedUrls = filePath.filter((url) => !existingUrls.includes(url));
-    this.assertNewAttachmentsOwnedBySelf(addedUrls, user);
+    this.assertNewAttachmentsOwnedBySelf(addedUrls, user, userDrive.senderId);
 
     userDrive.title = title;
     userDrive.content = content;

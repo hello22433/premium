@@ -69,11 +69,15 @@ describe('UserDriveService.downloadFile', () => {
     expect(userRepo.findOne).not.toHaveBeenCalled(); // ownerId===senderId 라 조회 불필요
   });
 
-  it('★수신자가 SUPER 교차수정 첨부(≠발신자)를 다운로드 → 허용 (과차단 없음)', async () => {
+  // ※ 이 케이스는 예전에 '허용' 이었다. 업로더가 지금 SUPER 인지 조회해서 통과시켰기 때문이다.
+  //   그 판정은 첨부 당시의 사실이 아니라 **지금 바뀌는 값**이라(승격·강등) provenance 가 아니고,
+  //   우회 쓰기로 남은 타인 소유 key 도 그 소유자가 SUPER 이기만 하면 열렸다 → 분기를 제거했다.
+  //   지금은 쓰기 쪽이 ownerId === senderId 를 강제하므로 이런 첨부가 새로 생기지 않는다.
+  it('★차단: 업로더가 SUPER 여도 발신자 소유가 아니면 Forbidden (현재 권한을 안 본다)', async () => {
     const { sut, fileService, userRepo } = makeSut(superAddedUrl);
-    await expect(sut.downloadFile(receiver, 1, superAddedUrl)).resolves.toBeDefined();
-    expect(fileService.downloadWithPath).toHaveBeenCalledTimes(1);
-    expect(userRepo.findOne).toHaveBeenCalledTimes(1); // 발신자 아니라 업로더 권한 조회
+    await expect(sut.downloadFile(receiver, 1, superAddedUrl)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(fileService.downloadWithPath).not.toHaveBeenCalled();
+    expect(userRepo.findOne).not.toHaveBeenCalled(); // 업로더 권한 조회 자체가 사라졌다
   });
 
   it('★차단: 발신자도 SUPER 도 아닌 다른 운영관리자 첨부 → Forbidden (글쓰기 권한과 통일)', async () => {
@@ -85,10 +89,10 @@ describe('UserDriveService.downloadFile', () => {
   // ※ 기대값이 바뀐 케이스다. 예전엔 "요청자가 관리자면 객체소유 검사 생략" 이라 조회 없이 통과했다.
   //   그 우회가 과거에 저장된 타인 소유 private key 를 관리자 경로로 열어 주는 구멍이라 제거했고,
   //   이제 관리자도 같은 객체 판정을 지난다(업로더가 SUPER 라서 통과하는 것이지 관리자라서가 아니다).
-  it('관리자 + SUPER 가 올린 첨부 → 허용 (업로더 권한을 실제로 확인한다)', async () => {
+  it('★관리자여도 SUPER 가 올린 타인 소유 첨부는 차단 (요청자 권한과 무관)', async () => {
     const { sut, userRepo } = makeSut(superAddedUrl);
-    await expect(sut.downloadFile(admin, 1, superAddedUrl)).resolves.toBeDefined();
-    expect(userRepo.findOne).toHaveBeenCalledTimes(1);
+    await expect(sut.downloadFile(admin, 1, superAddedUrl)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(userRepo.findOne).not.toHaveBeenCalled();
   });
 
   it('관리자 + 발신자가 올린 첨부 → 허용, 조회 없이 통과 (단축 경로는 유지)', async () => {
