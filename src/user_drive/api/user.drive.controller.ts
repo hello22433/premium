@@ -75,14 +75,32 @@ export class UserDriveController {
   ) {
     const { fileName, filePath } = await this.userDriveService.downloadFile(user, getParam.id, getQuery.fileUrl);
 
-    // 스트림을 먼저 열고(동기 실패 시 헤더 오염 없이 임시파일 정리), 성공 후 헤더를 건다.
-    // pipeline 배선 전에 실패하면 정리 콜백이 안 걸려 고아가 되므로 이 구간을 감싼다.
-    let fileStream: fs.ReadStream;
+    // 스트림이 '열린 것'을 확인한 뒤에 헤더를 건다.
+    //
+    // ★ fs.createReadStream 은 파일을 동기로 열지 않는다. 그래서 예전처럼 try/catch 로만 감싸면
+    //   동기 throw(경로에 널바이트 등)만 잡히고, 비동기 open 실패(EMFILE·EACCES·ENOENT)는 못 잡는다.
+    //   그때는 이미 attachment 헤더를 건 뒤라 pipeline 이 res 를 destroy 해 버리고, 클라이언트는
+    //   500 JSON 이 아니라 ECONNRESET 을 받는다(원인을 알 길이 없다).
+    //   → open 을 기다린 뒤 헤더를 걸면, 실패는 헤더가 하나도 안 붙은 상태에서 예외로 나가
+    //     ExceptionFilter 가 정상적인 500 JSON 으로 바꿔 준다.
+    const fileStream = fs.createReadStream(filePath);
     try {
-      fileStream = fs.createReadStream(filePath);
+      await new Promise<void>((resolve, reject) => {
+        const onOpen = () => {
+          fileStream.off('error', onError);
+          resolve();
+        };
+        const onError = (err: Error) => {
+          fileStream.off('open', onOpen);
+          reject(err);
+        };
+        fileStream.once('open', onOpen);
+        fileStream.once('error', onError);
+      });
       res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
       res.setHeader('Content-Disposition', buildContentDispositionAttachment(fileName));
     } catch (setupErr) {
+      fileStream.destroy();
       this.removeTempQuietly(filePath);
       throw setupErr;
     }
@@ -98,10 +116,9 @@ export class UserDriveController {
       this.logger.error(`문서함 첨부 스트림 오류: ${err}`, err instanceof Error ? err.stack : undefined);
       // ※ 이 분기는 거의 도달하지 않는다 — pipeline 은 오류 시 두 스트림을 destroy 하므로 여기 올 때는
       //   res.destroyed 가 이미 true 다(실측: headersSent=false / destroyed=true / 클라이언트는 ECONNRESET).
-      //   즉 사용자가 보는 것은 이 JSON 이 아니라 브라우저의 "다운로드 실패" 이고, 원인을 아는 유일한
-      //   창구는 바로 위 error 로그다. 남겨 두는 이유는 헤더 전 동기 실패 같은 예외 경로 대비이고,
-      //   "500 JSON 이 나가니까 괜찮다" 로 읽으면 안 된다. 실제로 JSON 을 주려면 pipeline 앞에서
-      //   소스 오류를 먼저 받아야 하는데, 그건 형제(order_receipt)와 같이 고쳐야 해 후속으로 뒀다.
+      //   전송이 시작된 뒤의 오류는 원래 응답을 바꿀 수 없고, 원인을 아는 창구는 바로 위 error 로그다.
+      //   전송 '전' 실패(파일 open 실패 등)는 위에서 예외로 나가 ExceptionFilter 가 500 JSON 을 만든다.
+      //   즉 이 블록은 최후 보루이지 주 경로가 아니다 — "500 JSON 이 나가니까 괜찮다" 로 읽으면 안 된다.
       if (!res.headersSent && !res.destroyed) {
         // 데이터 전송 전 실패: attachment 헤더가 남아 에러 JSON 이 파일로 저장되지 않도록 제거 후 응답.
         res.removeHeader('Content-Disposition');
