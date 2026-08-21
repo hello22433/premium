@@ -20,6 +20,16 @@ import { resolveDownloadExtension } from '../../util/file.util';
 
 @Injectable()
 export class FileStorageS3 implements IFileStorage {
+  /**
+   * S3 응답 '본문' 이 이 시간 동안 한 바이트도 안 늘면 멈춘 것(stall)으로 보고 끊는다.
+   *
+   * ★ 왜 우리가 직접 재나 — 클라이언트 옵션(socketTimeout)으로는 못 막는다. SDK 가 그 타이머 등록을
+   *   3초 미루고, 응답 헤더가 도착하면 clearTimeouts() 로 예약을 지우기 때문이다(생성자 주석 참조).
+   *   pipeline 도 스트림이 '끝나는' 경로만 덮으므로 stall 은 안 덮인다.
+   *   남의 라이브러리 내부 타이머 수명에 안전을 걸면 버전만 올라가도 조용히 깨진다.
+   */
+  static readonly BODY_STALL_TIMEOUT_MS = 30_000;
+
   private readonly logger = new Logger(FileStorageS3.name);
   private s3Client: S3Client;
 
@@ -30,16 +40,19 @@ export class FileStorageS3 implements IFileStorage {
         accessKeyId: this.configService.getOrThrow('AWS_S3_ACCESS_KEY_ID'),
         secretAccessKey: this.configService.getOrThrow('AWS_S3_SECRET_ACCESS_KEY'),
       },
-      // ★ 기본값은 타임아웃이 전부 꺼져 있다(@smithy/node-http-handler 기본 0 = 무제한). 그러면 상대가
-      //   데이터도 오류도 안 주고 멈출 때(stall) 응답 Promise 가 영영 끝나지 않는다 — pipeline 은 스트림이
-      //   '끝나는' 경로만 덮으므로 이건 안 덮인다. 부분 임시파일·소켓·요청 컨텍스트가 무기한 남는다.
-      //   같은 파일의 axios(copyImageFromUrl)와 저장소 관례(HttpModule.register({ timeout: 30000 }) 6곳)에
-      //   맞춰 30초. 이 파일에서 S3Client 만 상한이 없던 비대칭을 없앤다.
+      // 기본값은 타임아웃이 전부 꺼져 있다(@smithy/node-http-handler 기본 0 = 무제한).
+      // 여기서는 '연결 수립' 상한만 건다. 저장소 관례와 같은 30초
+      // (HttpModule.register({ timeout: 30000 }) 6곳, 같은 파일의 axios copyImageFromUrl).
       //
-      // ⚠️ requestTimeout 을 쓰면 안 된다 — 그건 '총 시간' 이라 대용량 업로드/다운로드(20MB 상한)와
-      //   엑셀 파싱(getBuffer)을 그대로 끊는다. 게다가 throwOnRequestTimeout 없이는 경고만 하고 안 끊는다.
-      //   여기서 필요한 건 '무응답 시간' 이고 그게 socketTimeout 이다(데이터가 흐르는 한 안 걸린다).
-      requestHandler: { connectionTimeout: 30_000, socketTimeout: 30_000 },
+      // ⚠️ socketTimeout 은 일부러 안 건다 — 응답 '본문' 이 멈추는 것(stall)을 못 막기 때문이다.
+      //   SDK 소스 확인: 값이 6000 이상이면 소켓 타임아웃 등록을 3초 미뤘다가(DEFER_EVENT_LISTENER_TIME)
+      //   등록하는데, 응답 헤더가 도착하면 resolve() 가 clearTimeouts() 로 그 예약을 지운다.
+      //   S3 가 정상이면 헤더는 1초 안에 오므로 정상일수록 타임아웃이 아예 안 걸린다.
+      //   (한때 socketTimeout: 30_000 을 넣고 "stall 을 막았다" 고 적어 뒀었다. 실제로는 안 막혔다.)
+      //   본문 stall 방어는 downloadFileToLocalWithPath 가 직접 한다 — 남의 타이머 수명에 안 기댄다.
+      // ⚠️ requestTimeout 도 안 된다 — 그건 '총 시간' 이라 대용량 전송·엑셀 파싱을 그대로 끊고,
+      //   throwOnRequestTimeout 없이는 경고만 하고 끊지도 않는다.
+      requestHandler: { connectionTimeout: 30_000 },
     });
   }
 
@@ -241,6 +254,18 @@ export class FileStorageS3 implements IFileStorage {
       //    그러면 이 Promise 가 영영 settle 되지 않고 부분 임시파일·소켓이 무기한 남는다.
       //    타임아웃 값은 같은 클라이언트를 쓰는 대용량 업로드·엑셀 파싱(getBuffer)에 영향이 있어
       //    운영 판단이 필요하다 → 후속 과제 문서 참조.
+      // 진행이 있는지는 '쓴 바이트 수' 로 잰다. Body 에 'data' 리스너를 붙이면 flowing 모드로 바뀌어
+      // pipeline 배선 전에 청크가 새므로 그렇게 하면 안 된다.
+      const stallMs = FileStorageS3.BODY_STALL_TIMEOUT_MS;
+      let lastBytesWritten = 0;
+      const stallTimer = setInterval(() => {
+        if (writeStream.bytesWritten !== lastBytesWritten) {
+          lastBytesWritten = writeStream.bytesWritten;
+          return;
+        }
+        Body.destroy(new Error(`S3 응답 본문이 ${stallMs}ms 동안 진행되지 않아 중단했습니다.`));
+      }, stallMs);
+
       try {
         await new Promise<void>((resolve, reject) => {
           pipeline(Body, writeStream, (err) => (err ? reject(err) : resolve()));
@@ -250,6 +275,8 @@ export class FileStorageS3 implements IFileStorage {
         // 정리할 수 없으므로(컨트롤러의 정리는 성공 경로에만 걸린다) 이 자리에서 지운다.
         await this.removeLocalFileQuietly(localFilePath);
         throw error;
+      } finally {
+        clearInterval(stallTimer);
       }
 
       return localFilePath;

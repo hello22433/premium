@@ -100,3 +100,67 @@ describe('FileStorageS3.downloadFileToLocalWithPath — 스트림 종료 계약'
     );
   });
 });
+
+/**
+ * ★ 본문 stall — 리뷰에서 나온 결함의 회귀.
+ *
+ * pipeline 은 스트림이 '끝나는' 경로만 덮는다. 상대가 한 청크를 준 뒤 end 도 error 도 없이 멈추면
+ * 그건 끝나는 경로가 아니라서 안 덮이고, Promise 가 영영 settle 되지 않는다.
+ * 클라이언트 옵션(socketTimeout)으로는 못 막는다 — SDK 가 응답 헤더 도착 시 그 예약을 지운다.
+ * 그래서 우리가 '쓴 바이트 수' 로 직접 잰다. 이 스펙이 그 방어가 실제로 동작하는지 본다
+ * (설정이 전달됐는지가 아니라).
+ */
+describe('FileStorageS3.downloadFileToLocalWithPath — 본문 stall 감시', () => {
+  let dir: string;
+  let originalStallMs: number;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 's3-stall-spec-'));
+    originalStallMs = FileStorageS3.BODY_STALL_TIMEOUT_MS;
+    (FileStorageS3 as any).BODY_STALL_TIMEOUT_MS = 50;
+  });
+
+  afterEach(() => {
+    (FileStorageS3 as any).BODY_STALL_TIMEOUT_MS = originalStallMs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const makeSut = (body: unknown) => {
+    const sut: any = Object.create(FileStorageS3.prototype);
+    sut.configService = { getOrThrow: jest.fn().mockReturnValue('my-bucket') };
+    sut.s3Client = { send: jest.fn().mockResolvedValue({ Body: body }) };
+    sut.logger = { warn: jest.fn(), error: jest.fn(), log: jest.fn() };
+    return sut as FileStorageS3;
+  };
+
+  /** 한 청크만 주고 end 도 error 도 안 내는 스트림 — 상대가 멈춘 상황 그대로. */
+  const stallingBody = () => {
+    const body = new Readable({
+      read() {
+        /* 더 안 준다 */
+      },
+    });
+    body.push(Buffer.from('first-chunk'));
+    return body;
+  };
+
+  it('★한 청크 뒤 멈추면 매달리지 않고 reject 한다', async () => {
+    const sut = makeSut(stallingBody());
+    await expect(sut.downloadFileToLocalWithPath(dir, 'out', 'private/5/abcdef01-a.txt')).rejects.toThrow(
+      /진행되지 않아/,
+    );
+  });
+
+  it('★stall 로 끊긴 뒤 부분 파일을 남기지 않는다', async () => {
+    const sut = makeSut(stallingBody());
+    await expect(sut.downloadFileToLocalWithPath(dir, 'out', 'private/5/abcdef01-a.txt')).rejects.toBeInstanceOf(Error);
+    expect(fs.readdirSync(dir)).toHaveLength(0);
+  });
+
+  it('정상적으로 끝나는 본문은 stall 로 오인하지 않는다', async () => {
+    const body = Readable.from([Buffer.from('hello')]);
+    const sut = makeSut(body);
+    const out = await sut.downloadFileToLocalWithPath(dir, 'out', 'private/5/abcdef01-a.txt');
+    expect(fs.readFileSync(out, 'utf8')).toBe('hello');
+  });
+});

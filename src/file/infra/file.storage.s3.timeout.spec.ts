@@ -9,17 +9,18 @@ jest.mock('@aws-sdk/client-s3', () => ({
 }));
 
 /**
- * S3 클라이언트의 stall(상대가 데이터도 오류도 안 주고 멈추는 것) 상한을 고정한다.
+ * S3 클라이언트에 거는 상한.
  *
- * pipeline 은 스트림이 '끝나는' 경로만 덮는다. stall 은 끝나는 경로가 아니라서 안 덮이고,
- * 클라이언트에 상한이 없으면 응답 Promise 가 영영 settle 되지 않는다(부분 임시파일·소켓 잔존).
- * 이 상한이 유일한 방어라 조용히 지워지면 안 된다.
+ * ★ 이 스펙은 '연결 수립' 상한만 본다. 이건 옵션을 주는 것으로 실제 동작한다.
+ *   본문 stall 방어는 클라이언트 옵션으로 못 하므로(아래 이유) 여기서 검증하지 않는다 —
+ *   downloadFileToLocalWithPath 의 행동 테스트(file.storage.s3.download.spec.ts)가 본다.
  *
- * ⚠️ requestTimeout(총 시간)이 아니라 socketTimeout(무응답 시간)이어야 한다.
- *    총 시간을 걸면 20MB 업로드/다운로드와 엑셀 파싱(getBuffer)이 그대로 끊긴다.
- *    게다가 requestTimeout 은 throwOnRequestTimeout 없이는 경고만 하고 끊지도 않는다.
+ * ⚠️ 한때 socketTimeout: 30_000 을 넣고 이 파일에서 "전달됐는지" 만 단언했다. 뮤테이션도 통과했다.
+ *    그런데 SDK 는 그 타이머 등록을 3초 미뤘다가 응답 헤더가 오면 clearTimeouts() 로 예약을 지운다.
+ *    S3 가 정상이면 헤더가 1초 안에 오므로 타임아웃이 아예 안 걸렸다.
+ *    "설정이 전달된다" 와 "그 시나리오가 실제로 끊긴다" 는 다른 명제다.
  */
-describe('FileStorageS3 — S3 클라이언트 타임아웃', () => {
+describe('FileStorageS3 — S3 클라이언트 상한', () => {
   const s3ClientMock = S3Client as unknown as jest.Mock;
 
   const build = () => {
@@ -28,15 +29,15 @@ describe('FileStorageS3 — S3 클라이언트 타임아웃', () => {
     return s3ClientMock.mock.calls[0][0] as Record<string, any>;
   };
 
-  it('★무응답 상한(socketTimeout)과 연결 상한이 걸려 있다', () => {
-    expect(build().requestHandler).toEqual({ connectionTimeout: 30_000, socketTimeout: 30_000 });
+  it('연결 수립 상한이 저장소 관례(30초)로 걸려 있다', () => {
+    expect(build().requestHandler).toEqual({ connectionTimeout: 30_000 });
   });
 
-  it('★총 시간 상한(requestTimeout)은 걸지 않는다 (대용량 전송이 끊긴다)', () => {
+  it('★총 시간 상한(requestTimeout)은 걸지 않는다 — 대용량 전송·엑셀 파싱이 끊긴다', () => {
     expect(build().requestHandler.requestTimeout).toBeUndefined();
   });
 
-  it('저장소 관례와 같은 30초 (HttpModule.register({ timeout: 30000 }) · 같은 파일 axios)', () => {
-    expect(Object.values(build().requestHandler)).toEqual([30_000, 30_000]);
+  it('★socketTimeout 도 걸지 않는다 — 본문 stall 을 못 막으면서 막는 것처럼 보인다', () => {
+    expect(build().requestHandler.socketTimeout).toBeUndefined();
   });
 });
