@@ -86,21 +86,40 @@ export class OrderReceiptController {
     //   ① ASCII 폴백이 역슬래시를 안 지워, 이름이 역슬래시로 끝나면 quoted-pair 로 읽혀 헤더가 깨졌다.
     //   ② encodeURIComponent 가 안 바꾸는 `'()*` 가 RFC5987 attr-char 에 없어, `계약서(최종).pdf` 같은
     //      이름에서 엄격한 클라이언트가 filename* 를 통째로 무시하고 밑줄 폴백으로 떨어졌다.
-    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
-    res.setHeader('Content-Disposition', buildContentDispositionAttachment(fileName));
-
+    // ★ 스트림이 '열린 것' 을 확인한 뒤에 헤더를 건다.
+    //   fs.createReadStream 은 파일을 동기로 열지 않는다. 임시파일이 사라졌거나 권한·FD 부족으로
+    //   open 이 비동기 실패하면, 이미 attachment 헤더를 건 뒤라 pipeline 이 res 를 destroy 해 버리고
+    //   클라이언트는 500 JSON 이 아니라 ECONNRESET 을 받는다(원인을 알 길이 없다).
+    //   open 을 기다린 뒤 헤더를 걸면 실패가 헤더 없는 예외로 나가 ExceptionFilter 가 500 으로 바꾼다.
+    //   (문서함 컨트롤러가 리뷰 지적으로 먼저 고친 것 — 형제도 같은 구조라 같이 맞춘다.)
     const fileStream = fs.createReadStream(filePath);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const onOpen = () => {
+          fileStream.off('error', onError);
+          resolve();
+        };
+        const onError = (openErr: Error) => {
+          fileStream.off('open', onOpen);
+          reject(openErr);
+        };
+        fileStream.once('open', onOpen);
+        fileStream.once('error', onError);
+      });
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+      res.setHeader('Content-Disposition', buildContentDispositionAttachment(fileName));
+    } catch (setupErr) {
+      fileStream.destroy();
+      this.removeTempQuietly(filePath);
+      throw setupErr;
+    }
+
     // pipeline은 성공/스트림오류/클라이언트 조기 종료(res close) 등 '모든' 종료 경로에서 콜백을 1회 호출하고
     // 두 스트림을 정리한다 → 어느 경로로 끝나든 임시파일을 확실히 삭제한다.
     // (과거엔 read 스트림의 end/error에만 unlink를 걸어, 클라이언트가 중간에 끊으면 read 쪽엔 end·error가
     //  안 떠서 temp 파일이 tmpdir에 무기한 쌓였다.)
     pipeline(fileStream, res, (err) => {
-      // unlink 실패(EBUSY/EPERM 등)를 삼키면 이 fix가 막으려던 temp 누수가 조용히 다시 생긴다 → ENOENT 외엔 남긴다.
-      fs.unlink(filePath, (unlinkErr) => {
-        if (unlinkErr && (unlinkErr as NodeJS.ErrnoException).code !== 'ENOENT') {
-          this.logger.warn(`주문접수 첨부 임시파일 삭제 실패(누수 가능): ${filePath} — ${unlinkErr.message}`);
-        }
-      });
+      this.removeTempQuietly(filePath);
       if (!err) return;
       // 클라이언트 조기 종료는 정상적인 취소이므로 warn, 그 외 실제 오류만 error + (헤더 전이면) 500.
       if ((err as NodeJS.ErrnoException).code === 'ERR_STREAM_PREMATURE_CLOSE') {
@@ -111,6 +130,20 @@ export class OrderReceiptController {
       // pipeline이 오류 시 res를 이미 destroy하므로, 헤더 전·미파괴일 때만 안전하게 500 본문을 쓴다.
       if (!res.headersSent && !res.destroyed) {
         res.status(500).json({ message: '파일 다운로드 중 오류가 발생했습니다.' });
+      }
+    });
+  }
+
+  /**
+   * 스트리밍용 임시파일 정리. 이미 없으면(ENOENT) 조용히, 그 외 실패만 누수로 남긴다.
+   *
+   * ★ unlink 실패(EBUSY/EPERM 등)를 삼키면 pipeline 도입이 막으려던 temp 누수가 조용히 다시 생긴다.
+   *   성공 경로와 open 실패 경로가 같은 정리를 쓰도록 한 곳으로 묶는다(문서함 컨트롤러와 같은 형태).
+   */
+  private removeTempQuietly(filePath: string): void {
+    fs.unlink(filePath, (unlinkErr) => {
+      if (unlinkErr && (unlinkErr as NodeJS.ErrnoException).code !== 'ENOENT') {
+        this.logger.warn(`주문접수 첨부 임시파일 삭제 실패(누수 가능): ${filePath} — ${unlinkErr.message}`);
       }
     });
   }
