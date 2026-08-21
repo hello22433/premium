@@ -73,6 +73,11 @@ function makeQueryBuilder(rows: OrderDeliveryEntity[]) {
     qb[m] = jest.fn(() => qb);
   }
   qb.getManyAndCount = jest.fn().mockResolvedValue([rows, rows.length]);
+  // 총 환불금액 집계용 clone (값 자체는 refund.service.getlist-total-refund-price.spec 에서 검증)
+  qb.clone = jest.fn(() => ({
+    select: jest.fn().mockReturnThis(),
+    getRawOne: jest.fn().mockResolvedValue({ totalRefundPrice: '0' }),
+  }));
   return qb;
 }
 

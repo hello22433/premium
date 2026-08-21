@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import {
@@ -84,13 +84,38 @@ export class RefundService {
       await this.recordPiiSearchLog(trimmedDeliveryTarget, auditContext);
     }
 
+    // COALESCE 순서와 반올림 없음은 아래 행 계산이 쓰는 readLineProductView 를 SQL 로 복제한 것이다.
+    // 한쪽만 바뀌면 화면의 행 합과 상단 총합이 조용히 어긋난다.
+    // DECIMAL(20,4) CAST 는 나눗셈 결과 스케일이 MySQL div_precision_increment(기본 4)에 의존하는 것을
+    // 끊는다 — 0 인 환경에서는 행별로 정수 반올림되어 행 합과 총합이 갈린다.
+    // clone 은 필터를 모두 적용한 뒤·orderBy/skip/take 이전이어야 한다(집계에 ORDER BY 가 섞이면
+    // ONLY_FULL_GROUP_BY 에서 에러, 페이징이 섞이면 페이지별 합계가 된다).
+    const aggregateQueryBuilder = queryBuilder
+      .clone()
+      .select(
+        'SUM(CAST(COALESCE(orderProductMapping.snapshotProductPrice, product.price, 0) * orderDelivery.refundRatio AS DECIMAL(20, 4)) / 100)',
+        'totalRefundPrice',
+      );
+
     // 정렬: 접수일자 최신순(refundRegisterAt DESC), 동률 시 id DESC 보조키로 안정적 페이지네이션 보장
     // (MySQL은 DESC 정렬에서 NULL을 자동으로 뒤로 정렬하므로 NULLS LAST 절 불요)
     queryBuilder.orderBy('orderDelivery.refundRegisterAt', 'DESC').addOrderBy('orderDelivery.id', 'DESC');
 
     const skip = (page - 1) * take;
     queryBuilder.skip(skip).take(take);
-    const [orderDeliveryList, totalCount] = await queryBuilder.getManyAndCount();
+    const [sumResult, [orderDeliveryList, totalCount]] = await Promise.all([
+      aggregateQueryBuilder.getRawOne<{ totalRefundPrice?: string | number | null }>(),
+      queryBuilder.getManyAndCount(),
+    ]);
+
+    // 매칭 0건이면 SQL SUM 이 NULL 이다(정상 0원) — 이때도 집계 행 자체는 1건이라 키는 존재한다.
+    // 키가 없거나(alias 불일치) 숫자가 아닌 값은 코드 결함뿐인데, 이를 0 원으로 덮으면 목록엔 행이 있는데
+    // 상단 총합만 0 인 화면이 로그 한 줄 없이 나간다. 자금 화면이므로 조용한 0 대신 실패시킨다.
+    const rawTotalRefundPrice = sumResult?.totalRefundPrice;
+    const totalRefundPrice = rawTotalRefundPrice === null ? 0 : Number(rawTotalRefundPrice);
+    if (!Number.isFinite(totalRefundPrice)) {
+      throw new InternalServerErrorException('총 환불금액 집계에 실패했습니다.');
+    }
 
     const resultList: RefundListViewDto[] = orderDeliveryList.map((orderDelivery) => {
       const decryptedDeliveryTarget = this.cryptoCipher.safeDecryptDeliveryTarget(orderDelivery.deliveryTarget) ?? '';
@@ -99,7 +124,9 @@ export class RefundService {
       //  ※ price 뿐 아니라 name 까지 같은 view 에서 뽑는다(리뷰 반영). 가격만 박제하면 상품명 변경 시
       //    "새 상품명 + 옛 가격" 이 한 행에 섞여 담당자가 금액 오류로 오인할 수 있다. 환불율을 실제로
       //    설정하는 정산정보입력 화면(order.service readLineProductView)도 이미 snapshot 상품명을 쓴다.
-      //  ※ deliveryPrice/refundPrice 는 '주문시점 액면가' 기준이다(할인·카드할증 반영 전이라 실납부액과 다름).
+      //  ※ 이 화면의 환불 대상은 고객사가 아니라 쿠폰을 받은 고객이다. 고객사 정산에 붙는 할인·카드할증이
+      //    적용되지 않으므로 '주문시점 액면가 × 환불비율' 이 곧 실제 송금액이다(2026-08-18 담당자 확인).
+      //    할인·할증이 반영된 정산단가(calculateSettlementPrice)를 여기에 끌어오면 안 된다.
       const lineView = readLineProductView(orderDelivery.orderProductMapping!);
 
       return {
@@ -122,7 +149,13 @@ export class RefundService {
       };
     });
 
-    return { list: resultList, totalPage: Math.ceil(totalCount / take), totalCount, currentPage: page };
+    return {
+      list: resultList,
+      totalPage: Math.ceil(totalCount / take),
+      totalCount,
+      currentPage: page,
+      totalRefundPrice,
+    };
   }
 
   private async recordPiiSearchLog(rawKeyword: string, auditContext: RefundGetListAuditContext): Promise<void> {
