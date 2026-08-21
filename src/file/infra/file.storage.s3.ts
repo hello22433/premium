@@ -9,7 +9,7 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { Readable } from 'stream';
-import { pipeline } from 'node:stream';
+import { pipeline, Transform } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import { join } from 'path';
 import fs from 'node:fs';
@@ -31,15 +31,28 @@ export class FileStorageS3 implements IFileStorage {
   static readonly BODY_STALL_TIMEOUT_MS = 30_000;
 
   /**
-   * stall 판정을 위한 확인 주기.
+   * 청크가 올 때마다 다시 거는 **단발** stall 타이머를 만든다.
    *
-   * ★ 주기를 상한과 같게 두면 안 된다 — 처음엔 `setInterval(상한)` 으로 "직전 tick 과 바이트가 같은가"
-   *   만 봤는데, tick 직후에 청크가 하나 오고 멈추면 다음 tick 은 '진행 있음' 으로 소비되고
-   *   그다음 tick 에서야 끊긴다. **마지막 진행으로부터 최대 2배**까지 늦어진다(리뷰 지적, 실측됨).
-   *   그래서 '마지막 진행 시각' 을 따로 들고, 짧은 주기로 경과만 본다 → 오차가 이 주기로 떨어진다.
+   * ★ 처음엔 `setInterval(상한)` 으로 "직전 tick 과 바이트가 같은가" 만 봤다. 그러면 tick 직후에
+   *   청크가 오면 다음 tick 이 '진행 있음' 으로 소비되고 그다음 tick 에서야 끊겨,
+   *   마지막 진행으로부터 **최대 2배**까지 늦어진다(리뷰 지적, 실측됨).
+   *   중간에 '마지막 진행 시각' 을 들고 짧은 주기로 재는 방식도 써 봤지만, 그건 오차를 줄일 뿐이고
+   *   여전히 주기만큼 늦다. 청크마다 타이머를 다시 걸면 오차가 아예 없다.
+   *
+   * @param onStall 상한 동안 진행이 없을 때 부를 것(대개 Body.destroy)
    */
-  private static stallCheckIntervalMs(stallMs: number): number {
-    return Math.max(10, Math.min(1_000, Math.floor(stallMs / 10)));
+  private createStallWatch(stallMs: number, onStall: () => void) {
+    let timer: NodeJS.Timeout | undefined;
+    const arm = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(onStall, stallMs);
+    };
+    const stop = () => {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+    };
+    arm();
+    return { arm, stop };
   }
 
   private readonly logger = new Logger(FileStorageS3.name);
@@ -181,11 +194,16 @@ export class FileStorageS3 implements IFileStorage {
     const bucketName = this.configService.getOrThrow('AWS_S3_BUCKET');
     try {
       const { hostname } = new URL(fileUrl);
-      // 업로드 반환 형식(`{bucket}.s3.amazonaws.com`)과 리전 포함 변형(`{bucket}.s3.{region}.amazonaws.com`) 허용
-      return (
-        hostname === `${bucketName}.s3.amazonaws.com` ||
-        (hostname.startsWith(`${bucketName}.s3.`) && hostname.endsWith('.amazonaws.com'))
-      );
+      // 업로드 반환 형식(`{bucket}.s3.amazonaws.com`)과 리전 포함 변형(`{bucket}.s3.{region}.amazonaws.com`) 허용.
+      //
+      // ★ 예전엔 `startsWith(bucket + '.s3.') && endsWith('.amazonaws.com')` 였다. 그러면 **가운데에
+      //   무엇이 끼어도 통과**한다 — S3 버킷 이름에는 점을 쓸 수 있으므로, 남이 `epopkon-premium.s3.evil`
+      //   이라는 버킷을 만들면 `epopkon-premium.s3.evil.s3.amazonaws.com` 이 우리 것으로 판정됐다(실측).
+      //   읽기는 항상 설정의 버킷에서 하므로 남의 버킷을 읽지는 않지만, 그 URL 이 첨부로 **저장**되고
+      //   화면에 링크로 렌더되면 우리 도메인처럼 보이는 남의 주소를 고객에게 보내게 된다.
+      //   → 리전 자리에 점이 못 들어가게 정규식으로 고정한다(리전은 `ap-northeast-2` 형태).
+      const escapedBucket = bucketName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`^${escapedBucket}\\.s3(\\.[a-z0-9-]+)?\\.amazonaws\\.com$`).test(hostname);
     } catch {
       return false;
     }
@@ -228,27 +246,17 @@ export class FileStorageS3 implements IFileStorage {
       //   한쪽만 막으면 다른 쪽으로 그대로 샌다(이 호출은 엑셀 자동주문 파싱이 쓴다). 같은 방식으로 막는다:
       //   받은 바이트가 안 늘면 Body 를 끊어 for await 가 던지게 한다.
       const stallMs = FileStorageS3.BODY_STALL_TIMEOUT_MS;
-      let receivedBytes = 0;
-      let lastReceivedBytes = 0;
-      let lastProgressAt = Date.now();
-      const stallTimer = setInterval(() => {
-        if (receivedBytes !== lastReceivedBytes) {
-          lastReceivedBytes = receivedBytes;
-          lastProgressAt = Date.now();
-          return;
-        }
-        if (Date.now() - lastProgressAt < stallMs) return;
-        Body.destroy(new Error(`S3 응답 본문이 ${stallMs}ms 동안 진행되지 않아 중단했습니다.`));
-      }, FileStorageS3.stallCheckIntervalMs(stallMs));
+      const stallWatch = this.createStallWatch(stallMs, () =>
+        Body.destroy(new Error(`S3 응답 본문이 ${stallMs}ms 동안 진행되지 않아 중단했습니다.`)),
+      );
 
       try {
         for await (const chunk of Body) {
-          const buffered = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-          chunks.push(buffered);
-          receivedBytes += buffered.length;
+          stallWatch.arm(); // 청크마다 다시 건다 — 여기가 '진행' 의 정의다
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
         }
       } finally {
-        clearInterval(stallTimer);
+        stallWatch.stop();
       }
       return Buffer.concat(chunks);
     }
@@ -289,24 +297,23 @@ export class FileStorageS3 implements IFileStorage {
       //    그러면 이 Promise 가 영영 settle 되지 않고 부분 임시파일·소켓이 무기한 남는다.
       //    타임아웃 값은 같은 클라이언트를 쓰는 대용량 업로드·엑셀 파싱(getBuffer)에 영향이 있어
       //    운영 판단이 필요하다 → 후속 과제 문서 참조.
-      // 진행이 있는지는 '쓴 바이트 수' 로 잰다. Body 에 'data' 리스너를 붙이면 flowing 모드로 바뀌어
-      // pipeline 배선 전에 청크가 새므로 그렇게 하면 안 된다.
+      // ★ 진행 관측은 pipeline 안의 통과용 Transform 에서 한다.
+      //   Body 에 'data' 리스너를 직접 붙이면 flowing 모드로 바뀌어 pipeline 배선 전에 청크가 샌다.
+      //   Transform 은 pipeline 이 오류·종료 시 같이 정리해 준다.
       const stallMs = FileStorageS3.BODY_STALL_TIMEOUT_MS;
-      let lastBytesWritten = 0;
-      let lastProgressAt = Date.now();
-      const stallTimer = setInterval(() => {
-        if (writeStream.bytesWritten !== lastBytesWritten) {
-          lastBytesWritten = writeStream.bytesWritten;
-          lastProgressAt = Date.now();
-          return;
-        }
-        if (Date.now() - lastProgressAt < stallMs) return;
-        Body.destroy(new Error(`S3 응답 본문이 ${stallMs}ms 동안 진행되지 않아 중단했습니다.`));
-      }, FileStorageS3.stallCheckIntervalMs(stallMs));
+      const stallWatch = this.createStallWatch(stallMs, () =>
+        Body.destroy(new Error(`S3 응답 본문이 ${stallMs}ms 동안 진행되지 않아 중단했습니다.`)),
+      );
+      const progressWatch = new Transform({
+        transform(chunk, _encoding, callback) {
+          stallWatch.arm(); // 청크마다 다시 건다
+          callback(null, chunk);
+        },
+      });
 
       try {
         await new Promise<void>((resolve, reject) => {
-          pipeline(Body, writeStream, (err) => (err ? reject(err) : resolve()));
+          pipeline(Body, progressWatch, writeStream, (err) => (err ? reject(err) : resolve()));
         });
       } catch (error) {
         // pipeline 은 스트림만 정리하고 이미 쓰인 부분 파일은 남긴다. 실패하면 호출자가 경로를 못 받아
@@ -314,7 +321,7 @@ export class FileStorageS3 implements IFileStorage {
         await this.removeLocalFileQuietly(localFilePath);
         throw error;
       } finally {
-        clearInterval(stallTimer);
+        stallWatch.stop();
       }
 
       return localFilePath;
