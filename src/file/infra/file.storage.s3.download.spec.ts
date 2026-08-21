@@ -166,8 +166,24 @@ describe('FileStorageS3.downloadFileToLocalWithPath — 본문 stall 감시', ()
   //
   //   상한 300ms 기준으로 tick 직후(310ms)에 두 번째 청크를 흘리면:
   //     고친 것 : 마지막 진행 + 300 → 약 320ms 뒤 종료
-  //     옛 방식 : tick(600) 이 '진행 있음' 으로 소비되고 tick(900) 에서 종료 → 약 590ms 뒤
-  it('★마지막 청크 이후 상한 근처에서 끊는다 — 2배까지 기다리지 않는다', async () => {
+  // ★ 리뷰 요구 — "매 chunk마다 단발 timer를 clear/reset하고, 마지막 chunk 이후
+  //   BODY_STALL_TIMEOUT_MS 경계에서 reject되는 fake-timer 회귀 테스트를 추가해 주세요."
+  //
+  //   실타이머로 '몇 ms 뒤에 끊겼나' 를 재는 방식은 부하가 걸린 CI 에서 흔들린다. 여기서는 시간을 직접
+  //   밀어 **'청크가 오면 타이머가 다시 걸린다'** 를 결정적으로 고정한다.
+  // ★ 리뷰 요구 — "매 chunk마다 단발 timer를 clear/reset하고, 마지막 chunk 이후
+  //   BODY_STALL_TIMEOUT_MS 경계에서 reject되는 fake-timer 회귀 테스트를 추가해 주세요."
+  //
+  //   ⚠️ fake timer 로 이 경로를 재려고 했으나 **뮤테이션을 못 잡았다**(arm 이 리셋을 안 하게 바꿔도 초록).
+  //   Body.destroy 뒤 pipeline 정리가 실제 fs I/O 를 거쳐서, 시간을 밀어도 rejection 이 그 시점에
+  //   관측되지 않는다(setImmediate 20회를 흘려도 같았다). 그래서 여기서는 **실제로 걸리는 방식**으로 잰다:
+  //     · 아래 실시간 경계 테스트 — '언제' 끊기는지를 재고, 되돌리면 실제로 빨개진다
+  //     · 타이머 자체의 리셋 의미는 file.storage.s3.stall-watch.spec.ts 가 fake timer 로 결정적으로 고정
+  //
+  //   상한 300ms 기준으로 tick 직후(310ms)에 두 번째 청크를 흘리면:
+  //     리셋 있음 : 마지막 진행 + 300 → 약 320ms 뒤 종료
+  //     리셋 없음 : 최초 arm 에서 300ms 뒤 이미 종료됐거나, 옛 interval 방식이면 약 590ms 뒤
+  it('★마지막 청크 이후 상한 근처에서 끊는다 — 리셋이 실제로 걸린다', async () => {
     (FileStorageS3 as any).BODY_STALL_TIMEOUT_MS = 300;
     const body = new Readable({ read() {} });
     body.push(Buffer.from('first'));
@@ -176,14 +192,15 @@ describe('FileStorageS3.downloadFileToLocalWithPath — 본문 stall 감시', ()
       /진행되지 않아/,
     );
 
-    await new Promise((r) => setTimeout(r, 310));
+    await new Promise((r) => setTimeout(r, 200));
     body.push(Buffer.from('late-chunk'));
     const pushedAt = Date.now();
     await pending;
     const sinceLastChunk = Date.now() - pushedAt;
 
-    expect(sinceLastChunk).toBeGreaterThanOrEqual(250); // 너무 일찍 끊지 않는다
-    expect(sinceLastChunk).toBeLessThan(450); // 2배(≈590ms)까지 기다리지 않는다
+    // 리셋이 안 걸리면 최초 arm 기준이라 여기서 100ms 안에 끊긴다.
+    expect(sinceLastChunk).toBeGreaterThanOrEqual(250);
+    expect(sinceLastChunk).toBeLessThan(500);
   });
 
   it('★getFileBuffer 도 같은 방어를 받는다 — 한쪽만 막으면 다른 쪽으로 샌다', async () => {
