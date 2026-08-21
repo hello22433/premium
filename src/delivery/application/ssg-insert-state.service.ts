@@ -1,13 +1,15 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { ConflictException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Repository } from 'typeorm';
 import { Propagation, Transactional } from 'typeorm-transactional';
 import { OrderDeliveryEntity } from '../../entity/order.delivery.entity';
 import { OrderDeliverySsgInsertStateEntity } from '../../entity/order.delivery.ssg.insert.state.entity';
 import { SsgIssueLogEntity } from '../../entity/ssg.issue.log.entity';
+import { OrderDeliveryRefundEntity } from '../../entity/order.delivery.refund.entity';
 import { SsgIssueLogKeyCollisionError } from '../../partner_company_extern/infra/ssg.issue';
 import { PinIssueCommandEntity } from '../../entity/pin.issue.command.entity';
 import { hasConsumedSsgIssueAuthority, PinIssueCommandAuthority } from './pin-issue-command.service';
+import { PinIssueCommandStatus } from '../interface/pin.issue.command.status';
 import { MarkAttemptedResult, SsgInsertState } from '../interface/ssg.insert.state';
 
 /**
@@ -61,6 +63,9 @@ export interface SsgAttemptPayload {
   expireAt: Date | null;
   encourageAt: Date | null;
   couponNum: string | null;
+  /** EP-P30 §6-A ordinal 기장. sweep 경로만 전달하며, legacy issue() 는 미전달(→ NULL). */
+  pinIssueCommandId?: string | null;
+  issueOrdinal?: number | null;
 }
 
 /**
@@ -137,7 +142,7 @@ export class SsgInsertStateService {
     payload: SsgAttemptPayload,
     authority: PinIssueCommandAuthority | undefined,
   ): Promise<MarkAttemptedResult> {
-    if (!(await this.lockCurrentConsumedIssueAuthority(authority))) {
+    if (!(await this.lockCurrentConsumedIssueAuthority(authority, payload.issueOrdinal))) {
       this.logger.warn(`markAttempted skipped (SSG INSERT authority stale): id=${orderDeliveryId}.`);
       return MarkAttemptedResult.SKIPPED_ACTIVE;
     }
@@ -206,7 +211,10 @@ export class SsgInsertStateService {
    * ATTEMPTED/log state. A stale or missing owner therefore leaves no durable
    * candidate behind for a later HTTP recheck to reject.
    */
-  private async lockCurrentConsumedIssueAuthority(authority: PinIssueCommandAuthority | undefined): Promise<boolean> {
+  private async lockCurrentConsumedIssueAuthority(
+    authority: PinIssueCommandAuthority | undefined,
+    issueOrdinal?: number | null,
+  ): Promise<boolean> {
     if (!authority) {
       return false;
     }
@@ -220,7 +228,19 @@ export class SsgInsertStateService {
       .andWhere('command.generation = :generation', { generation: authority.generation })
       .andWhere('command.workflow_version = :workflowVersion', { workflowVersion: authority.workflowVersion })
       .getOne();
-    return hasConsumedSsgIssueAuthority(command);
+    if (!hasConsumedSsgIssueAuthority(command)) return false;
+    if (issueOrdinal != null && command) {
+      const ordinalStatusMatch =
+        (issueOrdinal === 1 && command.status === PinIssueCommandStatus.STARTED && command.externalIssueCount === 1) ||
+        (issueOrdinal === 2 && command.status === PinIssueCommandStatus.RETRYING && command.externalIssueCount === 2);
+      if (!ordinalStatusMatch) {
+        this.logger.warn(
+          `lockCurrentConsumedIssueAuthority ordinal mismatch: ordinal=${issueOrdinal}, status=${command.status}, count=${command.externalIssueCount}, commandId=${command.id}`,
+        );
+        return false;
+      }
+    }
+    return true;
   }
   /**
    * ATTEMPTED → CONFIRMED.
@@ -234,6 +254,49 @@ export class SsgInsertStateService {
    */
   @Transactional({ propagation: Propagation.REQUIRES_NEW })
   async markConfirmed(orderDeliveryId: number, pinInfo: SsgConfirmInfo): Promise<boolean> {
+    // delivery row 를 FOR UPDATE 로 먼저 잠가 환불 tx 와 직렬화한다.
+    // 환불의 lockDeliveryAndVerifyRefundable 이 같은 row 를 FOR UPDATE 하므로,
+    // 이 lock 에 블로킹돼 커밋 전 CONFIRMED 를 못 보고 ledger 를 INSERT 하는 race 를 막는다.
+    const delivery = await this.deliveryRepository
+      .createQueryBuilder()
+      .select(['d.id', 'd.refundedAt'])
+      .from(OrderDeliveryEntity, 'd')
+      .where('d.id = :id', { id: orderDeliveryId })
+      .setLock('pessimistic_write')
+      .getOne();
+
+    if (!delivery) {
+      throw new ConflictException({
+        code: 'DELIVERY_NOT_FOUND',
+        orderDeliveryId,
+      });
+    }
+
+    // refund-first 경합 차단: 환불 tx 가 먼저 커밋됐으면 PIN 확정 불가.
+    if (delivery.refundedAt) {
+      this.logger.warn(
+        `[markConfirmed] 환불 완료 후 PIN 확정 차단. orderDeliveryId=${orderDeliveryId}`,
+      );
+      throw new ConflictException({
+        code: 'ALREADY_REFUNDED',
+        orderDeliveryId,
+      });
+    }
+
+    // refundedAt 은 save() 등으로 덮일 수 있으므로 ledger row 도 이중 확인.
+    const refundLedgerExists = await this.deliveryRepository.manager
+      .getRepository(OrderDeliveryRefundEntity)
+      .count({ where: { orderDeliveryId } });
+    if (refundLedgerExists > 0) {
+      this.logger.warn(
+        `[markConfirmed] 환불 ledger 존재 후 PIN 확정 차단. orderDeliveryId=${orderDeliveryId}`,
+      );
+      throw new ConflictException({
+        code: 'REFUND_LEDGER_EXISTS',
+        orderDeliveryId,
+      });
+    }
+
     const stateResult = await this.stateRepository
       .createQueryBuilder()
       .update(OrderDeliverySsgInsertStateEntity)

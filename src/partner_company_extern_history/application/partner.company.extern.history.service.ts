@@ -40,6 +40,7 @@ import {
 import { DeliveryWorkflowEntity } from '../../entity/delivery.workflow.entity';
 import { DeliveryWorkflowStatus } from '../../delivery/interface/delivery.workflow.status';
 import {
+  Auto504FailureView,
   DeliveryFailureSotReader,
   DeliveryFailureSotView,
   FAILURE_LIST_WORKFLOW_STATUSES,
@@ -60,6 +61,24 @@ const NOT_MIGRATED_PREDICATE = '`wf`.`cutover_migrated_at` IS NULL';
 const HAS_RESEND_ATTEMPT_PREDICATE =
   'EXISTS (SELECT 1 FROM message_attempt ma WHERE ma.order_delivery_id = `orderDelivery`.`id` ' +
   `AND ma.attempt_type IN (${RESEND_ATTEMPT_TYPES.map((t) => `'${t}'`).join(', ')}))`;
+
+// 미전환 건의 504 자동 재발송 최종 실패 — order_delivery.status는 COMPLETE 유지이므로
+// legacy 필터에 걸리지 않는다. 이 조건으로 별도 노출한다.
+const HAS_AUTO_504_FAILED_PREDICATE =
+  'EXISTS (SELECT 1 FROM message_attempt ma2 WHERE ma2.order_delivery_id = `orderDelivery`.`id` ' +
+  "AND ma2.attempt_type = 'AUTO_504' AND ma2.status = 'FAILED_FINAL' " +
+  `AND ${validDatePredicate('ma2.resolved_at')})`;
+
+// 미전환 AUTO_504 FAILED_FINAL의 날짜 — LIST_DATE_EXPR 최우선 칸에 삽입.
+// SQL에서 resolved_at DESC, id DESC로 최신 실패 시도를 선택해야 하지만,
+// COALESCE 칸에는 scalar subquery만 넣을 수 있다. wf join이 이미 있으므로
+// 미전환 + AUTO_504 FAILED_FINAL 조건을 걸어 가장 최근 resolved_at을 뽑는다.
+const AUTO_504_FAILED_DATE_EXPR =
+  '(CASE WHEN (`wf`.`cutover_migrated_at` IS NULL OR `wf`.`id` IS NULL) THEN ' +
+  '(SELECT ma3.resolved_at FROM message_attempt ma3 ' +
+  "WHERE ma3.order_delivery_id = `orderDelivery`.`id` AND ma3.attempt_type = 'AUTO_504' " +
+  `AND ma3.status = 'FAILED_FINAL' AND ${validDatePredicate('ma3.resolved_at')} ` +
+  'ORDER BY ma3.resolved_at DESC, ma3.id DESC LIMIT 1) END)';
 
 /**
  * 발송실패목록의 **기준 일시**. 전환 건은 workflow 상태 진입 시각, 미전환 건은 legacy 시각을 쓴다.
@@ -154,8 +173,13 @@ const HAS_RESEND_ATTEMPT_PREDICATE =
  *   가 제로·부분제로에서 0 을 준다는 문서상 동작에 기대고 있다. 배포 전 개발 DB 에서 한 번 확인할 것:
  *     SELECT YEAR('2026-00-00'), MONTH('2026-00-00'), DAY('2026-00-00');  -- 2026, 0, 0 이어야 한다
  */
-const validDateSql = (column: string): string =>
-  `CASE WHEN YEAR(${column}) > 0 AND MONTH(${column}) > 0 AND DAY(${column}) > 0 THEN ${column} END`;
+function validDatePredicate(column: string): string {
+  return `YEAR(${column}) > 0 AND MONTH(${column}) > 0 AND DAY(${column}) > 0`;
+}
+
+function validDateSql(column: string): string {
+  return `CASE WHEN ${validDatePredicate(column)} THEN ${column} END`;
+}
 
 const LIST_DATE_EXPR =
   'COALESCE(' +
@@ -163,6 +187,10 @@ const LIST_DATE_EXPR =
   '(CASE WHEN `wf`.`cutover_migrated_at` IS NOT NULL THEN ' +
   validDateSql('`wf`.`state_entered_at`') +
   ' END), ' +
+  // (1.5) 미전환 AUTO_504 FAILED_FINAL — 자동 재발송이 최종 실패한 시각.
+  // 이 칸이 비-NULL이면 아래 (2)~(5)보다 우선한다(실패 확정 시각이 화면·필터·정렬 기준이 된다).
+  AUTO_504_FAILED_DATE_EXPR +
+  ', ' +
   // (2) 실제 발송 → (3) 실패 → (4) 발송 요청 → (5) 안전망. TS 의 legacyDisplayDate 와 같은 순서다.
   validDateSql('`orderDelivery`.`actual_send_at`') +
   ', ' +
@@ -265,7 +293,8 @@ export class PartnerCompanyExternHistoryService {
         `((${MIGRATED_PREDICATE} AND (wf.workflowStatus IN (:...wfFailStatuses)` +
           ` OR (wf.workflowStatus = :wfCompleted AND ${HAS_RESEND_ATTEMPT_PREDICATE})))` +
           ` OR (${NOT_MIGRATED_PREDICATE}` +
-          ' AND (orderDelivery.status IN (:...statuses) OR orderDelivery.resendAt IS NOT NULL)))',
+          ` AND (orderDelivery.status IN (:...statuses) OR orderDelivery.resendAt IS NOT NULL` +
+          ` OR ${HAS_AUTO_504_FAILED_PREDICATE})))`,
         {
           wfFailStatuses: FAILURE_LIST_WORKFLOW_STATUSES,
           wfCompleted: DeliveryWorkflowStatus.COMPLETED,
@@ -311,14 +340,16 @@ export class PartnerCompanyExternHistoryService {
     if (dto.sendStatus === 'FAIL') {
       queryBuilder.andWhere(
         `((${MIGRATED_PREDICATE} AND wf.workflowStatus IN (:...failWfStatuses))` +
-          ` OR (${NOT_MIGRATED_PREDICATE} AND orderDelivery.status IN (:...failStatuses)` +
-          ' AND orderDelivery.resendAt IS NULL))',
+          ` OR (${NOT_MIGRATED_PREDICATE} AND (` +
+          `(orderDelivery.status IN (:...failStatuses) AND orderDelivery.resendAt IS NULL)` +
+          ` OR ${HAS_AUTO_504_FAILED_PREDICATE})))`,
         { failWfStatuses: FAILURE_LIST_WORKFLOW_STATUSES, failStatuses: RESENDABLE_FAIL_STATUSES },
       );
     } else if (dto.sendStatus === 'RESEND') {
       queryBuilder.andWhere(
         `((${MIGRATED_PREDICATE} AND wf.workflowStatus = :resendWfCompleted AND ${HAS_RESEND_ATTEMPT_PREDICATE})` +
-          ` OR (${NOT_MIGRATED_PREDICATE} AND orderDelivery.resendAt IS NOT NULL))`,
+          ` OR (${NOT_MIGRATED_PREDICATE} AND orderDelivery.resendAt IS NOT NULL` +
+          ` AND NOT ${HAS_AUTO_504_FAILED_PREDICATE}))`,
         { resendWfCompleted: DeliveryWorkflowStatus.COMPLETED },
       );
     }
@@ -343,17 +374,31 @@ export class PartnerCompanyExternHistoryService {
 
     const [orderDeliveries, totalCount] = await queryBuilder.getManyAndCount();
 
-    // 최신 history + 전환 건 SoT 를 배치로 한번에 조회 (N+1 방지)
+    // 최신 history + 전환 건 SoT + 미전환 AUTO_504 실패 를 배치로 한번에 조회 (N+1 방지)
     const odIds = orderDeliveries.map((od) => od.id);
-    const [latestHistoryMap, sotMap] =
+    const [latestHistoryMap, sotMap, auto504Map] =
       odIds.length > 0
-        ? await Promise.all([this.batchFetchLatestHistories(odIds), this.sotReader.loadMigrated(odIds)])
-        : [new Map<number, PartnerCompanyExternHistoryEntity>(), new Map<number, DeliveryFailureSotView>()];
+        ? await Promise.all([
+            this.batchFetchLatestHistories(odIds),
+            this.sotReader.loadMigrated(odIds),
+            this.sotReader.loadNonMigratedAuto504Failed(odIds),
+          ])
+        : [
+            new Map<number, PartnerCompanyExternHistoryEntity>(),
+            new Map<number, DeliveryFailureSotView>(),
+            new Map<number, Auto504FailureView>(),
+          ];
 
-    // DTO 변환 (배치로 가져온 history/SoT 전달)
+    // DTO 변환 (배치로 가져온 history/SoT/auto504 전달)
     const sink: ListDateGuardSink = { invalidCount: 0 };
     const list: PartnerCompanyExternHistoryViewDto[] = orderDeliveries.map((od) =>
-      this.parseOrderDeliveryView(od, latestHistoryMap.get(od.id) ?? null, sotMap.get(od.id) ?? null, sink),
+      this.parseOrderDeliveryView(
+        od,
+        latestHistoryMap.get(od.id) ?? null,
+        sotMap.get(od.id) ?? null,
+        auto504Map.get(od.id) ?? null,
+        sink,
+      ),
     );
 
     return {
@@ -476,6 +521,7 @@ export class PartnerCompanyExternHistoryService {
     orderDelivery: OrderDeliveryEntity,
     latestHistory: PartnerCompanyExternHistoryEntity | null,
     sot: DeliveryFailureSotView | null,
+    auto504: Auto504FailureView | null,
     sink: ListDateGuardSink,
   ): PartnerCompanyExternHistoryViewDto {
     // 협력사 타입
@@ -557,6 +603,44 @@ export class PartnerCompanyExternHistoryService {
       this.pickListDate(orderDelivery.failedAt, 'failed_at', orderDelivery.id, sink) ??
       this.pickListDate(orderDelivery.sendRequestAt, 'send_request_at', orderDelivery.id, sink) ??
       this.pickListDate(orderDelivery.updatedAt, 'updated_at', orderDelivery.id, sink);
+
+    if (!sot && auto504) {
+      // 미전환 건이지만 AUTO_504 FAILED_FINAL이 있는 경우.
+      // order_delivery.status는 COMPLETE 유지라 legacy 필터에 안 걸렸던 건이다.
+      const auto504DisplayDate = this.pickListDate(auto504.resolvedAt, 'auto504.resolvedAt', orderDelivery.id, sink);
+      return {
+        id: orderDelivery.id,
+        createdAt: auto504DisplayDate ? format(auto504DisplayDate, DateFormatStr) : '',
+        type: partnerCompanyType,
+        typeKo: partnerCompanyType ? PartnerCompanyTypeKo[partnerCompanyType] || partnerCompanyType : null,
+        failType: FailType.SEND_FAIL,
+        failTypeKo: '발송실패',
+        errorCode: auto504.failureCode?.code ?? null,
+        errorMessage: auto504.failureCode?.description ?? null,
+        transactionId,
+        context,
+        orderDeliveryId: orderDelivery.id,
+        orderCode,
+        eventName,
+        deliveryTarget,
+        pinIssued,
+        resendAt: null,
+        sotSource: 'LEGACY',
+        workflowStatus: null,
+        workflowStatusKo: null,
+        opsReviewReason: null,
+        channel: auto504.channel,
+        sendReason: auto504.sendReason,
+        autoResendCount: auto504.autoResendCount,
+        manualResendCount: 0,
+        failureCodeDescription: auto504.failureCode?.description ?? null,
+        opsAction: auto504.failureCode?.opsAction ?? null,
+        lastResolvedAt: auto504DisplayDate ? format(auto504DisplayDate, DateFormatStr) : null,
+        resendable: false,
+        resendBlockReason: '504 자동 재발송이 최종 실패한 건입니다. CS 재발송(상세)에서 처리하세요.',
+        mirrorMismatch: false,
+      };
+    }
 
     if (!sot) {
       return {

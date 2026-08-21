@@ -79,7 +79,7 @@ describe('PartnerCompanyExternService — EP-P30 판정 레이어 (P0)', () => {
     count: jest.fn(),
     find: jest.fn().mockResolvedValue([]),
     findOne: jest.fn(),
-    query: jest.fn(),
+    query: jest.fn().mockResolvedValue([]),
   });
 
   const buildSsgEvent = (): SsgEventEntity =>
@@ -180,7 +180,7 @@ describe('PartnerCompanyExternService — EP-P30 판정 레이어 (P0)', () => {
           provide: getRepositoryToken(SsgResendDeductPendingEntity),
           useValue: { createQueryBuilder: jest.fn(() => ({ update: jest.fn().mockReturnThis() })) },
         },
-        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, isEnabledFor: () => false } },
+        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, hasAnyActiveProvider: false, isEnabledFor: () => false } },
         { provide: PartnerSettleProducerService, useValue: {} },
         {
           provide: SsgAutoResolveConfig,
@@ -320,7 +320,7 @@ describe('PartnerCompanyExternService — EP-P30 판정 레이어 (P0)', () => {
       ssgIssue.getTry.mockResolvedValue(tryOut('N'));
       const delivery = buildOrderDelivery();
 
-      await expect(sut.issue(delivery, buildSsgEvent(), undefined, activeAuthority)).rejects.toBeInstanceOf(
+      await expect(sut.issue(delivery, buildSsgEvent(), undefined, activeAuthority, 1)).rejects.toBeInstanceOf(
         SsgAutoResolveBlockedError,
       );
 
@@ -335,7 +335,7 @@ describe('PartnerCompanyExternService — EP-P30 판정 레이어 (P0)', () => {
       ssgIssueLogRepository.find.mockResolvedValue([buildCandidate()]);
       ssgIssue.getTry.mockResolvedValue(tryOut('N'));
 
-      await expect(sut.issue(buildOrderDelivery(), buildSsgEvent(), undefined, activeAuthority)).rejects.toBeInstanceOf(
+      await expect(sut.issue(buildOrderDelivery(), buildSsgEvent(), undefined, activeAuthority, 1)).rejects.toBeInstanceOf(
         SsgAutoResolveBlockedError,
       );
 
@@ -347,7 +347,7 @@ describe('PartnerCompanyExternService — EP-P30 판정 레이어 (P0)', () => {
       ssgIssueLogRepository.find.mockResolvedValue([]);
       const delivery = buildOrderDelivery();
 
-      await sut.issue(delivery, buildSsgEvent(), undefined, activeAuthority);
+      await sut.issue(delivery, buildSsgEvent(), undefined, activeAuthority, 1);
 
       expect(ssgIssue.issue).toHaveBeenCalledTimes(1);
       expect(delivery.barCode).toBe('80000001');
@@ -402,7 +402,7 @@ describe('PartnerCompanyExternService — EP-P30 판정 레이어 (P0)', () => {
 
       await withPhase({ ordinal1: true, ordinal2: false }, async () => {
         await expect(
-          sut.issue(buildOrderDelivery(), buildSsgEvent(), undefined, activeAuthority),
+          sut.issue(buildOrderDelivery(), buildSsgEvent(), undefined, activeAuthority, 1),
         ).rejects.toBeInstanceOf(SsgAutoResolveBlockedError);
       });
 
@@ -422,12 +422,56 @@ describe('PartnerCompanyExternService — EP-P30 판정 레이어 (P0)', () => {
 
       await withPhase({ ordinal1: false, ordinal2: true }, async () => {
         await expect(
-          sut.issue(buildOrderDelivery(), buildSsgEvent(), undefined, activeAuthority),
+          sut.issue(buildOrderDelivery(), buildSsgEvent(), undefined, activeAuthority, 1),
         ).rejects.toBeInstanceOf(SsgAutoResolveBlockedError);
       });
 
       expect(ssgIssue.issue).not.toHaveBeenCalled();
       expect(ssgInsertStateService.markAttempted).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('PIN 중복 검사 — archive UNION', () => {
+    it('ssg_issue_log 에 없고 archive 에 있으면 중복으로 판정하여 재생성 시도한다', async () => {
+      ssgIssueLogRepository.find.mockResolvedValue([]);
+      let dedupCallCount = 0;
+      ssgIssueLogRepository.query.mockImplementation(async (sql: string) => {
+        if (typeof sql === 'string' && sql.includes('order_delivery_id')) {
+          return [];
+        }
+        if (typeof sql === 'string' && sql.includes('bar_code')) {
+          dedupCallCount++;
+          return dedupCallCount <= 2 ? [{ hit: 1 }] : [];
+        }
+        return [];
+      });
+
+      const delivery = buildOrderDelivery();
+      await sut.issue(delivery, buildSsgEvent(), undefined, activeAuthority, 1);
+
+      expect(ssgIssueLogRepository.query).toHaveBeenCalledWith(
+        expect.stringContaining('ssg_issue_log_ops_archive'),
+        expect.arrayContaining([expect.any(String), expect.any(String), expect.any(String), expect.any(String)]),
+      );
+      expect(ssgIssue.generateSsgIssue).toHaveBeenCalledTimes(3);
+    });
+
+    it('classifyDeferredSsgIssue: ssg_issue_log 0행 + archive hit → UNKNOWN (NOT_ATTEMPTED 아님)', async () => {
+      ssgIssueLogRepository.find.mockResolvedValue([]);
+      ssgIssueLogRepository.query.mockResolvedValue([{ hit: 1 }]);
+
+      const result = await sut.classifyDeferredSsgIssue(9001);
+      expect(result.resolution).toBe(SsgPinResolution.UNKNOWN);
+      expect(result.hasAnyAttempt).toBe(true);
+    });
+
+    it('classifyDeferredSsgIssue: ssg_issue_log 0행 + archive 0행 → NOT_ATTEMPTED', async () => {
+      ssgIssueLogRepository.find.mockResolvedValue([]);
+      ssgIssueLogRepository.query.mockResolvedValue([]);
+
+      const result = await sut.classifyDeferredSsgIssue(9001);
+      expect(result.resolution).toBe(SsgPinResolution.NOT_ATTEMPTED);
+      expect(result.hasAnyAttempt).toBe(false);
     });
   });
 });

@@ -35,7 +35,7 @@ import { WalletAccountResolverService } from '../../wallet/application/wallet-ac
 import { WalletCutoverConfig, WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
 import { SettleService } from '../../settle/application/settle.service';
 import { IExternalApiSsgRequestStatus } from '../../external_api/interface/external.api.ssg.request.status';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { Transactional } from 'typeorm-transactional';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
@@ -377,7 +377,34 @@ export class UserManagementService {
 
     const [userList, totalCount] = await queryBuilder.getManyAndCount();
 
+    // 최대서비스한도/충전잔액 표시값: WALLET 모드에서는 정산코드 wallet snapshot 이 SoT.
+    // getDetail(resolveSettlementDisplay)과 동일 기준. 정산코드 미부여 계정은 wallet SoT 자체가
+    // 없으므로 legacy 값을 그대로 쓴다. 정산코드는 배정됐는데 wallet 행이 없으면 legacy 폴백 없이
+    // fail-closed — 잘못된 금액이 정상값처럼 노출되는 것을 막는다(getDetail과 동일 정책).
+    const isWalletSettleMode = this.walletCutoverConfig.pr3SettleMode === WalletCutoverMode.WALLET;
+    const settlementCodes = isWalletSettleMode
+      ? [...new Set(userList.map((user) => user.settlementCode).filter((code): code is string => !!code))]
+      : [];
+    const walletAccountMap = new Map<string, WalletAccountEntity>();
+    if (settlementCodes.length > 0) {
+      const walletAccounts = await this.walletAccountRepository.find({
+        where: { ownerType: 'SETTLEMENT_CODE', ownerId: In(settlementCodes) },
+      });
+      for (const walletAccount of walletAccounts) {
+        walletAccountMap.set(walletAccount.ownerId, walletAccount);
+      }
+      const missingCodes = settlementCodes.filter((code) => !walletAccountMap.has(code));
+      if (missingCodes.length > 0) {
+        throw new InternalServerErrorException({
+          statusCode: 500,
+          code: 'WALLET_ACCOUNT_INTEGRITY_ERROR',
+          message: '정산코드 Wallet 정보를 찾을 수 없습니다.',
+        });
+      }
+    }
+
     const resultList: UserManagementViewDto[] = userList.map((user) => {
+      const walletAccount = user.settlementCode ? walletAccountMap.get(user.settlementCode) : undefined;
       return {
         id: user.id,
         email: user.email,
@@ -387,8 +414,8 @@ export class UserManagementService {
         personPhoneNumber: user.personPhoneNumber,
         settleCondition: user.settleCondition,
         settleMethod: user.settleMethod,
-        maximumLimit: user.company?.maximumLimit ?? 0,
-        balance: this.getCurrentBalance(user, user.company),
+        maximumLimit: walletAccount ? walletAccount.creditLimit : (user.company?.maximumLimit ?? 0),
+        balance: walletAccount ? walletAccount.depositBalance : this.getCurrentBalance(user, user.company),
         status: user.status,
         isLoginLocked: user.isLoginLocked,
         duplicatePhoneLimit: user.duplicatePhoneLimit,

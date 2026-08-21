@@ -45,7 +45,7 @@ describe('CustomerServiceService.execPinStatusModify — terminal / CAS / 트랜
     sut.partnerCompanyExternService = { cancel: jest.fn().mockResolvedValue({ message: cancelMessage }) };
     sut.logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
     // P6 정산: flag off mock (기존 동작 불변 검증)
-    sut.settleFlag = { isEnabled: false, isEnabledFor: () => false };
+    sut.settleFlag = { isEnabled: false, hasAnyActiveProvider: false, isEnabledFor: () => false };
     sut.settleProducer = {};
 
     // 변형 lease (D3-55 후속): acquire=createQueryBuilder CAS, release=update
@@ -358,6 +358,58 @@ describe('CustomerServiceService.execPinStatusModify — terminal / CAS / 트랜
       ).resolves.toBeUndefined();
 
       expect(tx.commitTransaction).toHaveBeenCalled();
+    });
+  });
+
+  describe('(G) CS 비활성 provider 취소 후 정산 relation 조회 없음', () => {
+    it('GALAXIA 만 활성, DAOU 건 CANCEL → commitPinStatusTransition 에서 정산 findOne 0회', async () => {
+      const { sut } = makeSut(1);
+      sut.settleFlag = {
+        isEnabled: true,
+        hasAnyActiveProvider: true,
+        isEnabledFor: (p: string) => p === 'GALAXIA',
+        getActiveProviders: () => ['GALAXIA'],
+      };
+      sut.getPartnerType = jest.fn().mockReturnValue('DAOU');
+      const findOneSpy = jest.fn();
+      sut.orderDeliveryRepository.findOne = findOneSpy;
+
+      await sut.execPinStatusModify(
+        buildMap({
+          businessName: '갤럭시아',
+          beforeChange: OrderDeliveryCouponStatus.NOT_USED,
+          afterChange: 'CANCEL',
+        }),
+      );
+
+      expect(findOneSpy).not.toHaveBeenCalled();
+    });
+
+    it('DAOU 활성 + DAOU 건 CANCEL → 정산 findOne 호출됨', async () => {
+      const { sut } = makeSut(1);
+      sut.settleFlag = {
+        isEnabled: true,
+        hasAnyActiveProvider: true,
+        isEnabledFor: (p: string) => p === 'DAOU',
+        getActiveProviders: () => ['DAOU'],
+      };
+      sut.getPartnerType = jest.fn().mockReturnValue('DAOU');
+      sut.orderDeliveryRepository.findOne = jest.fn().mockResolvedValue({
+        id: 5001,
+        orderProductMapping: { product: { partnerCompany: { type: 'DAOU' } } },
+        choiceSelectProduct: null,
+      });
+      sut.recordCsDiscardSettlement = jest.fn().mockResolvedValue(undefined);
+
+      await sut.execPinStatusModify(
+        buildMap({
+          businessName: '갤럭시아',
+          beforeChange: OrderDeliveryCouponStatus.NOT_USED,
+          afterChange: 'CANCEL',
+        }),
+      );
+
+      expect(sut.orderDeliveryRepository.findOne).toHaveBeenCalled();
     });
   });
 

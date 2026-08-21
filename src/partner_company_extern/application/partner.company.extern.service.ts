@@ -374,6 +374,18 @@ export class PartnerCompanyExternService {
     const active = allRows.filter((candidate) => candidate.supersededAt === null);
 
     if (allRows.length === 0) {
+      const [archiveHit] = await this.ssgIssueLogRepository.query(
+        `SELECT 1 AS hit FROM ssg_issue_log_ops_archive WHERE order_delivery_id = ? LIMIT 1`,
+        [orderDeliveryId],
+      );
+      if (archiveHit) {
+        return {
+          resolution: SsgPinResolution.UNKNOWN,
+          hasAnyAttempt: true,
+          activeCandidateCount: 0,
+          verdicts: [],
+        };
+      }
       return {
         resolution: SsgPinResolution.NOT_ATTEMPTED,
         hasAnyAttempt: false,
@@ -476,7 +488,7 @@ export class PartnerCompanyExternService {
    *   UPDATE 하고 있고 운영에서 정상 동작한다. 같은 구조다.
    */
   @Transactional({ propagation: Propagation.REQUIRES_NEW })
-  async persistIssuedPin(orderDelivery: OrderDeliveryEntity): Promise<void> {
+  async persistIssuedPin(orderDelivery: OrderDeliveryEntity, settlementProvider?: IPartnerCompanyType): Promise<void> {
     await this.orderDeliveryRepository.update(
       { id: orderDelivery.id },
       {
@@ -492,7 +504,7 @@ export class PartnerCompanyExternService {
 
     // ── P1 정산 원장 (B14 §4 P1 — 발행분 ISSUANCE) ──────────────────────────
     // 이미 REQUIRES_NEW 안이므로 same-tx(§6.5). 멱등키 ISS:{orderDeliveryId} 로 중복 0.
-    await this.recordIssuanceSettlement(orderDelivery);
+    await this.recordIssuanceSettlement(orderDelivery, settlementProvider);
   }
 
   @Transactional({ propagation: Propagation.REQUIRED })
@@ -501,8 +513,22 @@ export class PartnerCompanyExternService {
     ssgEvent: SsgEventEntity | null,
     resendDeductionId?: string,
     ssgIssueAuthority?: PinIssueCommandAuthority,
+    issueOrdinal?: number | null,
   ): Promise<PartnerIssueResult> {
+    if (ssgIssueAuthority && (issueOrdinal == null || ![1, 2].includes(issueOrdinal))) {
+      throw new InternalServerErrorException(
+        `SSG INSERT ordinal is required when authority is present. commandId=${ssgIssueAuthority.commandId}, ordinal=${issueOrdinal}`,
+      );
+    }
     const type = orderDelivery.orderProductMapping!.product.partnerCompany!.type;
+    if (orderDelivery.choiceSelectProductId && !orderDelivery.choiceSelectProduct?.partnerCompany) {
+      throw new Error(
+        `choice provider relation 미로딩: orderDeliveryId=${orderDelivery.id}, choiceSelectProductId=${orderDelivery.choiceSelectProductId}`,
+      );
+    }
+    const settlementProvider = (
+      orderDelivery.choiceSelectProduct?.partnerCompany?.type ?? type
+    ) as IPartnerCompanyType;
     // issue 결과(배치 재발송 선차감 정합). 기본=재사용(false)·현재 귀속 행사. SSG 신규 INSERT 시 갱신.
     const result: PartnerIssueResult = { ssgNewIssue: false, ssgEventId: orderDelivery.ssgEventId ?? null };
     // ── PIN_INVENTORY 재고형 쿠폰 전용 분기 (rev5 §7.2) ──
@@ -606,7 +632,7 @@ export class PartnerCompanyExternService {
                 );
                 // ssg_issue_log 에서 메모리로만 복원한 PIN — DB order_delivery 는 아직 NULL 이다
                 // (이 분기 진입 조건 자체가 fresh?.barCode 부재). 반드시 durable 반영한다.
-                await this.persistIssuedPin(orderDelivery);
+                await this.persistIssuedPin(orderDelivery, settlementProvider);
                 return result;
               }
               // 정확 매칭 없음: barCode-only 성공 반환은 메타데이터 누락 + cust_info 우회라 위험.
@@ -623,7 +649,7 @@ export class PartnerCompanyExternService {
                 { recoveredFrom: 'DEDUP' },
               );
               // 메모리로만 복원한 PIN — DB order_delivery 는 아직 NULL 이다. 반드시 durable 반영.
-              await this.persistIssuedPin(orderDelivery);
+              await this.persistIssuedPin(orderDelivery, settlementProvider);
               return result;
             }
           }
@@ -647,7 +673,7 @@ export class PartnerCompanyExternService {
         // 이 바코드는 곧 쿠폰 이미지에 찍혀 고객에게 나간다. DB 에 없으면 CS 조회도, 재발송 시
         // 동일 핀 재사용도 불가능하다(!barCode → 다른 바코드 재생성 → 고객이 받은 것과 불일치).
         orderDelivery.barCode = orderBarcodeGenerate();
-        await this.persistIssuedPin(orderDelivery);
+        await this.persistIssuedPin(orderDelivery, settlementProvider);
         return result;
       }
 
@@ -873,8 +899,18 @@ export class PartnerCompanyExternService {
                 `SSG 후보 판정 미확정(${resolution}). orderDeliveryId=${orderDelivery.id}`,
               );
             }
+          } else {
+            const [archiveHit] = await this.ssgIssueLogRepository.query(
+              `SELECT 1 AS hit FROM ssg_issue_log_ops_archive WHERE order_delivery_id = ? LIMIT 1`,
+              [orderDelivery.id],
+            );
+            if (archiveHit) {
+              throw new SsgIssueUnknownError(
+                `SSG archive 이력 존재 — clean 발급 차단. orderDeliveryId=${orderDelivery.id}`,
+              );
+            }
           }
-          // 후보 0건(최초 clean 발송) → 새 PIN. 외부 SSG API 추가호출 없음(hot-path 보존).
+          // 후보 0건 + archive 0건(최초 clean 발송) → 새 PIN. 외부 SSG API 추가호출 없음(hot-path 보존).
         }
 
         // 2~4단계를 Mutex로 직렬화: PIN 생성~중복확인~INSERT 간 경쟁 조건 방지.
@@ -897,10 +933,16 @@ export class PartnerCompanyExternService {
             // 2) 새 PIN 생성 + 2중 중복 확인
             const { barCode, personalCode } = this.ssgIssue.generateSsgIssue();
 
-            // 1차 중복 확인: 로컬 ssg_issue_log (빠름). SELECT 이므로 비원자적 — 최종 판정은 UNIQUE 제약.
-            const localDuplicate = await this.ssgIssueLogRepository.findOne({
-              where: [{ barCode }, { personalCode }],
-            });
+            // 1차 중복 확인: 로컬 ssg_issue_log + ops_archive UNION (빠름).
+            // SELECT 이므로 비원자적 — 최종 판정은 UNIQUE 제약.
+            // ops_archive 는 수동 복구 시 DELETE된 PIN 4행 보존. tombstone 전환 후 신규 유입 없음.
+            const [localDuplicate] = await this.ssgIssueLogRepository.query(
+              `SELECT 1 AS hit FROM ssg_issue_log WHERE bar_code = ? OR personal_code = ?
+               UNION ALL
+               SELECT 1 FROM ssg_issue_log_ops_archive WHERE bar_code = ? OR personal_code = ?
+               LIMIT 1`,
+              [barCode, personalCode, barCode, personalCode],
+            );
             if (localDuplicate) {
               this.logger.warn(
                 `[SSG] 로컬 블랙리스트 중복 감지 - barCode: ${barCode}, personalCode: ${personalCode}, 재생성 시도 (${attempt + 1}/${maxRetries})`,
@@ -969,6 +1011,8 @@ export class PartnerCompanyExternService {
               expireAt: orderDelivery.expireAt ?? null,
               encourageAt: orderDelivery.encourageAt ?? null,
               couponNum: orderDelivery.couponNum ?? null,
+              pinIssueCommandId: ssgIssueAuthority?.commandId ?? null,
+              issueOrdinal: issueOrdinal ?? null,
             };
             let markResult: MarkAttemptedResult;
             try {
@@ -1064,6 +1108,9 @@ export class PartnerCompanyExternService {
             }
 
             // INSERT 성공 → durable state CONFIRMED 마킹 (PIN 정보 best-effort 저장).
+            // markConfirmed 는 REQUIRES_NEW 독립 tx 에서 ssg_insert_state + delivery UPDATE 를
+            // 원자적으로 커밋한다. 환불 tx 의 lockDeliveryAndVerifyRefundable 가 delivery FOR UPDATE 시
+            // 이 tx 의 커밋을 기다리므로 CONFIRMED 를 반드시 본다.
             await this.ssgInsertStateService.markConfirmed(orderDelivery.id, {
               barCode: orderDelivery.barCode,
               personalCode: orderDelivery.personalCode,
@@ -1124,7 +1171,7 @@ export class PartnerCompanyExternService {
       }
 
       // PIN 발급 결과를 order_delivery에도 즉시 반영한다. (조기 return 경로들도 반드시 이걸 탄다)
-      await this.persistIssuedPin(orderDelivery);
+      await this.persistIssuedPin(orderDelivery, settlementProvider);
     } catch (e) {
       this.logger.error(e);
 
@@ -1815,9 +1862,11 @@ export class PartnerCompanyExternService {
    * flag off 면 즉시 리턴(DB 접근 0). flag on 이면 조인 재조회 → producer.record.
    * persistIssuedPin 의 REQUIRES_NEW 안에서 호출되므로 same-tx(§6.5).
    */
-  private async recordIssuanceSettlement(orderDelivery: OrderDeliveryEntity): Promise<void> {
-    // 조인 데이터 없이 provider 를 판정할 수 없으므로 전역 flag 만 먼저 검사한다.
-    if (!this.settleFlag.isEnabled) return;
+  private async recordIssuanceSettlement(
+    orderDelivery: OrderDeliveryEntity,
+    callerProvider?: IPartnerCompanyType,
+  ): Promise<void> {
+    if (!callerProvider || !this.settleFlag.isEnabledFor(callerProvider)) return;
 
     const od = await this.orderDeliveryRepository.findOne({
       where: { id: orderDelivery.id },
@@ -1831,8 +1880,10 @@ export class PartnerCompanyExternService {
     });
     if (!od) return;
 
-    const provider = (od.choiceSelectProduct?.partnerCompany?.type ??
-      od.orderProductMapping?.product?.partnerCompany?.type) as IPartnerCompanyType | undefined;
+    const provider = (
+      od.choiceSelectProduct?.partnerCompany?.type ??
+      od.orderProductMapping?.product?.partnerCompany?.type
+    ) as IPartnerCompanyType | undefined;
     if (!provider || !this.settleFlag.isEnabledFor(provider)) return;
 
     const ctx = buildSettlementContext(od, provider);

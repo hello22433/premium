@@ -669,9 +669,10 @@ export class PartnerCompanyExternBatchService {
       .andWhere('(partnerCompany.type IS NOT NULL OR orderDelivery.choiceSelectProductId IS NOT NULL)')
       .andWhere('orderDelivery.barCode IS NOT NULL');
 
-    if (this.settleFlag.isEnabled) {
+    const activeProviders = this.settleFlag.getActiveProviders();
+    if (this.settleFlag.hasAnyActiveProvider && activeProviders.length > 0) {
       // B15 — 미정산 원장이 존재하는 USED 건도 재확인 대상에 유지한다(§7.1).
-      // settle_batch_id IS NULL = 아직 확정 배치에 귀속되지 않은 원장. 확정(PR1D)되면 일일 추적 종료.
+      // 활성 provider 의 USED 건만 포함 — 비활성 provider 의 USED 건을 매 배치마다 조회·API 호출하는 낭비를 방지.
       qb.andWhere(
         new Brackets((sub) =>
           sub
@@ -679,13 +680,13 @@ export class PartnerCompanyExternBatchService {
               notUsed: OrderDeliveryCouponStatus.NOT_USED,
             })
             .orWhere(
-              `(orderDelivery.couponStatus = :used AND EXISTS (
+              `(orderDelivery.couponStatus = :used AND COALESCE(choicePartnerCompany.type, partnerCompany.type) IN (:...activeProviders) AND EXISTS (
                 SELECT 1 FROM partner_settle_ledger psl
                 WHERE psl.order_delivery_id = orderDelivery.id
                   AND psl.reverses_ledger_id IS NULL
                   AND psl.settle_batch_id IS NULL
               ))`,
-              { used: OrderDeliveryCouponStatus.USED },
+              { used: OrderDeliveryCouponStatus.USED, activeProviders },
             ),
         ),
       );
@@ -837,7 +838,7 @@ export class PartnerCompanyExternBatchService {
   ): Promise<void> {
     // B15 write-guard — USED 재수집 건은 컬럼 불변(§7.1). flag on + 이미 USED 인 건만 해당.
     // 협력사 응답은 정산 증적으로 쓰되, 기존 상태(USED, tradeAt 등)를 덮어쓰지 않는다.
-    const b15Recollected = this.settleFlag.isEnabled && orderDelivery.couponStatus === OrderDeliveryCouponStatus.USED;
+    const b15Recollected = this.settleFlag.isEnabledFor(type as unknown as IPartnerCompanyType) && orderDelivery.couponStatus === OrderDeliveryCouponStatus.USED;
 
     const evidence = apiResult.settlementEvidence;
     if (!evidence) {

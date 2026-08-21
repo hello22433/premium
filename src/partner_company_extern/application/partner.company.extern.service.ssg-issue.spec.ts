@@ -79,7 +79,7 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
     count: jest.fn(),
     find: jest.fn().mockResolvedValue([]),
     findOne: jest.fn(),
-    query: jest.fn(),
+    query: jest.fn().mockResolvedValue([]),
   });
 
   // GetSsgTry 응답(cust_info 제출여부) mock
@@ -186,7 +186,7 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
         { provide: CryptoCipher, useValue: { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000') } },
         { provide: SsgInsertStateService, useValue: ssgInsertStateService },
         { provide: getRepositoryToken(SsgResendDeductPendingEntity), useValue: {} },
-        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, isEnabledFor: () => false } },
+        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, hasAnyActiveProvider: false, isEnabledFor: () => false } },
         { provide: PartnerSettleProducerService, useValue: {} },
         { provide: SsgAutoResolveConfig, useValue: new SsgAutoResolveConfig({ get: () => 'off' } as any) },
         { provide: SsgPinObservationService, useValue: { record: jest.fn() } },
@@ -205,7 +205,7 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
       ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
       ssgIssue.issue.mockResolvedValue({ response: { result: [{ code: ['1000'], reason: ['ok'] }] } });
 
-      await sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority);
+      await sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority, 1);
 
       expect(ssgInsertStateService.markAttempted).toHaveBeenCalledTimes(1);
       expect(ssgInsertStateService.markAttempted).toHaveBeenCalledWith(
@@ -254,7 +254,7 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
           .mockResolvedValueOnce(MarkAttemptedResult.TRANSITIONED);
         ssgIssue.issue.mockResolvedValue({ response: { result: [{ code: ['1000'], reason: ['ok'] }] } });
 
-        await sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority);
+        await sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority, 1);
 
         expect(ssgInsertStateService.markAttempted).toHaveBeenCalledTimes(2);
         // 벤더 호출은 살아남은 후보에 대해 정확히 1회
@@ -279,7 +279,7 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
           .mockResolvedValueOnce(MarkAttemptedResult.TRANSITIONED);
         ssgIssue.issue.mockResolvedValue({ response: { result: [{ code: ['1000'], reason: ['ok'] }] } });
 
-        await sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority);
+        await sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority, 1);
 
         const firstPayload = ssgInsertStateService.markAttempted.mock.calls[0][1];
         const secondPayload = ssgInsertStateService.markAttempted.mock.calls[1][1];
@@ -308,7 +308,7 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
         ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
         ssgIssue.issue.mockResolvedValue({ response: { result: [{ code: ['1000'], reason: ['ok'] }] } });
 
-        await sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority);
+        await sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority, 1);
 
         expect(orderDelivery.encourageAt).toBeNull();
         expect(ssgInsertStateService.markAttempted.mock.calls[0][1].encourageAt).toBeNull();
@@ -328,7 +328,7 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
         ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
         ssgIssue.issue.mockResolvedValue({ response: { result: [{ code: ['1000'], reason: ['ok'] }] } });
 
-        await sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority);
+        await sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority, 1);
 
         const expireAt = orderDelivery.expireAt!;
         const encourageAt = orderDelivery.encourageAt!;
@@ -406,7 +406,7 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
       ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
       ssgIssue.issue.mockRejectedValue(new SsgIssueRejectedError('8021', '한도 초과'));
 
-      await expect(sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority)).rejects.toBeInstanceOf(
+      await expect(sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority, 1)).rejects.toBeInstanceOf(
         SsgIssueRejectedError,
       );
       expect(ssgInsertStateService.markFailed).toHaveBeenCalledWith(orderDelivery.id);
@@ -420,7 +420,7 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
       ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
       ssgIssue.issue.mockRejectedValue(new SsgIssueUnknownError('XML 파싱 실패'));
 
-      await expect(sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority)).rejects.toBeInstanceOf(
+      await expect(sut.issue(orderDelivery, ssgEvent, undefined, activeAuthority, 1)).rejects.toBeInstanceOf(
         SsgIssueUnknownError,
       );
       expect(ssgInsertStateService.markFailed).not.toHaveBeenCalled();
@@ -442,7 +442,7 @@ describe('PartnerCompanyExternService - SSG issue flow + state', () => {
       ssgInsertStateService.markAttempted.mockResolvedValue(MarkAttemptedResult.TRANSITIONED);
       pinIssueCommandRepository.findOne.mockResolvedValue(null);
 
-      await expect(sut.issue(orderDelivery, buildSsgEvent(), undefined, activeAuthority)).rejects.toThrow(
+      await expect(sut.issue(orderDelivery, buildSsgEvent(), undefined, activeAuthority, 1)).rejects.toThrow(
         'SSG INSERT authority is stale. commandId=command-1',
       );
       expect(pinIssueCommandRepository.findOne).toHaveBeenCalledWith({

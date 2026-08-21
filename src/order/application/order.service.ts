@@ -1247,20 +1247,13 @@ export class OrderService {
           productName += `외 ${orderProductMappingsLength - 1}건`;
         }
 
-        // 실제 발송 시간: 성공한 배송 건 중 하나의 actualSendAt 사용
-        // 목록 표시는 활성 배송건만 사용한다. soft-delete 배송건은 파기확인서 게이트 판정에만 쓴다.
-        for (const mapping of order.orderProductMappings) {
-          for (const delivery of (mapping.orderDeliveries ?? []).filter((d) => d.deletedAt == null)) {
-            if (
-              delivery.actualSendAt &&
-              (delivery.status === IOrderDeliveryStatus.COMPLETE ||
-                delivery.status === IOrderDeliveryStatus.COMPLETE_SMS)
-            ) {
-              actualSendAt = format(delivery.actualSendAt, DateFormatStr);
-              break;
-            }
-          }
-          if (actualSendAt) break;
+        // 활성 행 중 actualSendAt 이 있는 것들의 MAX — EXISTS 필터와 기준 통일
+        const maxSendAt = (order.orderProductMappings ?? [])
+          .flatMap((m) => m.orderDeliveries ?? [])
+          .filter((d) => d.deletedAt == null && d.replacedFromId == null && d.actualSendAt)
+          .reduce<Date | null>((max, d) => (max === null || d.actualSendAt! > max ? d.actualSendAt! : max), null);
+        if (maxSendAt) {
+          actualSendAt = format(maxSendAt, DateFormatStr);
         }
       }
 
@@ -1306,20 +1299,15 @@ export class OrderService {
       const isMixedSendType =
         allMappings.some((m) => m.sendType === 'IMMEDIATE') && allMappings.some((m) => m.sendType === 'RESERVE');
 
-      // per-mapping actualSendAt: 활성 COMPLETE/COMPLETE_SMS 중 가장 최근 값 (RESERVE·IMMEDIATE 공용)
+      // per-mapping actualSendAt: 활성 행 중 actualSendAt MAX — EXISTS 필터·상위 actualSendAt과 기준 통일
       const resolveMappingActualSendAt = (
         deliveries:
-          | { deletedAt?: Date | null; actualSendAt?: Date | null; status: IOrderDeliveryStatus }[]
+          | { deletedAt?: Date | null; replacedFromId?: number | null; actualSendAt?: Date | null }[]
           | null
           | undefined,
       ): string | null => {
         const maxActualSendAt = (deliveries ?? [])
-          .filter(
-            (d) =>
-              d.deletedAt == null &&
-              d.actualSendAt &&
-              (d.status === IOrderDeliveryStatus.COMPLETE || d.status === IOrderDeliveryStatus.COMPLETE_SMS),
-          )
+          .filter((d) => d.deletedAt == null && d.replacedFromId == null && d.actualSendAt)
           .reduce<Date | null>((max, d) => (max === null || d.actualSendAt! > max ? d.actualSendAt! : max), null);
         return maxActualSendAt ? format(maxActualSendAt, DateFormatStr) : null;
       };
@@ -7043,17 +7031,15 @@ export class OrderService {
             productName += `외 ${orderProductMappingsLength - 1}건`;
           }
 
-          // 실제 발송 시간 추출 (첫 번째 유효한 값 사용)
+          // 활성 행 중 actualSendAt MAX — 목록 표시와 동일 기준
           for (const mapping of order.orderProductMappings) {
-            if (mapping.orderDeliveries) {
-              for (const delivery of mapping.orderDeliveries) {
-                if (delivery.actualSendAt) {
+            for (const delivery of (mapping.orderDeliveries ?? [])) {
+              if (delivery.deletedAt == null && delivery.replacedFromId == null && delivery.actualSendAt) {
+                if (actualSendAt === null || delivery.actualSendAt > actualSendAt) {
                   actualSendAt = delivery.actualSendAt;
-                  break;
                 }
               }
             }
-            if (actualSendAt) break;
           }
         }
 
@@ -7278,17 +7264,20 @@ export class OrderService {
         PhoneUtil.normalizeDeliveryTarget(deliveryTarget),
       );
 
-      // 쿠폰이미지 만들기
-      const { path: imagePath } = await DeliveryCreateCouponImage(
-        orderProductMapping.product.imagePath,
-        orderProductMapping.product.name,
-        barCode,
-        orderProductMapping.product.brand!.nameKorean,
-        expireDate,
-        orderProductMapping.topImagePath,
-        orderProductMapping.midImagePath,
-        orderProductMapping.product.type,
-      );
+      // 초이스쿠폰은 선택 전이므로 바코드 이미지 불필요 (선택링크만 발송)
+      const isChoiceCoupon = orderProductMapping.product.type === IProductType.CHOICE;
+      const imagePath = isChoiceCoupon
+        ? ''
+        : (await DeliveryCreateCouponImage(
+            orderProductMapping.product.imagePath,
+            orderProductMapping.product.name,
+            barCode,
+            orderProductMapping.product.brand!.nameKorean,
+            expireDate,
+            orderProductMapping.topImagePath,
+            orderProductMapping.midImagePath,
+            orderProductMapping.product.type,
+          )).path;
 
       // 한도 선점과 이력 INSERT 를 한 트랜잭션으로 묶는다. 선점만 커밋되고 이력이 없는 상태가 생기면
       // 그 선점은 회수할 근거가 사라진다(잔류 정리는 이력 행을 기준으로 회수한다). 둘을 함께 커밋해
@@ -8230,6 +8219,9 @@ export class OrderService {
         FROM order_delivery od_send
         INNER JOIN order_product_mapping opm_send ON opm_send.id = od_send.order_product_mapping_id
         WHERE opm_send.order_id = order.id
+          AND od_send.deleted_at IS NULL
+          AND od_send.replaced_from_id IS NULL
+          AND opm_send.deleted_at IS NULL
           AND ${conditions.join(' AND ')}
       )`,
       params,

@@ -97,7 +97,7 @@ describe('PartnerCompanyExternBatchService.checkGalaxiaDaily — 81 환불 상�
         { provide: getRepositoryToken(GiftielExchangeHistoryEntity), useValue: makeRepoMock() },
         { provide: ConfigService, useValue: { getOrThrow: jest.fn().mockReturnValue('test'), get: jest.fn() } },
         { provide: CryptoCipher, useValue: mock<any>() },
-        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, isEnabledFor: () => false } },
+        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, hasAnyActiveProvider: false, isEnabledFor: () => false } },
         { provide: PartnerSettleProducerService, useValue: {} },
       ],
     }).compile();
@@ -284,7 +284,7 @@ describe('PartnerCompanyExternBatchService.checkGalaxiaDaily — existingLog 원
         { provide: getRepositoryToken(GiftielExchangeHistoryEntity), useValue: makeRepoMock() },
         { provide: ConfigService, useValue: { getOrThrow: jest.fn().mockReturnValue('test'), get: jest.fn() } },
         { provide: CryptoCipher, useValue: mock<any>() },
-        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: true, isEnabledFor: () => true } },
+        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: true, hasAnyActiveProvider: true, isEnabledFor: () => true } },
         { provide: PartnerSettleProducerService, useValue: settleProducer },
       ],
     }).compile();

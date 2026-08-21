@@ -3,9 +3,12 @@ import {
   SSG_AUTORESOLVE_PHASE,
   SsgAutoResolveMode,
   SSG_ORDINAL2_EVIDENCE_RULE,
+  SSG_NOT_ISSUED_STREAK_THRESHOLD,
   aggregateSsgPinResolutions,
   canExecuteOrdinal,
   canInsertOrdinal,
+  computeResolutionBackoffMs,
+  computeResolutionDeadline,
   evaluateOrdinal2Execution,
   isDrainableCommand,
   parseSsgAutoResolveMode,
@@ -85,13 +88,18 @@ describe('EP-P30 autoresolve 정책', () => {
       expect(canInsertOrdinal(capability, 2)).toBe(SSG_AUTORESOLVE_PHASE.ORDINAL_2_REISSUE);
     });
 
-    it('P0 배포분에서는 어떤 모드에서도 신규 INSERT 가 열리지 않는다', () => {
-      for (const mode of [SsgAutoResolveMode.OFF, SsgAutoResolveMode.OBSERVE, SsgAutoResolveMode.ON]) {
+    it('P1 배포분에서 mode=on 은 ordinal 1 만 허용하고, off/observe 는 모두 차단한다', () => {
+      for (const mode of [SsgAutoResolveMode.OFF, SsgAutoResolveMode.OBSERVE]) {
         for (const drainable of [false, true]) {
           const capability = resolveSsgAutoResolveCapability(mode, drainable);
           expect(canInsertOrdinal(capability, 1)).toBe(false);
           expect(canInsertOrdinal(capability, 2)).toBe(false);
         }
+      }
+      for (const drainable of [false, true]) {
+        const capability = resolveSsgAutoResolveCapability(SsgAutoResolveMode.ON, drainable);
+        expect(canInsertOrdinal(capability, 1)).toBe(true);
+        expect(canInsertOrdinal(capability, 2)).toBe(false);
       }
     });
   });
@@ -205,6 +213,185 @@ describe('EP-P30 autoresolve 정책', () => {
 
     it('후보가 없으면 NOT_ATTEMPTED — fallthrough UNKNOWN 이 남지 않는다', () => {
       expect(aggregateSsgPinResolutions([]).resolution).toBe(SsgPinResolution.NOT_ATTEMPTED);
+    });
+  });
+
+  describe('streak 임계 (§5-4)', () => {
+    it('SSG_NOT_ISSUED_STREAK_THRESHOLD 는 3 이다', () => {
+      expect(SSG_NOT_ISSUED_STREAK_THRESHOLD).toBe(3);
+    });
+  });
+
+  describe('경과시간 백오프 (§7-2)', () => {
+    const base = new Date('2026-08-18T00:00:00.000Z');
+
+    it('resolutionStartedAt 가 null 이면 5분', () => {
+      expect(computeResolutionBackoffMs(null, base)).toBe(5 * 60_000);
+    });
+
+    it('경과 < 30분 → 5분', () => {
+      const started = new Date(base.getTime() - 20 * 60_000);
+      expect(computeResolutionBackoffMs(started, base)).toBe(5 * 60_000);
+    });
+
+    it('경과 == 30분 → 30분', () => {
+      const started = new Date(base.getTime() - 30 * 60_000);
+      expect(computeResolutionBackoffMs(started, base)).toBe(30 * 60_000);
+    });
+
+    it('경과 5시간(< 6h) → 30분', () => {
+      const started = new Date(base.getTime() - 5 * 3600_000);
+      expect(computeResolutionBackoffMs(started, base)).toBe(30 * 60_000);
+    });
+
+    it('경과 >= 6시간 → 2시간', () => {
+      const started = new Date(base.getTime() - 6 * 3600_000);
+      expect(computeResolutionBackoffMs(started, base)).toBe(2 * 3600_000);
+    });
+
+    it('경과 24시간 → 2시간', () => {
+      const started = new Date(base.getTime() - 24 * 3600_000);
+      expect(computeResolutionBackoffMs(started, base)).toBe(2 * 3600_000);
+    });
+  });
+
+  describe('resolution_deadline_at 산출 (§7-3)', () => {
+    const commandCreatedAt = new Date('2026-08-18T10:00:00.000Z');
+
+    it('expireDay 가 없으면(snapshot·product 둘 다 null) null 을 반환한다', () => {
+      expect(
+        computeResolutionDeadline({
+          candidateExpireAt: null,
+          candidateInsertedAt: null,
+          commandCreatedAt,
+          snapshotProductExpireDay: null,
+          productExpireDay: null,
+        }),
+      ).toBeNull();
+    });
+
+    it('candidateExpireAt 가 있으면 그 값을 그대로 반환한다', () => {
+      const expireAt = new Date('2026-09-15T00:00:00.000Z');
+      expect(
+        computeResolutionDeadline({
+          candidateExpireAt: expireAt,
+          candidateInsertedAt: new Date('2026-08-01T00:00:00.000Z'),
+          commandCreatedAt,
+          snapshotProductExpireDay: 30,
+          productExpireDay: 30,
+        }),
+      ).toBe(expireAt);
+    });
+
+    it('candidateExpireAt 없고 candidateInsertedAt 있으면 insertedAt + (expireDay-1)일', () => {
+      const insertedAt = new Date('2026-08-10T12:00:00.000Z');
+      const result = computeResolutionDeadline({
+        candidateExpireAt: null,
+        candidateInsertedAt: insertedAt,
+        commandCreatedAt,
+        snapshotProductExpireDay: 30,
+        productExpireDay: 90,
+      });
+      const expected = new Date(insertedAt.getTime());
+      expected.setDate(expected.getDate() + 29);
+      expect(result!.getTime()).toBe(expected.getTime());
+    });
+
+    it('후보 정보 없으면 commandCreatedAt + (expireDay-1)일', () => {
+      const result = computeResolutionDeadline({
+        candidateExpireAt: null,
+        candidateInsertedAt: null,
+        commandCreatedAt,
+        snapshotProductExpireDay: null,
+        productExpireDay: 7,
+      });
+      const expected = new Date(commandCreatedAt.getTime());
+      expected.setDate(expected.getDate() + 6);
+      expect(result!.getTime()).toBe(expected.getTime());
+    });
+
+    it('snapshotProductExpireDay 가 productExpireDay 보다 우선한다', () => {
+      const resultSnap = computeResolutionDeadline({
+        candidateExpireAt: null,
+        candidateInsertedAt: null,
+        commandCreatedAt,
+        snapshotProductExpireDay: 10,
+        productExpireDay: 90,
+      });
+      const resultProd = computeResolutionDeadline({
+        candidateExpireAt: null,
+        candidateInsertedAt: null,
+        commandCreatedAt,
+        snapshotProductExpireDay: null,
+        productExpireDay: 90,
+      });
+      const expectedSnap = new Date(commandCreatedAt.getTime());
+      expectedSnap.setDate(expectedSnap.getDate() + 9);
+      const expectedProd = new Date(commandCreatedAt.getTime());
+      expectedProd.setDate(expectedProd.getDate() + 89);
+      expect(resultSnap!.getTime()).toBe(expectedSnap.getTime());
+      expect(resultProd!.getTime()).toBe(expectedProd.getTime());
+    });
+
+    it.each([0, -1, -30])('expireDay=%d → null (양수 아님)', (expireDay) => {
+      expect(
+        computeResolutionDeadline({
+          candidateExpireAt: null,
+          candidateInsertedAt: null,
+          commandCreatedAt,
+          snapshotProductExpireDay: null,
+          productExpireDay: expireDay,
+        }),
+      ).toBeNull();
+    });
+
+    it.each([1.5, 0.1, 29.9])('expireDay=%d → null (정수 아님)', (expireDay) => {
+      expect(
+        computeResolutionDeadline({
+          candidateExpireAt: null,
+          candidateInsertedAt: null,
+          commandCreatedAt,
+          snapshotProductExpireDay: null,
+          productExpireDay: expireDay,
+        }),
+      ).toBeNull();
+    });
+
+    it.each([NaN, Infinity, -Infinity])('expireDay=%d → null (비유한)', (expireDay) => {
+      expect(
+        computeResolutionDeadline({
+          candidateExpireAt: null,
+          candidateInsertedAt: null,
+          commandCreatedAt,
+          snapshotProductExpireDay: null,
+          productExpireDay: expireDay,
+        }),
+      ).toBeNull();
+    });
+
+    it('candidateExpireAt 유효 + expireDay 비유효 → candidateExpireAt 반환', () => {
+      const expireAt = new Date('2026-09-15T00:00:00.000Z');
+      expect(
+        computeResolutionDeadline({
+          candidateExpireAt: expireAt,
+          candidateInsertedAt: null,
+          commandCreatedAt,
+          snapshotProductExpireDay: NaN,
+          productExpireDay: -1,
+        }),
+      ).toBe(expireAt);
+    });
+
+    it('candidateExpireAt 가 Invalid Date 면 null', () => {
+      expect(
+        computeResolutionDeadline({
+          candidateExpireAt: new Date('invalid'),
+          candidateInsertedAt: null,
+          commandCreatedAt,
+          snapshotProductExpireDay: null,
+          productExpireDay: 30,
+        }),
+      ).toBeNull();
     });
   });
 

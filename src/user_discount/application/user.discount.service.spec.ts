@@ -26,6 +26,7 @@ import { PartnerDiscountHistoryService } from '../../partner_settle/application/
 
 describe('UserDiscountService', () => {
   let sut: UserDiscountService;
+  let userDiscountRepository: any;
   let userRepository: any;
 
   const CORPORATE_ADMIN_USER = { id: 5, email: 'corp@test.com', authority: IUserAuthority.CORPORATE_ADMIN };
@@ -52,7 +53,28 @@ describe('UserDiscountService', () => {
     }).compile();
 
     sut = module.get<UserDiscountService>(UserDiscountService);
+    userDiscountRepository = module.get(getRepositoryToken(UserDiscountEntity));
     userRepository = module.get(getRepositoryToken(UserEntity));
+  });
+
+  describe('getList 구간 정렬', () => {
+    it('같은 금액에서는 상한 조건을 다음 구간의 하한 조건보다 먼저 조회한다', async () => {
+      const queryBuilder = {
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+      };
+      userDiscountRepository.createQueryBuilder = jest.fn().mockReturnValue(queryBuilder);
+
+      await sut.getList({ userId: 22, page: 1, take: 10 } as any);
+
+      expect(queryBuilder.addOrderBy).toHaveBeenCalledWith(
+        "FIELD(discount.compare_condition, 'LESS', 'LESS_THAN', 'OVER', 'MORE_THAN', 'ALL')",
+        'ASC',
+      );
+    });
   });
 
   describe('create 권한 검증', () => {

@@ -118,6 +118,7 @@ import { SettleConfirmationWalletService } from '../../wallet/application/settle
 import { WalletAccountResolverService } from '../../wallet/application/wallet-account-resolver.service';
 import { LegacyWalletCreditSyncService } from '../../wallet/application/legacy-wallet-credit-sync.service';
 import { WalletCutoverConfig, WalletCutoverMode } from '../../wallet/config/wallet-cutover.config';
+import { WalletAccountEntity } from '../../entity/wallet.account.entity';
 import { GalaxiaBarcodeLogEntity } from '../../entity/galaxia.barcode.log.entity';
 import { SettleGalaxiaListViewDto } from '../api/dto/settle.galaxia.list.view.dto';
 import { IProductSettleMethod } from '../../product/interface/product.settle.method';
@@ -201,6 +202,8 @@ export class SettleService {
     private activityLogRepository: Repository<ActivityLogEntity>,
     @InjectRepository(OrderDeliveryRefundEntity)
     private orderDeliveryRefundRepository: Repository<OrderDeliveryRefundEntity>,
+    @InjectRepository(WalletAccountEntity)
+    private walletAccountRepository: Repository<WalletAccountEntity>,
     private activityLogService: ActivityLogService,
     private cryptoCipher: CryptoCipher,
     private readonly walletManagedPredicate: WalletManagedPredicate,
@@ -2114,34 +2117,83 @@ export class SettleService {
       }
     }
 
+    // Phase 2.5: 최대서비스한도/선입금금액 표시값 — WALLET 모드에서는 정산코드 wallet snapshot 이 SoT.
+    // getDetail(resolveSettlementDisplay)/computeWalletRemainServiceAmount 와 동일 기준.
+    // 정산코드 미부여 계정은 wallet SoT 자체가 없으므로 legacy(회사합산) 값을 그대로 쓴다.
+    // 정산코드는 배정됐는데 wallet 행이 없으면 legacy 폴백 없이 fail-closed — 잘못된 금액/상태가
+    // 정상값처럼 노출되는 것을 막는다(getDetail과 동일 정책).
+    const isWalletSettleMode = this.walletCutoverConfig.pr3SettleMode === WalletCutoverMode.WALLET;
+    const settlementCodes = isWalletSettleMode
+      ? [...new Set(allUsers.map((user) => user.settlementCode).filter((code): code is string => !!code))]
+      : [];
+    const walletAccountMap = new Map<string, WalletAccountEntity>();
+    if (settlementCodes.length > 0) {
+      const walletAccounts = await this.walletAccountRepository.find({
+        where: { ownerType: 'SETTLEMENT_CODE', ownerId: In(settlementCodes) },
+      });
+      for (const walletAccount of walletAccounts) {
+        walletAccountMap.set(walletAccount.ownerId, walletAccount);
+      }
+      const missingCodes = settlementCodes.filter((code) => !walletAccountMap.has(code));
+      if (missingCodes.length > 0) {
+        throw new InternalServerErrorException({
+          statusCode: 500,
+          code: 'WALLET_ACCOUNT_INTEGRITY_ERROR',
+          message: '정산코드 Wallet 정보를 찾을 수 없습니다.',
+        });
+      }
+    }
+
+    const buildUserPerRow = (
+      user: UserEntity,
+      values: { maximumLimit: number; balance: number; serviceAmount: number; remainServiceAmount: number },
+      walletAccount?: WalletAccountEntity,
+    ): SettleUserPerListViewDto => ({
+      id: user.id,
+      email: user.email,
+      businessName: user.company?.businessName ?? '',
+      personName: user.personName,
+      settleCondition: (walletAccount?.settleCondition as IUserSettleCondition) ?? user.settleCondition,
+      settlePeriodCondition: user.settlePeriodCondition,
+      settlePeriodCount: user.settlePeriodCount,
+      maximumLimit: values.maximumLimit,
+      serviceAmount: values.serviceAmount,
+      overdueCount: 0,
+      overdueAmount: 0,
+      balance: values.balance,
+      remainServiceAmount: values.remainServiceAmount,
+      status: values.remainServiceAmount > 0 ? SettleUserStatusEnum.ACTIVE : SettleUserStatusEnum.STOP,
+    });
+
     // Phase 3: remainServiceAmount 계산 및 결과 생성
     const allResults: SettleUserPerListViewDto[] = allUsers.map((user) => {
+      const walletAccount = user.settlementCode ? walletAccountMap.get(user.settlementCode) : undefined;
+      if (walletAccount) {
+        const maximumLimit = walletAccount.creditLimit;
+        const balance = walletAccount.depositBalance;
+        const serviceAmount = walletAccount.creditUsedAmount + walletAccount.creditExcessAmount;
+        return buildUserPerRow(user, {
+          maximumLimit,
+          balance,
+          serviceAmount,
+          remainServiceAmount: maximumLimit + balance - serviceAmount,
+        }, walletAccount);
+      }
+
       const companyMaximumLimit = Number(user.company?.maximumLimit ?? 0);
-
       const effectiveBalance = user.company?.balanceManagementType === 'COMPANY' ? user.company.balance : user.balance;
-
       const companyTotal = user.companyId ? companyAllSettleMap.get(user.companyId) : undefined;
       const remainServiceAmount =
         companyTotal !== undefined
           ? companyMaximumLimit + effectiveBalance - companyTotal
           : effectiveBalance - user.allSettleAmount;
 
-      return {
-        id: user.id,
-        email: user.email,
-        businessName: user.company?.businessName ?? '',
-        personName: user.personName,
-        settleCondition: user.settleCondition,
-        settlePeriodCondition: user.settlePeriodCondition,
-        settlePeriodCount: user.settlePeriodCount,
+      return buildUserPerRow(user, {
         maximumLimit: companyMaximumLimit,
-        serviceAmount: user.allSettleAmount,
-        overdueCount: 0,
-        overdueAmount: 0,
         balance: effectiveBalance,
+        serviceAmount: user.allSettleAmount,
         remainServiceAmount,
-        status: remainServiceAmount > 0 ? SettleUserStatusEnum.ACTIVE : SettleUserStatusEnum.STOP,
-      };
+      });
     });
 
     // Phase 4: 상태 필터링 및 페이지네이션

@@ -74,7 +74,7 @@ describe('PartnerCompanyExternService - issue() SSG barCode-empty 후보 재조�
     count: jest.fn(),
     find: jest.fn().mockResolvedValue([]),
     findOne: jest.fn(),
-    query: jest.fn(),
+    query: jest.fn().mockResolvedValue([]),
   });
 
   const buildSsgEvent = (): SsgEventEntity =>
@@ -189,7 +189,7 @@ describe('PartnerCompanyExternService - issue() SSG barCode-empty 후보 재조�
         { provide: CryptoCipher, useValue: { safeDecryptDeliveryTarget: jest.fn().mockReturnValue('01000000000') } },
         { provide: SsgInsertStateService, useValue: ssgInsertStateService },
         { provide: getRepositoryToken(SsgResendDeductPendingEntity), useValue: resendDeductPendingRepository },
-        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, isEnabledFor: () => false } },
+        { provide: PartnerSettleFeatureFlag, useValue: { isEnabled: false, hasAnyActiveProvider: false, isEnabledFor: () => false } },
         { provide: PartnerSettleProducerService, useValue: {} },
         { provide: SsgAutoResolveConfig, useValue: new SsgAutoResolveConfig({ get: () => 'off' } as any) },
         { provide: SsgPinObservationService, useValue: { record: jest.fn() } },
@@ -204,7 +204,7 @@ describe('PartnerCompanyExternService - issue() SSG barCode-empty 후보 재조�
     const classifySpy = jest.spyOn(sut as any, 'classifySsgPin');
     const od = buildOrderDelivery();
 
-    await sut.issue(od, buildSsgEvent(), undefined, activeAuthority);
+    await sut.issue(od, buildSsgEvent(), undefined, activeAuthority, 1);
 
     expect(classifySpy).not.toHaveBeenCalled();
     expect(ssgIssue.issue).toHaveBeenCalledTimes(1);
@@ -313,6 +313,36 @@ describe('PartnerCompanyExternService - issue() SSG barCode-empty 후보 재조�
 
     expect(ssgIssue.issue).not.toHaveBeenCalled();
     expect(od.barCode).toBeNull();
+  });
+
+  it('authority 전달 시 markAttempted payload 에 pinIssueCommandId + issueOrdinal 이 영속', async () => {
+    ssgIssueLogRepository.find.mockResolvedValue([]);
+    const od = buildOrderDelivery();
+
+    await sut.issue(od, buildSsgEvent(), undefined, activeAuthority, 1);
+
+    expect(ssgInsertStateService.markAttempted).toHaveBeenCalledWith(
+      od.id,
+      expect.objectContaining({
+        pinIssueCommandId: activeAuthority.commandId,
+        issueOrdinal: 1,
+      }),
+    );
+  });
+
+  it('authority 미전달 시 markAttempted payload 의 pinIssueCommandId + issueOrdinal 이 NULL', async () => {
+    ssgIssueLogRepository.find.mockResolvedValue([]);
+    const od = buildOrderDelivery();
+
+    await sut.issue(od, buildSsgEvent());
+
+    expect(ssgInsertStateService.markAttempted).toHaveBeenCalledWith(
+      od.id,
+      expect.objectContaining({
+        pinIssueCommandId: null,
+        issueOrdinal: null,
+      }),
+    );
   });
 
   it.each<[string, () => void]>([
