@@ -212,8 +212,28 @@ export class FileStorageS3 implements IFileStorage {
 
     if (Body instanceof Readable) {
       const chunks: Buffer[] = [];
-      for await (const chunk of Body) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      // ★ for await 도 상대가 멈추면(stall) 영영 안 끝난다 — downloadFileToLocalWithPath 와 같은 구멍이다.
+      //   한쪽만 막으면 다른 쪽으로 그대로 샌다(이 호출은 엑셀 자동주문 파싱이 쓴다). 같은 방식으로 막는다:
+      //   받은 바이트가 안 늘면 Body 를 끊어 for await 가 던지게 한다.
+      const stallMs = FileStorageS3.BODY_STALL_TIMEOUT_MS;
+      let receivedBytes = 0;
+      let lastReceivedBytes = 0;
+      const stallTimer = setInterval(() => {
+        if (receivedBytes !== lastReceivedBytes) {
+          lastReceivedBytes = receivedBytes;
+          return;
+        }
+        Body.destroy(new Error(`S3 응답 본문이 ${stallMs}ms 동안 진행되지 않아 중단했습니다.`));
+      }, stallMs);
+
+      try {
+        for await (const chunk of Body) {
+          const buffered = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          chunks.push(buffered);
+          receivedBytes += buffered.length;
+        }
+      } finally {
+        clearInterval(stallTimer);
       }
       return Buffer.concat(chunks);
     }

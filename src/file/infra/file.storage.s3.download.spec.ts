@@ -157,6 +157,16 @@ describe('FileStorageS3.downloadFileToLocalWithPath — 본문 stall 감시', ()
     expect(fs.readdirSync(dir)).toHaveLength(0);
   });
 
+  it('★getFileBuffer 도 같은 방어를 받는다 — 한쪽만 막으면 다른 쪽으로 샌다', async () => {
+    const sut = makeSut(stallingBody());
+    await expect(sut.getFileBuffer('private/5/abcdef01-a.xlsx')).rejects.toThrow(/진행되지 않아/);
+  });
+
+  it('getFileBuffer 정상 본문은 그대로 버퍼로 돌려준다', async () => {
+    const sut = makeSut(Readable.from([Buffer.from('ab'), Buffer.from('cd')]));
+    expect((await sut.getFileBuffer('private/5/abcdef01-a.xlsx')).toString()).toBe('abcd');
+  });
+
   it('정상적으로 끝나는 본문은 stall 로 오인하지 않는다', async () => {
     const body = Readable.from([Buffer.from('hello')]);
     const sut = makeSut(body);
